@@ -116,6 +116,24 @@ save game, this is called Direct-Saving mode. This makes saving more reliable
 saving or using the in-game menu). Games that use Flash or EEPROM will display
 an option for direct-saving (this is the default choice in Auto mode).
 
+Box art and ROM naming
+----------------------
+
+The ROM browser can show box art next to the file list (it can be disabled
+in the UI settings). Art is read from `.superfw/art/<ROM filename>.img`, see
+docs/boxart-format.md for the format.
+
+tools/rom-scraper.py prepares an SD card: it identifies GBA/GB/GBC ROMs by
+CRC32 using the No-Intro DATs from libretro-database, renames them to their
+No-Intro names (together with their saves, savestates, cheats, patches and
+other per-ROM files) and downloads box art from libretro-thumbnails,
+converting it to the format above. It requires Python 3 and Pillow:
+
+    tools/rom-scraper.py /path/to/sdcard --dry-run   # Show what would change
+    tools/rom-scraper.py /path/to/sdcard
+
+Use --no-rename to only fetch art, or --no-art to only rename.
+
 Files and configuration on the SD card
 --------------------------------------
 
