@@ -1467,7 +1467,7 @@ static void render_search_wheel(volatile uint8_t *frame, unsigned x) {
 
   int c = smenu.browser.qcand;   // 1-based, 0 means no char picked yet
   for (int i = 0; i < 3; i++) {
-    // Rows: next-next (top), next, current (on the bar). Down moves forward.
+    // Rows: next-next (top), next, current (on the bar). Up moves forward.
     int idx = c ? (c - 1 + 2 - i) % (int)SEARCH_NCHARS : -1;
     char ch[2] = { idx >= 0 ? search_chars[idx] : (i == 2 ? '_' : ' '), 0 };
     if (ch[0] == ' ' && idx >= 0)
@@ -3086,15 +3086,17 @@ static void keypress_menu_recent(unsigned newkeys) {
 
 // Search field editor: Up/Down pick a char, Right/A accept it, Left deletes,
 // A/Start close the field (keeping the filter) and B cancels the search.
+// The picker shows the upcoming chars above the current one, so Up moves
+// forward (A -> B) and Down moves back. Both start at 'A'.
 static void keypress_browse_search(unsigned newkeys) {
   bool changed = false;
-  if (newkeys & KEY_BUTTDOWN) {
+  if (newkeys & KEY_BUTTUP) {
     smenu.browser.qcand = (smenu.browser.qcand % SEARCH_NCHARS) + 1;
     changed = true;
   }
-  else if (newkeys & KEY_BUTTUP) {
+  else if (newkeys & KEY_BUTTDOWN) {
     smenu.browser.qcand = smenu.browser.qcand > 1 ? smenu.browser.qcand - 1 :
-                          smenu.browser.qcand ? SEARCH_NCHARS : 26;   // Starts at 'Z'
+                          smenu.browser.qcand ? SEARCH_NCHARS : 1;
     changed = true;
   }
 
