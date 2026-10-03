@@ -337,6 +337,16 @@ class GameDB(object):
     hit = self.lookup(crc, None, systems=EXT_SYSTEMS.get(ext))
     return (hit[0], hit[1], None) if hit else None
 
+  def serial_lookup(self, gcode, systems):
+    """(system, name) of the preferred release with this GBA game code, or None."""
+    cands = [c for s in systems for c in self.by_serial.get((s, gcode.upper()), [])
+             if not _BAD_TAGS.search(c[1])]
+    if not cands:
+      return None
+    cands.sort(key=lambda c: (systems.index(c[0]), 1 if "(rev" in c[1].lower() else 0,
+                              region_rank(c[1]), len(c[1]), c[1]))
+    return cands[0]
+
   def art_fallback(self, stem, systems, gcode=None):
     """(system, name, how) used only for box art (never to rename), or None.
        Tries an exact file name match, then the GBA header game code (serial),
@@ -348,12 +358,9 @@ class GameDB(object):
     if _HACK_RE.search(stem):
       return None
     if gcode:
-      cands = [c for s in systems for c in self.by_serial.get((s, gcode.upper()), [])
-               if not _BAD_TAGS.search(c[1])]
-      if cands:
-        cands.sort(key=lambda c: (systems.index(c[0]), 1 if "(rev" in c[1].lower() else 0,
-                                  region_rank(c[1]), len(c[1]), c[1]))
-        return cands[0] + ("game code %s" % gcode,)
+      hit = self.serial_lookup(gcode, systems)
+      if hit:
+        return hit + ("game code %s" % gcode,)
     key = loose_name(stem)
     if not key:
       return None
@@ -1230,6 +1237,14 @@ class Organizer(object):
           stem = stem[:-len(cext)]          # "Game3nes" (missing dot)
       if self.o.clean_names:
         stem = clean_numbering(stem)
+      # A bare collection number ("043") says nothing about the game: name it
+      # after the header game code, keeping the number to tell apart the
+      # (unverified: hacks, translations, bad dumps) variants.
+      num = stem.strip()
+      if self.o.clean_names and rom.gcode and re.fullmatch(r"[\d\s._-]+", num):
+        hit = self.db.serial_lookup(rom.gcode, CONSOLE_BY_FOLDER[rom.console].systems)
+        if hit:
+          stem = "%s [%s]" % (hit[1], num.strip(" ._-"))
     return fat_sanitize(stem)
 
   def _final_ext(self, rom):

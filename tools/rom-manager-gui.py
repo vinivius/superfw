@@ -163,7 +163,9 @@ class MainWindow(QMainWindow):
     self.cb_sfw = QCheckBox("Copy SuperFW emulators && cheat database from input .superfw")
     self.cb_clean = QCheckBox("Clean names of unidentified ROMs")
     self.cb_clean.setToolTip("Strips collection numbering such as “0145 - ”, “003 ” or “391.” from the "
-                             "names of ROMs that could not be identified. Nothing else is changed.")
+                             "names of ROMs that could not be identified. GBA ROMs named only by a "
+                             "number get the title matching their header game code, keeping the "
+                             "number as a tag, e.g. “043.gba” → “Godzilla - Domination! (USA) [043].gba”.")
     self.cb_replace = QCheckBox("Replace existing files in output")
     self.cb_replace_saves = QCheckBox("Also replace existing save files")
     self.cb_dry = QCheckBox("Preview only (don't write anything)")
