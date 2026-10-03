@@ -103,8 +103,9 @@ enum {
   UiSetRect  = 2,
   UiSetASpd  = 3,
   UiSetHid   = 4,
-  UiSetSave  = 5,
-  UiSetMAX   = 5,
+  UiSetArt   = 5,
+  UiSetSave  = 6,
+  UiSetMAX   = 6,
 };
 
 enum {
@@ -402,6 +403,7 @@ _Static_assert (sizeof(t_centry) % 4 == 0, "t_centry must be word-friendly");
 //  - Font data (placed by the bootloader at the 15..16MB range)
 // At the end of the SDRAM, ro-data can be loaded by the loader.
 #define scratch_mem_size (2*1024*1024)
+#define ART_MAX_DIM      80
 typedef struct {
   uint8_t scratch[scratch_mem_size];
   t_centry *fileorder[BROWSER_MAXFN_CNT];
@@ -409,6 +411,7 @@ typedef struct {
   t_centry fentries[BROWSER_MAXFN_CNT];
   t_rentry rentries[RECENT_MAXFN_CNT];
   t_reg_entry_max nordata;
+  uint16_t artpix[ART_MAX_DIM * ART_MAX_DIM / 2];  // Box art pixels (+96 offset)
 } t_sdram_state;
 
 _Static_assert (sizeof(t_sdram_state) <= 14.5*1024*1024, "scratch SDRAM doesn't exceed 14.5MB");
@@ -1479,9 +1482,100 @@ static void render_search_wheel(volatile uint8_t *frame, unsigned x) {
   search_win_active = true;
 }
 
+// Box art side panel (ROM browser). Art is loaded lazily from
+// /.superfw/art/<filename>.img once the cursor rests on a file.
+#define ART_PANEL_X      154       // Divider column, panel spans 156..239
+#define ART_CX           198       // Panel horizontal center
+#define ART_CY            80       // Panel vertical center (list area 16..143)
+#define ART_SETTLE        8        // Frames to wait before loading
+#define ART_PAL_BASE      96       // BG palette entries 96..223
+
+static struct {
+  const t_centry *pend;            // Entry pending load (cursor resting on it)
+  uint8_t wait;                    // Frames the cursor has rested on it
+  uint8_t w, h;                    // Loaded art dimensions (w == 0: no art)
+  char fn[MAX_FN_LEN];             // Filename the cached art belongs to
+} bart;
+
+static void boxart_load(const char *fn) {
+  strcpy(bart.fn, fn);
+  bart.w = 0;
+
+  char path[MAX_FN_LEN + 24];
+  npf_snprintf(path, sizeof(path), SUPERFW_DIR "/art/%s.img", fn);
+  FIL fd;
+  if (FR_OK != f_open(&fd, path, FA_READ))
+    return;
+
+  uint32_t tmp[400];               // Header+palette, then pixel row chunks
+  uint16_t *hdr = (uint16_t*)tmp;
+  unsigned w = 0, h = 0, nc = 0;
+  UINT rd;
+  if (FR_OK == f_read(&fd, tmp, 12, &rd) && rd == 12 && !memcmp(tmp, "SFWA", 4)) {
+    w = hdr[2]; h = hdr[3]; nc = hdr[4];
+    if (!w || (w & 1) || w > ART_MAX_DIM || !h || h > ART_MAX_DIM || !nc || nc > 128 ||
+        FR_OK != f_read(&fd, tmp, nc * 2, &rd) || rd != nc * 2)
+      h = 0;
+  }
+
+  if (h) {
+    // Palette goes straight to VRAM, pixels are offset and moved to SDRAM.
+    dma_memcpy16(&MEM_PALETTE[ART_PAL_BASE], tmp, nc);
+    unsigned rpc = sizeof(tmp) / w;
+    for (unsigned r = 0; r < h; r += rpc) {
+      unsigned cnt = MIN(rpc, h - r) * w;
+      uint8_t *p = (uint8_t*)tmp;
+      if (FR_OK != f_read(&fd, tmp, cnt, &rd) || rd != cnt)
+        goto out;
+      for (unsigned i = 0; i < cnt; i++)
+        p[i] = p[i] < nc ? p[i] + ART_PAL_BASE : ART_PAL_BASE;
+      dma_memcpy16(&sdr_state->artpix[r * w / 2], tmp, cnt / 2);
+    }
+    bart.w = w;
+    bart.h = h;
+  }
+out:
+  f_close(&fd);
+}
+
+static void render_boxart(volatile uint8_t *frame, const t_centry *e, unsigned iconidx) {
+  for (unsigned y = 16; y < 144; y++)
+    *(volatile uint16_t*)&frame[y * SCREEN_WIDTH + ART_PANEL_X] = dup8(FG_COLOR);
+
+  const bool isdir = e->attr & AM_DIR;
+  const bool cached = !isdir && !strcmp(e->fname, bart.fn);
+  if (!isdir && !cached) {
+    // Wait for the cursor to settle before hitting the SD card.
+    if (bart.pend != e) {
+      bart.pend = e;
+      bart.wait = 0;
+    } else if (++bart.wait >= ART_SETTLE)
+      boxart_load(e->fname);
+  }
+
+  if (cached && bart.w) {
+    unsigned x = ART_CX - bart.w / 2, y = ART_CY - bart.h / 2;
+    for (unsigned r = 0; r < bart.h; r++)
+      dma_memcpy16(&frame[(y + r) * SCREEN_WIDTH + x], &sdr_state->artpix[r * bart.w / 2], bart.w / 2);
+  } else {
+    draw_box_outline(frame, ART_CX - 40, ART_CX + 40, ART_CY - 40, ART_CY + 40, FG_COLOR);
+    render_icon(ART_CX - 8, ART_CY - 8, iconidx);
+    if (cached)
+      draw_central_text(msgs[lang_id][MSG_ART_NONE], frame, ART_CX, ART_CY + 12);
+  }
+
+  if (isdir)
+    return;
+  char szstr[16];
+  human_size(szstr, sizeof(szstr), e->filesize);
+  draw_central_text(szstr, frame, ART_CX, ART_CY + 44);
+}
+
 void render_browser(volatile uint8_t *frame) {
   // Render bar below to show path URI
   dma_memset16(&frame[240*144], dup8(FG_COLOR), 240*16/2);
+  const bool artp = boxart_enabled && smenu.browser.dispentries;
+  const unsigned listw = artp ? ART_PANEL_X : SCREEN_WIDTH;
 
   if (!smenu.browser.dispentries)
     draw_central_text(msgs[lang_id][smenu.browser.sortentries ? MSG_BROW_NOMATCH : MSG_BROW_EMPTY],
@@ -1500,21 +1594,24 @@ void render_browser(volatile uint8_t *frame) {
 
       render_icon(2, (i+1)*16, iconidx);
 
-      if (!(e->attr & AM_DIR)) {
+      if (!(e->attr & AM_DIR) && !artp) {
         human_size(szstr, sizeof(szstr), e->filesize);
         draw_rightj_text(szstr, frame, SCREEN_WIDTH - 2, (1 + i) * 16);
       }
 
       // Animate the row entries if they are too long!
-      if (i == smenu.browser.selector - smenu.browser.seloff)
+      if (i == smenu.browser.selector - smenu.browser.seloff) {
         draw_text_ovf_rotate(e->fname, frame, 20, (1 + i) * 16,
-                             SCREEN_WIDTH - 26 - font_width(szstr), &smenu.anim_state);
-      else
-        draw_text_ovf(e->fname, frame, 20, (1 + i) * 16, SCREEN_WIDTH - 26 - font_width(szstr));
+                             listw - 26 - font_width(szstr), &smenu.anim_state);
+        if (artp)
+          render_boxart(frame, e, iconidx);
+      } else
+        draw_text_ovf(e->fname, frame, 20, (1 + i) * 16, listw - 26 - font_width(szstr));
     }
 
-    for (unsigned i = 0; i < 240; i += 16)
-      render_icon_trans(i, (smenu.browser.selector - smenu.browser.seloff + 1)*16, 63);
+    // Selection bar, clipped to the list width (last OBJ may overlap).
+    for (unsigned i = 0; i < listw; i += 16)
+      render_icon_trans(MIN(i, listw - 16), (smenu.browser.selector - smenu.browser.seloff + 1)*16, 63);
   }
 
   if (smenu.browser.qedit || smenu.browser.qlen) {
@@ -2042,22 +2139,25 @@ void render_ui_settings(volatile uint8_t *frame) {
   draw_central_text(tmpbuf, frame, colx, 22 );
 
   npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %s >", msgs[lang_id][MSG_LANG_NAME]);
-  draw_text_ovf(msgs[lang_id][MSG_UIS_LANG], frame, 8, 22 + 20, 224);
-  draw_central_text(tmpbuf, frame, colx, 22 + 20 );
+  draw_text_ovf(msgs[lang_id][MSG_UIS_LANG], frame, 8, 22 + 18, 224);
+  draw_central_text(tmpbuf, frame, colx, 22 + 18 );
 
-  draw_text_ovf(msgs[lang_id][MSG_UIS_RECNT], frame, 8, 22 + 40, 224);
-  draw_central_text(msgs[lang_id][recent_menu ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, 22 + 40 );
+  draw_text_ovf(msgs[lang_id][MSG_UIS_RECNT], frame, 8, 22 + 36, 224);
+  draw_central_text(msgs[lang_id][recent_menu ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, 22 + 36 );
 
   npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %s >", msgs[lang_id][MSG_UIS_SPD0 + anim_speed]);
-  draw_text_ovf(msgs[lang_id][MSG_UIS_ANSPD], frame, 8, 22 + 60, 224);
-  draw_central_text(tmpbuf, frame, colx, 22 + 60 );
+  draw_text_ovf(msgs[lang_id][MSG_UIS_ANSPD], frame, 8, 22 + 54, 224);
+  draw_central_text(tmpbuf, frame, colx, 22 + 54 );
 
-  draw_text_ovf(msgs[lang_id][MSG_UIS_BHID], frame, 8, 22 + 80, 224);
-  draw_central_text(msgs[lang_id][hide_hidden ? MSG_KNOB_DISABLED : MSG_KNOB_ENABLED], frame, colx, 22 + 80 );
+  draw_text_ovf(msgs[lang_id][MSG_UIS_BHID], frame, 8, 22 + 72, 224);
+  draw_central_text(msgs[lang_id][hide_hidden ? MSG_KNOB_DISABLED : MSG_KNOB_ENABLED], frame, colx, 22 + 72 );
+
+  draw_text_ovf(msgs[lang_id][MSG_UIS_BOXART], frame, 8, 22 + 90, 224);
+  draw_central_text(msgs[lang_id][boxart_enabled ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, 22 + 90 );
 
   if (smenu.uiset.selector != UiSetSave)
     for (unsigned i = 0; i < 240; i += 16)
-      render_icon_trans(i, 22 + smenu.uiset.selector * 20, 63);
+      render_icon_trans(i, 22 + smenu.uiset.selector * 18, 63);
 
   draw_button_box(frame, 20, 220, 132, 152, smenu.uiset.selector == UiSetSave);
   draw_central_text(msgs[lang_id][MSG_UIS_SAVE], frame, 120, 134);
@@ -3246,6 +3346,8 @@ static void keypress_menu_uisettings(unsigned newkeys) {
       anim_speed = anim_speed ? anim_speed - 1 : 0;
     else if (smenu.uiset.selector == UiSetHid)
       hide_hidden ^= 1;
+    else if (smenu.uiset.selector == UiSetArt)
+      boxart_enabled = !boxart_enabled;
     else if (smenu.uiset.selector == UiSetRect)
       recent_menu ^= 1;
     else if (smenu.uiset.selector == UiSetLang)
@@ -3258,6 +3360,8 @@ static void keypress_menu_uisettings(unsigned newkeys) {
       anim_speed = MIN(animspd_cnt - 1, anim_speed + 1);
     else if (smenu.uiset.selector == UiSetHid)
       hide_hidden ^= 1;
+    else if (smenu.uiset.selector == UiSetArt)
+      boxart_enabled = !boxart_enabled;
     else if (smenu.uiset.selector == UiSetRect)
       recent_menu ^= 1;
     else if (smenu.uiset.selector == UiSetLang)
