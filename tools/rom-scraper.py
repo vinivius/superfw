@@ -2,274 +2,47 @@
 #
 # SuperFW SD card ROM scraper.
 #
-# Identifies GBA/GB/GBC ROMs on an SD card (CRC32 lookup against the No-Intro
-# DATs shipped by libretro-database), renames them to their official No-Intro
-# names (together with all the per-ROM files SuperFW keeps: saves, save backups,
-# savestates, cheats, patches, per-ROM config, recent list entries...) and
-# generates box-art thumbnails in the SuperFW .img format.
+# Two modes:
+#
+# 1. In-place (sd_root): identifies GBA/GB/GBC/NES/... ROMs on an SD card (CRC32
+#    lookup against the No-Intro DATs shipped by libretro-database), renames them
+#    to their official No-Intro names (together with all the per-ROM files SuperFW
+#    keeps: saves, save backups, savestates, cheats, patches, per-ROM config,
+#    recent list entries...) and generates box-art thumbnails in the SuperFW .img
+#    format.
+#
+# 2. Organize (--input/--output): builds a fresh SuperFW SD card layout from a
+#    ROM collection: one folder per console, official names, saves copied to
+#    SAVEGAME/, cheats copied along, box art generated. Same engine as the GUI
+#    (rom-manager-gui.py).
 #
 # Usage:
 #   rom-scraper.py <sd_root> [--dry-run] [--no-rename] [--no-art] [--force-art] [--cache DIR]
+#   rom-scraper.py --input DIR --output DIR [--replace] [--replace-saves] [--no-art]
+#                  [--threads N] [--dry-run] [...]
 #   rom-scraper.py --preview file.img out.png [--scale N]
 #
-# Requires Python 3.6+ and Pillow (only needed for art generation / preview).
+# Requires Python 3.7+ and Pillow (only needed for art generation / preview).
+# The shared logic lives in superfw_romlib.py (next to this script).
 
 import argparse
 import collections
-import io
 import os
 import re
-import struct
 import sys
+import threading
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
-import zlib
 
-# --- Constants ------------------------------------------------------------
-
-DAT_URL = ("https://raw.githubusercontent.com/libretro/libretro-database/master/"
-           "metadat/no-intro/{}.dat")
-THUMB_URL = "https://thumbnails.libretro.com/{}/{}/{}.png"
-
-SYS_GBA = "Nintendo - Game Boy Advance"
-SYS_GB = "Nintendo - Game Boy"
-SYS_GBC = "Nintendo - Game Boy Color"
-SYSTEMS = [SYS_GBA, SYS_GB, SYS_GBC]
-
-# Preferred system (DAT) for each ROM extension, used to break ties.
-EXT_SYSTEMS = {
-  ".gba": [SYS_GBA],
-  ".gb":  [SYS_GB, SYS_GBC],
-  ".gbc": [SYS_GBC, SYS_GB],
-}
-ROM_EXTS = tuple(EXT_SYSTEMS.keys())
-
-DAT_MAX_AGE = 30 * 24 * 3600     # Refresh cached DATs after 30 days.
-HTTP_TIMEOUT = 30
-USER_AGENT = "superfw-rom-scraper/1.0"
-
-# SuperFW paths (see src/config.h and src/settings.c)
-SUPERFW_DIR = ".superfw"
-ART_DIR = ".superfw/art"
-SAVE_DIRS = ["SAVEGAME", "SAVES"]                       # settings.c save_paths[]
-STATE_DIRS = ["SAVESTATE", ".superfw/savestate"]        # settings.c savestates_paths[]
-CONFIG_DIR = ".superfw/config"                          # config.h ROMCONFIG_PATH
-PATCHDB_DIR = ".superfw/patches"                        # config.h PATCHDB_PATH
-RECENT_FILE = ".superfw/recent.txt"                     # config.h RECENT_FILEPATH
-PENDING_SAVE_FILE = ".superfw/pending-save.txt"         # config.h PENDING_SAVE_FILEPATH
-MAX_FN_LEN = 256                                        # config.h MAX_FN_LEN
-
-# Characters invalid in FAT long file names.
-FAT_INVALID = '\\/:*?"<>|'
-# libretro-thumbnails naming: RetroArch gfx/gfx_thumbnail.c scrubs "&*/:`\"<>?\\|"
-# (the libretro docs list &*/:`<>?\| ; the code also replaces the double quote).
-THUMB_INVALID = '&*/:`<>?\\|"'
-
-# Art format (see ART_FORMAT.md)
-ART_MAGIC = b"SFWA"
-ART_MAX_W = 80
-ART_MAX_H = 80
-ART_MAX_COLORS = 128
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from superfw_romlib import (  # noqa: E402
+  ART_DIR, CONFIG_DIR, DEFAULT_CACHE, EXT_SYSTEMS, MAX_FN_LEN, PATCHDB_DIR,
+  PENDING_SAVE_FILE, RECENT_FILE, ROM_EXTS, SAVE_DIRS, STATE_DIRS, SUPERFW_DIR,
+  LEVELS, Options, Organizer, Reporter,
+  art_is_valid, default_threads, encode_art, fat_sanitize, fetch_thumbnail,
+  hash_rom, load_dats, log, preview, sfw_stem, warn, write_atomic)
 
 
-def log(msg=""):
-  print(msg, flush=True)
-
-
-def warn(msg):
-  print("WARNING: " + msg, file=sys.stderr, flush=True)
-
-
-# --- HTTP helpers ----------------------------------------------------------
-
-class NotFound(Exception):
-  pass
-
-
-def http_get(url, retries=2):
-  """Downloads a URL. Raises NotFound on 404, other exceptions on errors."""
-  last = None
-  for attempt in range(retries + 1):
-    try:
-      req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-      with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        return resp.read()
-    except urllib.error.HTTPError as e:
-      if e.code == 404:
-        raise NotFound(url)
-      last = e
-      if e.code < 500 and e.code != 429:
-        break
-    except (urllib.error.URLError, OSError) as e:
-      last = e
-    if attempt < retries:
-      time.sleep(1 + attempt)
-  raise last
-
-
-def write_atomic(path, data):
-  os.makedirs(os.path.dirname(path), exist_ok=True)
-  tmp = path + ".part"
-  with open(tmp, "wb") as fd:
-    fd.write(data)
-  os.replace(tmp, path)
-
-
-# --- DAT parsing -----------------------------------------------------------
-
-_TOKEN_RE = re.compile(r'"((?:[^"\\]|\\.)*)"|(\()|(\))|([^\s()"]+)')
-
-
-def parse_clrmamepro(text):
-  """Parses a clrmamepro DAT into a list of (blocktype, dict) entries.
-     Nested blocks (ie. rom) are returned as lists of dicts under their key."""
-  def tokens():
-    for m in _TOKEN_RE.finditer(text):
-      if m.group(1) is not None:
-        yield ("str", m.group(1).replace('\\"', '"').replace('\\\\', '\\'))
-      elif m.group(2):
-        yield ("(", None)
-      elif m.group(3):
-        yield (")", None)
-      else:
-        yield ("word", m.group(4))
-
-  it = tokens()
-
-  def parse_block():
-    d = {}
-    key = None
-    for kind, val in it:
-      if kind == ")":
-        return d
-      if kind == "(":
-        sub = parse_block()
-        if key is not None:
-          d.setdefault(key, []).append(sub)
-          key = None
-        continue
-      if key is None:
-        key = val
-      else:
-        if key in d and not isinstance(d[key], list):
-          pass   # keep first value for duplicate scalar keys
-        else:
-          d.setdefault(key, val)
-        key = None
-    return d
-
-  out = []
-  pending = None
-  for kind, val in it:
-    if kind == "word" or kind == "str":
-      pending = val
-    elif kind == "(":
-      blk = parse_block()
-      out.append((pending, blk))
-      pending = None
-  return out
-
-
-class GameDB(object):
-  def __init__(self):
-    self.by_crc = collections.defaultdict(list)    # crc -> [(system, name, size)]
-    self.by_norm = collections.defaultdict(list)   # normalized name -> [(system, name)]
-    self.by_short = collections.defaultdict(list)  # normalized short name -> [(system, name)]
-    self.systems = []
-
-  def add_dat(self, system, text):
-    count = 0
-    for btype, blk in parse_clrmamepro(text):
-      if btype != "game":
-        continue
-      name = blk.get("name")
-      if not name:
-        continue
-      for rom in blk.get("rom", []):
-        crc = rom.get("crc")
-        if crc and re.match(r"^[0-9A-Fa-f]{8}$", crc):
-          size = int(rom["size"]) if rom.get("size", "").isdigit() else None
-          self.by_crc[int(crc, 16)].append((system, name, size))
-          count += 1
-      self.by_norm[norm_name(name)].append((system, name))
-      self.by_short[norm_name(short_name(name))].append((system, name))
-    self.systems.append(system)
-    return count
-
-  def lookup_crc(self, crc, ext):
-    cands = self.by_crc.get(crc, [])
-    if not cands:
-      return None
-    prefs = EXT_SYSTEMS.get(ext, [])
-    cands = sorted(cands, key=lambda c: prefs.index(c[0]) if c[0] in prefs else 99)
-    return cands[0]
-
-
-def norm_name(s):
-  # Lowercase, treat FAT/thumbnail replacement chars as spaces, collapse spaces.
-  s = s.lower()
-  s = re.sub(r"[_\\/:*?\"<>|`]", " ", s)
-  return re.sub(r"\s+", " ", s).strip()
-
-
-def short_name(s):
-  return s.split("(")[0].strip()
-
-
-_BAD_TAGS = re.compile(r"\((?:[^)]*\b(?:beta|proto|demo|sample|kiosk|debug|pirate|unl|hack|"
-                       r"virtual console|aftermarket|program|test)\b[^)]*)\)|\[b\]", re.I)
-_REGION_PREF = ["usa", "world", "europe", "japan"]
-
-
-def region_rank(name):
-  tags = " ".join(re.findall(r"\(([^)]*)\)", name)).lower()
-  for i, r in enumerate(_REGION_PREF):
-    if r in tags:
-      return i
-  return len(_REGION_PREF)
-
-
-def load_dats(cache_dir, offline=False):
-  db = GameDB()
-  datdir = os.path.join(cache_dir, "dats")
-  os.makedirs(datdir, exist_ok=True)
-  for system in SYSTEMS:
-    path = os.path.join(datdir, system + ".dat")
-    fresh = os.path.exists(path) and (time.time() - os.path.getmtime(path) < DAT_MAX_AGE)
-    if not fresh and not offline:
-      url = DAT_URL.format(urllib.parse.quote(system))
-      try:
-        data = http_get(url)
-        if b"clrmamepro" not in data[:200] and b"game (" not in data:
-          raise ValueError("downloaded file does not look like a clrmamepro DAT")
-        write_atomic(path, data)
-        log("Downloaded DAT: %s" % system)
-      except Exception as e:
-        warn("could not download DAT '%s': %s%s" % (
-             system, e, " (using cached copy)" if os.path.exists(path) else ""))
-    if not os.path.exists(path):
-      warn("no DAT available for '%s', those ROMs will not be identified" % system)
-      continue
-    with open(path, "r", encoding="utf-8", errors="replace") as fd:
-      n = db.add_dat(system, fd.read())
-    log("Loaded %d entries from '%s' DAT" % (n, system))
-  return db
-
-
-# --- ROM scanning / identification ----------------------------------------
-
-def crc32_file(path):
-  crc = 0
-  with open(path, "rb") as fd:
-    while True:
-      chunk = fd.read(1 << 20)
-      if not chunk:
-        break
-      crc = zlib.crc32(chunk, crc)
-  return crc & 0xFFFFFFFF
-
+# --- ROM scanning / identification (in-place mode) ---------------------------------
 
 def scan_roms(sd_root):
   roms = []
@@ -301,44 +74,25 @@ class Rom(object):
 
 
 def identify(rom, db):
-  rom.crc = crc32_file(rom.path)
-  hit = db.lookup_crc(rom.crc, rom.ext.lower())
+  ext = rom.ext.lower()
+  h = hash_rom(rom.path, ext)
+  rom.crc = h["crc"]
+  size = os.path.getsize(rom.path)
+  prefs = EXT_SYSTEMS.get(ext, [])
+  hit = db.lookup(h["crc"], size, h["alt"], size - h["skip"], prefs)
   if hit:
-    rom.system, rom.name, _ = hit
+    rom.system, rom.name = hit
     rom.match = "crc"
     return
-  # Filename fallback (exact normalized match against DAT names).
-  stem = os.path.splitext(rom.fname)[0]
-  prefs = EXT_SYSTEMS.get(rom.ext.lower(), [])
-  cands = [c for c in db.by_norm.get(norm_name(stem), []) if c[0] in prefs]
-  if cands:
-    cands.sort(key=lambda c: prefs.index(c[0]))
-    rom.system, rom.name = cands[0]
-    rom.match = "filename"
-    return
-  # Fuzzy fallback: the file is named after the short title (no tags). Used
-  # only to find box art, never to rename (the dump might be a hack/beta/...).
-  cands = [c for c in db.by_short.get(norm_name(short_name(stem)), [])
-           if c[0] in prefs and not _BAD_TAGS.search(c[1])]
-  if cands and "(" not in stem:
-    cands.sort(key=lambda c: (prefs.index(c[0]), region_rank(c[1]), len(c[1]), c[1]))
-    rom.system, rom.name = cands[0]
-    rom.match = "fuzzy"
+  # Filename fallback (exact normalized match: rename), or fuzzy match on the
+  # short title, used only to find box art, never to rename (the dump might be
+  # a hack/beta/...).
+  fb = db.art_fallback(os.path.splitext(rom.fname)[0], prefs)
+  if fb:
+    rom.system, rom.name, rom.match = fb
 
 
 # --- Renaming ----------------------------------------------------------------
-
-def fat_sanitize(name):
-  out = "".join("_" if (c in FAT_INVALID or ord(c) < 32) else c for c in name)
-  out = out.rstrip(" .")
-  return out or "_"
-
-
-def sfw_stem(fname):
-  """Mimics SuperFW util.c replace_extension(): strip the last extension."""
-  i = fname.rfind(".")
-  return fname[:i] if i >= 0 else fname
-
 
 def dir_listing(path, cache):
   """Returns {lowercase name: real name} for a directory (cached)."""
@@ -503,175 +257,95 @@ class Renamer(object):
       self._rewrite_lines(PENDING_SAVE_FILE, pending_mapper, "pending save path(s)")
 
 
-# --- Art encoding/decoding ----------------------------------------------------
+# --- Organize mode ----------------------------------------------------------------
 
-def thumb_name(name):
-  return "".join("_" if c in THUMB_INVALID else c for c in name)
+class TextReporter(Reporter):
+  def __init__(self, verbose):
+    self.verbose = verbose
+    self.tty = sys.stderr.isatty()
+    self.lock = threading.Lock()
+    self.last_line = 0.0
+    self.last_phase = None
+    self.width = 0
+
+  def _clear(self):
+    if self.tty and self.width:
+      sys.stderr.write("\r" + " " * self.width + "\r")
+      self.width = 0
+
+  def on_log(self, level, msg):
+    if LEVELS[level] < (0 if self.verbose else 1):
+      return
+    with self.lock:
+      self._clear()
+      if level in ("warn", "error"):
+        print("%s: %s" % (level.upper().replace("WARN", "WARNING"), msg), flush=True)
+      else:
+        print(msg, flush=True)
+
+  def on_progress(self, snap):
+    now = time.time()
+    with self.lock:
+      if not self.tty and now - self.last_line < 5 and snap["phase"] == self.last_phase:
+        return
+      self.last_line = now
+      self.last_phase = snap["phase"]
+      c = snap["counters"]
+      line = "[%3d%%] %s %s/%s | found %d ident %d unid %d dup %d in-out %d copied %d art %d" % (
+        int(snap["overall"] * 100), snap["phase"] or "", _fmt(snap["phase_done"], snap["phase_idx"]),
+        _fmt(snap["phase_total"], snap["phase_idx"]), c.get("found", 0), c.get("identified", 0),
+        c.get("unidentified", 0), c.get("duplicates", 0), c.get("already", 0),
+        c.get("copied", 0), c.get("art_created", 0))
+      if self.tty:
+        cols = 160
+        try:
+          cols = os.get_terminal_size(sys.stderr.fileno()).columns
+        except OSError:
+          pass
+        line = line[:cols - 1]
+        sys.stderr.write("\r" + line.ljust(self.width))
+        self.width = len(line)
+      else:
+        sys.stderr.write(line + "\n")
+      sys.stderr.flush()
+
+  def done(self):
+    with self.lock:
+      self._clear()
 
 
-def fetch_thumbnail(system, name, cache_dir, force):
-  """Returns (png_bytes, kind) or (None, reason)."""
-  tname = thumb_name(name)
-  reasons = []
-  for kind in ("Named_Boxarts", "Named_Titles"):
-    cdir = os.path.join(cache_dir, "thumbs", system, kind)
-    cpath = os.path.join(cdir, fat_sanitize(tname) + ".png")
-    miss = cpath + ".404"
-    if os.path.exists(cpath) and os.path.getsize(cpath) > 0:
-      with open(cpath, "rb") as fd:
-        return fd.read(), kind
-    if os.path.exists(miss) and not force and time.time() - os.path.getmtime(miss) < DAT_MAX_AGE:
-      reasons.append("%s: not found (cached)" % kind)
-      continue
-    url = THUMB_URL.format(*(urllib.parse.quote(x) for x in (system, kind, tname)))
-    try:
-      data = http_get(url)
-      if not data.startswith(b"\x89PNG"):
-        raise ValueError("not a PNG")
-      write_atomic(cpath, data)
-      if os.path.exists(miss):
-        os.unlink(miss)
-      return data, kind
-    except NotFound:
-      reasons.append("%s: not found" % kind)
-      try:
-        os.makedirs(cdir, exist_ok=True)
-        open(miss, "wb").close()
-      except OSError:
-        pass
-    except Exception as e:
-      reasons.append("%s: %s" % (kind, e))
-  return None, "; ".join(reasons)
+def _fmt(n, phase_idx):
+  # Hashing and copying progress is in bytes.
+  if phase_idx in (1, 3):
+    return "%.0fM" % (n / 1048576.0)
+  return str(n)
 
 
-def _c5(v):
-  return (v * 31 + 127) // 255
-
-
-def _c8(v5):
-  return (v5 << 3) | (v5 >> 2)
-
-
-def _pixels(im):
-  f = getattr(im, "get_flattened_data", None)    # Pillow >= 12.1
-  return f() if f else im.getdata()
-
-
-def art_is_valid(path):
+def organize(args):
+  if args.replace_saves and not args.replace:
+    print("ERROR: --replace-saves requires --replace", file=sys.stderr)
+    return 1
+  opts = Options(args.input, args.output, replace=args.replace, replace_saves=args.replace_saves,
+                 art=not args.no_art, saves=not args.no_saves, cheats=not args.no_cheats,
+                 superfw_files=not args.no_superfw_files, clean_names=not args.keep_numbering,
+                 dry_run=args.dry_run, threads=max(1, args.threads), cache_dir=args.cache,
+                 exclude=args.exclude if args.exclude is not None else ["EMU"],
+                 report_path=args.report)
+  rep = TextReporter(args.verbose)
+  org = Organizer(opts, rep)
+  result = {}
+  th = threading.Thread(target=lambda: result.setdefault("ok", org.run()), name="organizer")
+  th.start()
   try:
-    with open(path, "rb") as fd:
-      validate_art(fd.read())
-    return True
-  except (OSError, ValueError):
-    return False
-
-
-def encode_art(png_bytes):
-  """Converts an image to the SuperFW .img format. Returns (bytes, w, h, ncolors)."""
-  from PIL import Image
-
-  img = Image.open(io.BytesIO(png_bytes))
-  img.load()
-  # Flatten any transparency on black (the format has no transparency).
-  img = img.convert("RGBA")
-  bg = Image.new("RGBA", img.size, (0, 0, 0, 255))
-  img = Image.alpha_composite(bg, img).convert("RGB")
-
-  w, h = img.size
-  scale = min(ART_MAX_W / w, ART_MAX_H / h)
-  nw = int(round(w * scale / 2.0)) * 2
-  nw = max(2, min(ART_MAX_W, nw))
-  nh = max(1, min(ART_MAX_H, int(round(h * scale))))
-  img = img.resize((nw, nh), Image.LANCZOS)
-
-  # 1. Compute an optimized palette (no dithering at this stage).
-  method = Image.Quantize.MEDIANCUT
-  try:
-    from PIL import features
-    if features.check("libimagequant"):
-      method = Image.Quantize.LIBIMAGEQUANT
-  except Exception:
-    pass
-  try:
-    q = img.quantize(colors=ART_MAX_COLORS, method=method, kmeans=4 if method == Image.Quantize.MEDIANCUT else 0)
-  except Exception:
-    q = img.quantize(colors=ART_MAX_COLORS, method=Image.Quantize.MEDIANCUT, kmeans=4)
-  pal = q.getpalette()[:3 * ART_MAX_COLORS]
-  used = sorted(set(_pixels(q)))
-
-  # 2. Snap palette to BGR555 (the hardware precision) and dedupe.
-  colors = []
-  for i in used:
-    r, g, b = pal[3 * i:3 * i + 3]
-    c = (_c5(r), _c5(g), _c5(b))
-    if c not in colors:
-      colors.append(c)
-  colors = colors[:ART_MAX_COLORS]
-
-  # 3. Remap the image to the snapped palette with Floyd-Steinberg dithering.
-  palimg = Image.new("P", (1, 1))
-  flat = []
-  for c in colors:
-    flat.extend(_c8(x) for x in c)
-  flat.extend(flat[:3] * (256 - len(colors)))     # pad with duplicates of entry 0
-  palimg.putpalette(flat)
-  out = img.quantize(palette=palimg, dither=Image.Dither.FLOYDSTEINBERG)
-  idx = list(_pixels(out))
-
-  # Canonicalize indices (duplicates may have been selected) and drop unused colors.
-  full = [tuple(flat[3 * i:3 * i + 3]) for i in range(256)]
-  c8 = [tuple(_c8(x) for x in c) for c in colors]
-  canon = {col: i for i, col in reversed(list(enumerate(c8)))}
-  idx = [canon[full[i]] for i in idx]
-  used = sorted(set(idx))
-  remap = {o: n for n, o in enumerate(used)}
-  idx = bytes(remap[i] for i in idx)
-  colors = [colors[i] for i in used]
-
-  hdr = ART_MAGIC + struct.pack("<HHHH", nw, nh, len(colors), 0)
-  palb = b"".join(struct.pack("<H", r | (g << 5) | (b << 10)) for r, g, b in colors)
-  data = hdr + palb + idx
-  validate_art(data)
-  return data, nw, nh, len(colors)
-
-
-def validate_art(data):
-  """Strict check against ART_FORMAT.md. Returns (w, h, palette, pixels)."""
-  if len(data) < 12 or data[:4] != ART_MAGIC:
-    raise ValueError("bad magic")
-  w, h, n, res = struct.unpack_from("<HHHH", data, 4)
-  if not (2 <= w <= ART_MAX_W and w % 2 == 0):
-    raise ValueError("bad width %d" % w)
-  if not (1 <= h <= ART_MAX_H):
-    raise ValueError("bad height %d" % h)
-  if not (1 <= n <= ART_MAX_COLORS):
-    raise ValueError("bad color count %d" % n)
-  if res != 0:
-    raise ValueError("reserved field is not zero")
-  exp = 12 + 2 * n + w * h
-  if len(data) != exp:
-    raise ValueError("bad file size %d (expected %d)" % (len(data), exp))
-  pal = struct.unpack_from("<%dH" % n, data, 12)
-  if any(c & 0x8000 for c in pal):
-    raise ValueError("palette entry with bit 15 set")
-  pix = data[12 + 2 * n:]
-  if max(pix) >= n:
-    raise ValueError("pixel index out of range")
-  return w, h, pal, pix
-
-
-def preview(img_path, out_png, scale=1):
-  from PIL import Image
-  with open(img_path, "rb") as fd:
-    data = fd.read()
-  w, h, pal, pix = validate_art(data)
-  rgb = [(_c8(c & 31), _c8((c >> 5) & 31), _c8((c >> 10) & 31)) for c in pal]
-  im = Image.new("RGB", (w, h))
-  im.putdata([rgb[i] for i in pix])
-  if scale > 1:
-    im = im.resize((w * scale, h * scale), Image.NEAREST)
-  im.save(out_png)
-  log("%s: OK, %dx%d, %d colors, %d bytes -> %s" % (img_path, w, h, len(pal), len(data), out_png))
+    while th.is_alive():
+      th.join(0.2)
+  except KeyboardInterrupt:
+    org.cancel()
+    th.join()
+  rep.done()
+  if org.cancelled:
+    return 130
+  return 0 if result.get("ok") and not org.counters["errors"] else 1
 
 
 # --- Main --------------------------------------------------------------------
@@ -691,16 +365,43 @@ def main():
     return 0
 
   ap = argparse.ArgumentParser(
-    description="Identify, rename and fetch box art for GBA/GB/GBC ROMs on a SuperFW SD card.",
+    description="Identify, rename and fetch box art for ROMs on a SuperFW SD card (in place), "
+                "or build a fresh SuperFW SD layout from a ROM collection (--input/--output).",
     epilog="Preview mode: rom-scraper.py --preview file.img out.png [--scale N]")
-  ap.add_argument("sd_root", help="SD card root directory")
+  ap.add_argument("sd_root", nargs="?", help="SD card root directory (in-place mode)")
   ap.add_argument("--dry-run", action="store_true", help="show what would be done, change nothing")
-  ap.add_argument("--no-rename", action="store_true", help="do not rename ROMs (or their files)")
+  ap.add_argument("--no-rename", action="store_true", help="in-place: do not rename ROMs (or their files)")
   ap.add_argument("--no-art", action="store_true", help="do not generate box art")
-  ap.add_argument("--force-art", action="store_true", help="regenerate existing art files")
-  ap.add_argument("--cache", default=os.path.expanduser("~/.cache/superfw-scraper"),
-                  help="cache dir for DATs and thumbnails (default: %(default)s)")
+  ap.add_argument("--force-art", action="store_true", help="in-place: regenerate existing art files")
+  ap.add_argument("--cache", default=DEFAULT_CACHE,
+                  help="cache dir for DATs, thumbnails and CRCs (default: %(default)s)")
+  og = ap.add_argument_group("organize mode (copy a collection into a new SuperFW SD layout)")
+  og.add_argument("--input", metavar="DIR", help="ROM collection to read (never modified)")
+  og.add_argument("--output", metavar="DIR", help="output folder / SD card root")
+  og.add_argument("--replace", action="store_true",
+                  help="replace existing output files with different content (ROMs, cheats, art)")
+  og.add_argument("--replace-saves", action="store_true",
+                  help="also replace existing save files (requires --replace)")
+  og.add_argument("--threads", type=int, default=default_threads(),
+                  help="worker threads (default: %(default)s)")
+  og.add_argument("--no-saves", action="store_true", help="do not copy save files")
+  og.add_argument("--no-cheats", action="store_true", help="do not copy per-ROM .cht files")
+  og.add_argument("--no-superfw-files", action="store_true",
+                  help="do not copy .superfw/emulators and .superfw/cheats from the input")
+  og.add_argument("--keep-numbering", action="store_true",
+                  help="do not strip leading numbering from unidentified ROM names")
+  og.add_argument("--exclude", action="append", metavar="NAME", default=None,
+                  help="top-level input folder to skip (repeatable; default: EMU)")
+  og.add_argument("--report", metavar="FILE", help="report file (default: in the cache dir)")
+  og.add_argument("-v", "--verbose", action="store_true", help="log every file")
   args = ap.parse_args()
+
+  if args.input or args.output:
+    if not (args.input and args.output) or args.sd_root:
+      ap.error("--input and --output must be used together (and without sd_root)")
+    return organize(args)
+  if not args.sd_root:
+    ap.error("either sd_root or --input/--output is required")
 
   sd = os.path.abspath(args.sd_root)
   if not os.path.isdir(sd):
@@ -719,8 +420,13 @@ def main():
   if args.dry_run:
     log("*** DRY RUN: nothing will be changed ***")
 
-  db = load_dats(cache)
   paths = scan_roms(sd)
+  systems = []
+  for p in paths:
+    for sname in EXT_SYSTEMS[os.path.splitext(p)[1].lower()]:
+      if sname not in systems:
+        systems.append(sname)
+  db = load_dats(cache, systems=systems)
   log("Found %d ROM file(s) under %s\n" % (len(paths), sd))
   if not paths:
     return 0
@@ -800,7 +506,7 @@ def main():
       if args.dry_run:
         log("  would create %s" % os.path.relpath(out, sd))
         continue
-      png, kind = fetch_thumbnail(rom.system, rom.name, cache, args.force_art)
+      png, kind, _ = fetch_thumbnail(rom.system, rom.name, cache, args.force_art)
       if png is None:
         art_failed.append((rom.final_fname, kind))
         log("  %s: no art (%s)" % (rom.final_fname, kind))

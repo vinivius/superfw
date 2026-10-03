@@ -123,16 +123,22 @@ The ROM browser can show box art next to the file list (it can be disabled
 in the UI settings). Art is read from `.superfw/art/<ROM filename>.img`, see
 docs/boxart-format.md for the format.
 
-tools/rom-scraper.py prepares an SD card: it identifies GBA/GB/GBC ROMs by
-CRC32 using the No-Intro DATs from libretro-database, renames them to their
-No-Intro names (together with their saves, savestates, cheats, patches and
-other per-ROM files) and downloads box art from libretro-thumbnails,
-converting it to the format above. It requires Python 3 and Pillow:
+tools/rom-manager-gui.py (requires Python 3, PySide6 and Pillow) prepares an
+SD card from a ROM collection: pick an input folder and an output folder (the
+SD card) and it identifies GBA/GB/GBC/NES ROMs by CRC32 using the No-Intro
+DATs from libretro-database, copies them into one folder per console with
+their No-Intro names, copies their saves (to /SAVEGAME) and cheats along, and
+downloads box art from libretro-thumbnails, converting it to the format above.
+Duplicates (in the input or already on the card) are copied only once, and
+existing files on the card are never replaced unless asked to (save files
+need a separate option). Work is multithreaded.
 
-    tools/rom-scraper.py /path/to/sdcard --dry-run   # Show what would change
+The same can be done from the command line with tools/rom-scraper.py, which
+can also rename ROMs in place on an existing card:
+
+    tools/rom-scraper.py --input /path/to/roms --output /path/to/sdcard
+    tools/rom-scraper.py /path/to/sdcard --dry-run   # In place, show changes
     tools/rom-scraper.py /path/to/sdcard
-
-Use --no-rename to only fetch art, or --no-art to only rename.
 
 Files and configuration on the SD card
 --------------------------------------
