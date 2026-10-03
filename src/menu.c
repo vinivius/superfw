@@ -1387,7 +1387,20 @@ static void draw_central_text_wrapped(const char *t, volatile uint8_t *frame, un
   }
 }
 
+// Box art side panel geometry (see render_boxart).
+#define ART_PANEL_X      154       // Divider column, panel spans 156..239
+#define ART_CX           198       // Panel horizontal center
+#define ART_CY            80       // Panel vertical center (list area 16..143)
+#define ART_SETTLE        8        // Frames to wait before loading
+#define ART_PAL_BASE      96       // BG palette entries 96..223
+
+static void render_boxart(volatile uint8_t *frame, const char *fname, bool isdir,
+                          const char *szstr, unsigned iconidx, unsigned bottom);
+
 void render_recent(volatile uint8_t *frame) {
+  const bool artp = boxart_enabled && smenu.recent.maxentries;
+  const unsigned listw = artp ? ART_PANEL_X : SCREEN_WIDTH;
+
   // Render the list from memory.
   for (unsigned i = 0; i < RECENT_ROWS; i++) {
     if (smenu.recent.seloff + i >= smenu.recent.maxentries)
@@ -1395,18 +1408,22 @@ void render_recent(volatile uint8_t *frame) {
 
     t_rentry *e = &sdr_state->rentries[smenu.recent.seloff + i];
     char *fn = &e->fpath[e->fname_offset];
-    render_icon(2, (i+1)*16, guessicon(fn));
+    unsigned iconidx = guessicon(fn);
+    render_icon(2, (i+1)*16, iconidx);
 
     // Animate the row entries if they are too long!
-    if (i == smenu.recent.selector - smenu.recent.seloff)
+    if (i == smenu.recent.selector - smenu.recent.seloff) {
       draw_text_ovf_rotate(fn, frame, 20, (1 + i) * 16,
-                           SCREEN_WIDTH - 24, &smenu.anim_state);
-    else
-      draw_text_ovf(fn, frame, 20, (1 + i) * 16, SCREEN_WIDTH - 24);
+                           listw - 24, &smenu.anim_state);
+      if (artp)
+        render_boxart(frame, fn, false, NULL, iconidx, SCREEN_HEIGHT);
+    } else
+      draw_text_ovf(fn, frame, 20, (1 + i) * 16, listw - 24);
   }
 
-  for (unsigned i = 0; i < 240; i += 16)
-    render_icon_trans(i, (smenu.recent.selector - smenu.recent.seloff + 1)*16, 63);
+  // Selection bar, clipped to the list width (last OBJ may overlap).
+  for (unsigned i = 0; i < listw; i += 16)
+    render_icon_trans(MIN(i, listw - 16), (smenu.recent.selector - smenu.recent.seloff + 1)*16, 63);
 }
 
 #ifdef SUPPORT_NORGAMES
@@ -1482,16 +1499,11 @@ static void render_search_wheel(volatile uint8_t *frame, unsigned x) {
   search_win_active = true;
 }
 
-// Box art side panel (ROM browser). Art is loaded lazily from
+// Box art side panel (ROM browser and recent list). Art is loaded lazily from
 // /.superfw/art/<filename>.img once the cursor rests on a file.
-#define ART_PANEL_X      154       // Divider column, panel spans 156..239
-#define ART_CX           198       // Panel horizontal center
-#define ART_CY            80       // Panel vertical center (list area 16..143)
-#define ART_SETTLE        8        // Frames to wait before loading
-#define ART_PAL_BASE      96       // BG palette entries 96..223
 
 static struct {
-  const t_centry *pend;            // Entry pending load (cursor resting on it)
+  const void *pend;                // Entry pending load (cursor resting on it)
   uint8_t wait;                    // Frames the cursor has rested on it
   uint8_t w, h;                    // Loaded art dimensions (w == 0: no art)
   char fn[MAX_FN_LEN];             // Filename the cached art belongs to
@@ -1538,19 +1550,21 @@ out:
   f_close(&fd);
 }
 
-static void render_boxart(volatile uint8_t *frame, const t_centry *e, unsigned iconidx) {
-  for (unsigned y = 16; y < 144; y++)
+// Draws the panel for the selected entry. The divider spans the list area
+// (16..bottom). The file size is drawn under the art unless szstr is NULL.
+static void render_boxart(volatile uint8_t *frame, const char *fname, bool isdir,
+                          const char *szstr, unsigned iconidx, unsigned bottom) {
+  for (unsigned y = 16; y < bottom; y++)
     *(volatile uint16_t*)&frame[y * SCREEN_WIDTH + ART_PANEL_X] = dup8(FG_COLOR);
 
-  const bool isdir = e->attr & AM_DIR;
-  const bool cached = !isdir && !strcmp(e->fname, bart.fn);
+  const bool cached = !isdir && !strcmp(fname, bart.fn);
   if (!isdir && !cached) {
     // Wait for the cursor to settle before hitting the SD card.
-    if (bart.pend != e) {
-      bart.pend = e;
+    if (bart.pend != fname) {
+      bart.pend = fname;
       bart.wait = 0;
     } else if (++bart.wait >= ART_SETTLE)
-      boxart_load(e->fname);
+      boxart_load(fname);
   }
 
   if (cached && bart.w) {
@@ -1564,11 +1578,8 @@ static void render_boxart(volatile uint8_t *frame, const t_centry *e, unsigned i
       draw_central_text(msgs[lang_id][MSG_ART_NONE], frame, ART_CX, ART_CY + 12);
   }
 
-  if (isdir)
-    return;
-  char szstr[16];
-  human_size(szstr, sizeof(szstr), e->filesize);
-  draw_central_text(szstr, frame, ART_CX, ART_CY + 44);
+  if (szstr)
+    draw_central_text(szstr, frame, ART_CX, ART_CY + 44);
 }
 
 void render_browser(volatile uint8_t *frame) {
@@ -1603,8 +1614,13 @@ void render_browser(volatile uint8_t *frame) {
       if (i == smenu.browser.selector - smenu.browser.seloff) {
         draw_text_ovf_rotate(e->fname, frame, 20, (1 + i) * 16,
                              listw - 26 - font_width(szstr), &smenu.anim_state);
-        if (artp)
-          render_boxart(frame, e, iconidx);
+        if (artp) {
+          const bool isdir = e->attr & AM_DIR;
+          char fsz[16];
+          if (!isdir)
+            human_size(fsz, sizeof(fsz), e->filesize);
+          render_boxart(frame, e->fname, isdir, isdir ? NULL : fsz, iconidx, 144);
+        }
       } else
         draw_text_ovf(e->fname, frame, 20, (1 + i) * 16, listw - 26 - font_width(szstr));
     }
