@@ -283,7 +283,12 @@ static struct {
     int seloff;                   // Entry at the top of the list
     int maxentries;               // Total file/dir count in current dir
     int dispentries;              // Maximum number of visible entries (filtered)
+    int sortentries;              // Number of entries in the sorted (unsearched) list
     uint16_t selhist[16];         // History of directory offsets
+    char query[24];               // Search query (committed chars, uppercase)
+    uint8_t qlen;                 // Length of the search query
+    uint8_t qcand;                // Candidate char being picked (1-based, 0 = none)
+    bool qedit;                   // Search field is open and being edited
   } browser;
 
   // Flash ROM browser state
@@ -400,6 +405,7 @@ _Static_assert (sizeof(t_centry) % 4 == 0, "t_centry must be word-friendly");
 typedef struct {
   uint8_t scratch[scratch_mem_size];
   t_centry *fileorder[BROWSER_MAXFN_CNT];
+  t_centry *sortorder[BROWSER_MAXFN_CNT];
   t_centry fentries[BROWSER_MAXFN_CNT];
   t_rentry rentries[RECENT_MAXFN_CNT];
   t_reg_entry_max nordata;
@@ -1094,6 +1100,61 @@ NOINLINE static void browser_open(const char *fn, uint32_t fs) {
   }
 }
 
+// Characters that can be picked in the search field (Up/Down cycles them).
+static const char search_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ";
+#define SEARCH_NCHARS  (sizeof(search_chars) - 1)
+
+static inline char ascii_upper(char c) {
+  return (c >= 'a' && c <= 'z') ? c - 'a' + 'A' : c;
+}
+
+// Case-insensitive (ASCII only) substring match. q must be uppercase.
+static bool search_match(const char *fname, const char *q) {
+  if (!q[0])
+    return true;
+  for (; *fname; fname++) {
+    unsigned i = 0;
+    while (q[i] && ascii_upper(fname[i]) == q[i])
+      i++;
+    if (!q[i])
+      return true;
+  }
+  return false;
+}
+
+// Builds the current query: committed chars plus the candidate being picked.
+static void browser_search_query(char *q) {
+  memcpy(q, smenu.browser.query, smenu.browser.qlen);
+  unsigned l = smenu.browser.qlen;
+  if (smenu.browser.qcand)
+    q[l++] = search_chars[smenu.browser.qcand - 1];
+  q[l] = 0;
+}
+
+// Fills the visible list (fileorder) with the sorted entries matching the search.
+static void browser_apply_search() {
+  char q[sizeof(smenu.browser.query) + 1];
+  browser_search_query(q);
+
+  unsigned fcount = 0;
+  for (unsigned i = 0; i < smenu.browser.sortentries; i++)
+    if (search_match(sdr_state->sortorder[i]->fname, q))
+      sdr_state->fileorder[fcount++] = sdr_state->sortorder[i];
+
+  if (smenu.browser.selector >= (int)fcount)
+    smenu.browser.selector = fcount - 1;
+  if (smenu.browser.selector < 0 && fcount)
+    smenu.browser.selector = 0;
+  smenu.browser.seloff = MAX(0, smenu.browser.selector - BROWSER_ROWS / 2);
+  smenu.browser.dispentries = fcount;
+}
+
+static void browser_clear_search() {
+  smenu.browser.qlen = 0;
+  smenu.browser.qcand = 0;
+  smenu.browser.qedit = false;
+}
+
 static void browser_reload_filter() {
   // Instead of sorting the actual list of files, which requires moving lots
   // of memory, we use a list of pointers.
@@ -1102,15 +1163,14 @@ static void browser_reload_filter() {
     if ((sdr_state->fentries[i].attr & AM_HID) && hide_hidden)
       continue;
 
-    sdr_state->fileorder[fcount++] = &sdr_state->fentries[i];
+    sdr_state->sortorder[fcount++] = &sdr_state->fentries[i];
   }
 
-  heapsort4(sdr_state->fileorder, fcount, sizeof(t_centry*) / sizeof(uint32_t), filesort);
+  heapsort4(sdr_state->sortorder, fcount, sizeof(t_centry*) / sizeof(uint32_t), filesort);
+  smenu.browser.sortentries = fcount;
 
-  if (smenu.browser.selector >= fcount)
-    smenu.browser.selector = fcount - 1;
-  smenu.browser.seloff = MAX(0, smenu.browser.selector - BROWSER_ROWS / 2);
-  smenu.browser.dispentries = fcount;
+  // Searching only filters the sorted list, no need to re-sort.
+  browser_apply_search();
 }
 
 // Loads a new directory list in the ROM browser.
@@ -1391,12 +1451,41 @@ void render_flashbrowser(volatile uint8_t *frame) {
 }
 #endif
 
+// Draws the vertical char picker for the search field: the candidate char sits
+// on the search bar (at x) and the previous/next chars are shown above it.
+static bool search_win_active = false;
+#define WHEEL_W   16
+static void render_search_wheel(volatile uint8_t *frame, unsigned x) {
+  x = MIN(x, SCREEN_WIDTH - WHEEL_W - 2);
+  // Box covering two rows above the bar plus the bar itself.
+  draw_box_full(frame, x - 2, x + WHEEL_W + 2, 144 - 32 - 2, 160, FG_COLOR, BG_COLOR);
+  // Separate the picked char (on the bar) from the upcoming ones.
+  dma_memset16(&frame[143 * SCREEN_WIDTH + x], dup8(FG_COLOR), WHEEL_W / 2);
+
+  int c = smenu.browser.qcand;   // 1-based, 0 means no char picked yet
+  for (int i = 0; i < 3; i++) {
+    // Rows: next-next (top), next, current (on the bar). Down moves forward.
+    int idx = c ? (c - 1 + 2 - i) % (int)SEARCH_NCHARS : -1;
+    char ch[2] = { idx >= 0 ? search_chars[idx] : (i == 2 ? '_' : ' '), 0 };
+    if (ch[0] == ' ' && idx >= 0)
+      ch[0] = '_';
+    unsigned cx = x + (WHEEL_W - font_width(ch)) / 2;
+    draw_text_idx8_bus16(ch, (uint8_t*)&frame[(112 + i * 16) * SCREEN_WIDTH + cx], SCREEN_WIDTH, FT_COLOR);
+  }
+
+  // Use the window to hide sprites (file icons, selection bar) under the picker.
+  REG_WIN0H = (x + WHEEL_W + 2) | ((x - 2) << 8);
+  REG_WIN0V = 160 | ((144 - 34) << 8);
+  search_win_active = true;
+}
+
 void render_browser(volatile uint8_t *frame) {
   // Render bar below to show path URI
   dma_memset16(&frame[240*144], dup8(FG_COLOR), 240*16/2);
 
   if (!smenu.browser.dispentries)
-    draw_central_text(msgs[lang_id][MSG_BROW_EMPTY], frame, SCREEN_WIDTH/2, SCREEN_HEIGHT/2-8);
+    draw_central_text(msgs[lang_id][smenu.browser.sortentries ? MSG_BROW_NOMATCH : MSG_BROW_EMPTY],
+                      frame, SCREEN_WIDTH/2, SCREEN_HEIGHT/2-8);
   else {
     for (unsigned i = 0; i < BROWSER_ROWS; i++) {
       if (smenu.browser.seloff + i >= smenu.browser.dispentries)
@@ -1428,8 +1517,24 @@ void render_browser(volatile uint8_t *frame) {
       render_icon_trans(i, (smenu.browser.selector - smenu.browser.seloff + 1)*16, 63);
   }
 
-  // Draw path, cut left part if necessary.
-  draw_text_leftovf(smenu.browser.cpath, frame, 8, 144, SCREEN_WIDTH - 8);
+  if (smenu.browser.qedit || smenu.browser.qlen) {
+    // Search bar replaces the path: "Search: ABC" plus the char being picked.
+    char q[sizeof(smenu.browser.query) + 1];
+    memcpy(q, smenu.browser.query, smenu.browser.qlen);
+    q[smenu.browser.qlen] = 0;
+    const char *label = msgs[lang_id][MSG_BROW_SEARCH];
+    unsigned qx = 8 + font_width(label) + 4;
+    draw_text_idx8_bus16(label, (uint8_t*)&frame[144 * SCREEN_WIDTH + 8], SCREEN_WIDTH, FT_COLOR);
+    draw_text_idx8_bus16(q, (uint8_t*)&frame[144 * SCREEN_WIDTH + qx], SCREEN_WIDTH, FT_COLOR);
+    qx += font_width(q);
+
+    if (smenu.browser.qedit)
+      render_search_wheel(frame, (qx + 3) & ~1);
+  }
+  else {
+    // Draw path, cut left part if necessary.
+    draw_text_leftovf(smenu.browser.cpath, frame, 8, 144, SCREEN_WIDTH - 8);
+  }
 
   char selinfo[16];
   npf_snprintf(selinfo, sizeof(selinfo), "%u/%d", smenu.browser.selector + 1, smenu.browser.dispentries);
@@ -2108,10 +2213,11 @@ void menu_render(unsigned fcnt) {
     draw_central_text(spop.alert_msg, frame, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 8);
     REG_WIN0H = 226 | (14 << 8);
     REG_WIN0V = (SCREEN_HEIGHT / 2 + 20) | ((SCREEN_HEIGHT / 2 - 20) << 8);
-  } else {
+  } else if (!search_win_active) {
     REG_WIN0H = 0;
     REG_WIN0V = 0;
   }
+  search_win_active = false;
 }
 
 void menu_flip() {
@@ -2878,7 +2984,58 @@ static void keypress_menu_recent(unsigned newkeys) {
     smenu.recent.seloff = smenu.recent.selector - RECENT_ROWS + 1;
 }
 
+// Search field editor: Up/Down pick a char, Right/A accept it, Left deletes,
+// A/Start close the field (keeping the filter) and B cancels the search.
+static void keypress_browse_search(unsigned newkeys) {
+  bool changed = false;
+  if (newkeys & KEY_BUTTDOWN) {
+    smenu.browser.qcand = (smenu.browser.qcand % SEARCH_NCHARS) + 1;
+    changed = true;
+  }
+  else if (newkeys & KEY_BUTTUP) {
+    smenu.browser.qcand = smenu.browser.qcand > 1 ? smenu.browser.qcand - 1 :
+                          smenu.browser.qcand ? SEARCH_NCHARS : 26;   // Starts at 'Z'
+    changed = true;
+  }
+
+  if (newkeys & KEY_BUTTB) {
+    browser_clear_search();
+    changed = true;
+  }
+  else if (newkeys & (KEY_BUTTRIGHT | KEY_BUTTA | KEY_BUTTSTA)) {
+    // Commit the candidate char, the filter does not change.
+    if (smenu.browser.qcand && smenu.browser.qlen < sizeof(smenu.browser.query) - 1)
+      smenu.browser.query[smenu.browser.qlen++] = search_chars[smenu.browser.qcand - 1];
+    smenu.browser.qcand = 0;
+    if (newkeys & (KEY_BUTTA | KEY_BUTTSTA))
+      smenu.browser.qedit = false;
+  }
+  else if (newkeys & KEY_BUTTLEFT) {
+    if (smenu.browser.qcand)
+      smenu.browser.qcand = 0;
+    else if (smenu.browser.qlen)
+      smenu.browser.qlen--;
+    changed = true;
+  }
+
+  if (changed) {
+    smenu.browser.selector = 0;
+    smenu.anim_state = 0;
+    browser_apply_search();
+  }
+}
+
 static void keypress_menu_browse(unsigned newkeys) {
+  if (smenu.browser.qedit) {
+    keypress_browse_search(newkeys);
+    return;
+  }
+  if (newkeys & KEY_BUTTSTA) {
+    smenu.browser.qedit = true;
+    smenu.browser.qcand = 0;
+    return;
+  }
+
   if (smenu.browser.dispentries) {
     // Move menu up and down
     if (newkeys & KEY_BUTTUP)
@@ -2904,6 +3061,7 @@ static void keypress_menu_browse(unsigned newkeys) {
                 sizeof(smenu.browser.selhist) - sizeof(smenu.browser.selhist[0]));
         smenu.browser.selhist[0] = smenu.browser.selector;
         smenu.browser.selector = 0;
+        browser_clear_search();
         browser_reload();
       } else {
         char path[MAX_FN_LEN];
@@ -2919,7 +3077,13 @@ static void keypress_menu_browse(unsigned newkeys) {
       spop.selector = 0;
     }
   }
-  if (newkeys & KEY_BUTTB) {
+  if ((newkeys & KEY_BUTTB) && smenu.browser.qlen) {
+    // Clear the active search before going up in the dir structure.
+    browser_clear_search();
+    smenu.browser.selector = 0;
+    browser_apply_search();
+  }
+  else if (newkeys & KEY_BUTTB) {
     // Try to go up in the dir structure
     if (movedir_up()) {
       smenu.browser.selector = smenu.browser.selhist[0];
@@ -3268,8 +3432,10 @@ void menu_keypress(unsigned newkeys) {
       keyfns[spop.pop_num](newkeys);
     }
   } else {
-    // Menu change via trigger buttons
+    // Menu change via trigger buttons (not while typing a search)
     int mintab = (recent_menu && smenu.recent.maxentries) ? MENUTAB_RECENT : MENUTAB_ROMBROWSE;
+    if (smenu.menu_tab == MENUTAB_ROMBROWSE && smenu.browser.qedit)
+      newkeys &= ~(KEY_BUTTL | KEY_BUTTR);
     if (newkeys & KEY_BUTTL)
       smenu.menu_tab = MAX((int)smenu.menu_tab - 1, mintab);
     else if (newkeys & KEY_BUTTR)
