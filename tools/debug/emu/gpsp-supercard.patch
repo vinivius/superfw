@@ -1,0 +1,174 @@
+diff --git a/Makefile b/Makefile
+index 19bb692..88d6a09 100644
+--- a/Makefile
++++ b/Makefile
+@@ -516,7 +516,7 @@ endif
+ ifeq ($(DEBUG), 1)
+ 	OPTIMIZE      := -O0 -g    #   -DTRACE_INSTRUCTIONS -DTRACE_REGISTERS
+ else
+-	OPTIMIZE      := -O3 -DNDEBUG -g   -DTRACE_INSTRUCTIONS -DTRACE_REGISTERS
++	OPTIMIZE      := -O3 -DNDEBUG -g
+ endif
+ 
+ DEFINES := -DHAVE_STRINGS_H -DHAVE_STDINT_H -DHAVE_INTTYPES_H -D__LIBRETRO__ -DINLINE=inline -Wall
+diff --git a/gba_memory.c b/gba_memory.c
+index 4b58f8f..9544664 100644
+--- a/gba_memory.c
++++ b/gba_memory.c
+@@ -24,6 +24,72 @@
+ #include <fcntl.h>
+ #include "common.h"
+ #include "streams/file_stream.h"
++#include <stdlib.h>
++#include <stdio.h>
++#include <errno.h>
++#include <termios.h>
++// pty API (declared here, the core is not built with _XOPEN_SOURCE)
++int posix_openpt(int flags); int grantpt(int fd); int unlockpt(int fd); char *ptsname(int fd);
++void cfmakeraw(struct termios *t);
++
++// Minimal GBA UART emulation (SuperFW debugging): the link port UART is
++// connected to a host pseudo-terminal, whose path is written to ./uart.pty.
++static int uart_fd = -2;          // -2: not initialized, -1: unavailable
++static int uart_rx = -1;          // Pending received byte (-1: none)
++
++static int uart_host_fd(void) {
++  if (uart_fd == -2) {
++    uart_fd = posix_openpt(O_RDWR | O_NOCTTY);
++    if (uart_fd >= 0 && !grantpt(uart_fd) && !unlockpt(uart_fd)) {
++      fcntl(uart_fd, F_SETFL, fcntl(uart_fd, F_GETFL) | O_NONBLOCK);
++      // Raw mode (no echo), or the GBA would read back what it sends.
++      int sfd = open(ptsname(uart_fd), O_RDWR | O_NOCTTY);
++      if (sfd >= 0) {
++        struct termios t;
++        tcgetattr(sfd, &t);
++        cfmakeraw(&t);
++        tcsetattr(sfd, TCSANOW, &t);
++        close(sfd);
++      }
++      FILE *f = fopen("uart.pty", "w");
++      if (f) { fprintf(f, "%s\n", ptsname(uart_fd)); fclose(f); }
++      fprintf(stderr, "UART emulation on %s\n", ptsname(uart_fd));
++    }
++    else
++      uart_fd = -1;
++  }
++  return uart_fd;
++}
++
++static int uart_mode_enabled(void);
++
++// Called before the CPU reads SIOCNT / SIODATA8.
++static void uart_emu_read(u32 reg) {
++  if (!uart_mode_enabled() || uart_host_fd() < 0)
++    return;
++  if (uart_rx < 0) {
++    unsigned char c;
++    if (read(uart_fd, &c, 1) == 1)
++      uart_rx = c;
++  }
++  u16 siocnt = io_registers[REG_SIOCNT];
++  siocnt &= ~0x0030;                       // TX never full
++  if (uart_rx < 0)
++    siocnt |= 0x0020;                      // RX empty
++  io_registers[REG_SIOCNT] = siocnt;
++  if (reg == REG_SIOMLT_SEND && uart_rx >= 0) {      // 0x12A = SIODATA8
++    io_registers[REG_SIOMLT_SEND] = uart_rx;
++    uart_rx = -1;
++  }
++}
++
++static void uart_emu_write(u16 value) {
++  if (uart_mode_enabled() && uart_host_fd() >= 0) {
++    unsigned char c = value & 0xFF;
++    while (write(uart_fd, &c, 1) < 0 && errno == EAGAIN)
++      usleep(100);
++  }
++}
+ 
+ extern bool supercard_we;
+ 
+@@ -588,7 +654,7 @@ enum SDstate sdst = ScanCmd;
+ u32 cmdbits = 0;
+ u8 sdcmd[6] = {0};
+ u32 sdrespsz = 0;
+-u32 foffset = 0;
++u64 foffset = 0;
+ u32 clkcnt = 0;
+ u32 bytesread = 0;
+ u32 tokenbits = 0;
+@@ -742,7 +808,7 @@ void supercard_cmd_write_16(u16 value) {
+         sdrespsz = 8;
+         sdresp[0] = 0;
+         sdst = WriteResp;
+-        foffset = 512 * d;
++        foffset = 512ULL * d;
+         //printf("\nread card addr %d\n", d);
+         blkstate = SDBusy;
+         bytesread = 0;
+@@ -753,7 +819,7 @@ void supercard_cmd_write_16(u16 value) {
+         sdrespsz = 8;
+         sdresp[0] = 0;
+         sdst = WriteResp;
+-        foffset = 512 * d;
++        foffset = 512ULL * d;
+         //printf("\nwrite card addr %d\n", d);
+         blkstate = SDWaitData;
+         bytesread = 0;
+@@ -787,7 +853,7 @@ void supercard_writereg_write(u16 value) {
+     // TODO: Do not ignore the CRC and return errors if necessary
+     if (bytesread == 520) {
+       blkstate = SDDataWriteToken;
+-      tokenbits = 0xEB;  // 111.0.101.1
++      tokenbits = 0xCA;  // Spec: 1 1 (start)0 (status)010 (end)1 then busy 0s
+       clkcnt = 0;
+     }
+ 
+@@ -890,7 +956,7 @@ u16 supercard_readreg_read() {
+     return 0xF00;
+ 
+   {
+-    u32 offset = foffset; //(foffset - 1) & ~1;
++    u64 offset = foffset; //(foffset - 1) & ~1;
+     //if (foffset > 0) {
+     {
+ 
+@@ -1031,6 +1097,8 @@ u32 function_cc read_eeprom(void)
+                                                                               \
+     case 0x04:                                                                \
+       /* I/O registers */                                                     \
++      if ((address & 0x3FE) == 0x128 || (address & 0x3FE) == 0x12A)          \
++        uart_emu_read((address & 0x3FE) >> 1);                                \
+       value = readaddress##type(io_registers, address & 0x3FF);               \
+       break;                                                                  \
+                                                                               \
+@@ -1303,6 +1371,11 @@ cpu_alert_type function_cc write_io_register16(u32 address, u32 value)
+     case REG_SIOCNT:
+       return write_siocnt(value);
+ 
++    case REG_SIOMLT_SEND:     // 0x12A, also SIODATA8 (UART data)
++      write_ioreg(REG_SIOMLT_SEND, value);
++      uart_emu_write(value);
++      break;
++
+     case REG_RCNT:
+       return write_rcnt(value);
+ 
+@@ -2655,7 +2728,7 @@ void init_gamepak_buffer(void)
+   assert(sdfd >= 0);
+   fstat(sdfd, &st);
+   printf("Maping SD card file (size %d bytes)\n", st.st_size);
+-  sdcardmap = mmap(NULL, st.st_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, sdfd, 0);
++  sdcardmap = mmap(NULL, st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, sdfd, 0);
+   assert(sdcardmap != NULL);
+   sdcardsize = st.st_size;
+ }
+@@ -3049,3 +3122,8 @@ s32 load_bios(char *name)
+ }
+ 
+ 
++
++// UART mode: SIOCNT bits 12-13 set, RCNT bit 15 clear.
++static int uart_mode_enabled(void) {
++  return (io_registers[REG_SIOCNT] & 0x3000) == 0x3000 && !(io_registers[REG_RCNT] & 0x8000);
++}
