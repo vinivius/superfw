@@ -7,3 +7,8 @@
 *.gcno
 *.info
 *.i
+
+# Generated from res/messages.py by the Makefile
+src/messages_data.h
+src/menu_messages.h
+tools/__pycache__/
