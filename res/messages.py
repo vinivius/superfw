@@ -62,6 +62,7 @@ en_strings = [
   "MSG_SETT_STATET": "Savestate path",
   "MSG_SETT_CHTEN":  "Enable cheats",
   "MSG_SETT_FASTSD": "Fast ROM loading",
+  "MSG_SETT_VERROM": "Verify ROM loading",
   "MSG_SETT_FASTEW": "EWRAM overclock",
 
   "MSG_TOOLS0_SDRAM": "SDRAM memory test",
@@ -119,6 +120,7 @@ en_strings = [
   "MSG_STATE_TYPE_PT": "Savestate files live in %s dir",
   "MSG_BACKUP_I":      "Keep the last N save files",
   "MSG_FASTSD_I":      "Use a fast ROM loading mechanism. Can result in crashes or incorrect reads in some devices",
+  "MSG_VERROM_I":      "Reads ROMs twice from the SD card to detect bad reads (slower loading)",
   "MSG_FASTEW_I":      "Overclock EWRAM for some extra performance. Not available on NDS or GBA Micro",
   "MSG_INGAME_I":      "Show menu on combo key press",
   "MSG_PATCHE_I":      "Run PatchEngine to generate patches for this ROM",
@@ -218,6 +220,7 @@ en_strings = [
   "MSG_ERR_SETSAVE": "Error saving settings!",             # alertmsg
   "MSG_ERR_DELFILE": "Error deleting file!",               # alertmsg
   "MSG_ERR_READ":    "Error: could not load ROM!",         # alertmsg
+  "MSG_ERR_VERIFY":  "Error: ROM verification failed!",    # alertmsg
   "MSG_ERR_NOEMU":   "Can't find emulator!",               # alertmsg
   "MSG_ERR_TOOBIG":  "The GBA file is too big!",           # alertmsg
   "MSG_ERR_SAVERD":  "Error: can't read save file",        # alertmsg

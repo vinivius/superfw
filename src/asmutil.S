@@ -205,6 +205,39 @@ ewram_test_zone:
 .balign 4
 
 // Slower copy to ROM routine. Performs checks on the written data.
+// Fletcher-style running checksum over 32 bit words (position sensitive).
+// r0: word pointer, r1: number of words, r2: state pointer {a, b}
+START_ARM_FUNC(checksum_words)
+  push {r4-r11}
+  ldmia r2, {r3, r12}
+  subs r1, r1, $8
+  bmi 2f
+1:
+  ldmia r0!, {r4-r11}
+  add r3, r3, r4;  add r12, r12, r3
+  add r3, r3, r5;  add r12, r12, r3
+  add r3, r3, r6;  add r12, r12, r3
+  add r3, r3, r7;  add r12, r12, r3
+  add r3, r3, r8;  add r12, r12, r3
+  add r3, r3, r9;  add r12, r12, r3
+  add r3, r3, r10; add r12, r12, r3
+  add r3, r3, r11; add r12, r12, r3
+  subs r1, r1, $8
+  bpl 1b
+2:
+  adds r1, r1, $8
+  beq 4f
+3:
+  ldr r4, [r0], #4
+  add r3, r3, r4
+  add r12, r12, r3
+  subs r1, r1, $1
+  bne 3b
+4:
+  stmia r2, {r3, r12}
+  pop {r4-r11}
+  bx lr
+
 START_ARM_FUNC(rom_copy_write16)
   push {r4-r11}
 

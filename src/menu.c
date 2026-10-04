@@ -125,6 +125,7 @@ enum {
   SettHotkey,
   SettBootType,
   SettFastSD,
+  SettVerifyROM,
   #ifdef SUPPORT_NORGAMES
   SettVerifyNOR,
   #endif
@@ -2002,6 +2003,11 @@ void render_settings(volatile uint8_t *frame) {
     draw_central_text(msgs[lang_id][use_slowld ? MSG_KNOB_DISABLED : MSG_KNOB_ENABLED], frame, colx, offy + rowh*optcnt++);
   }
 
+  if (optnum++ >= baseopt && optcnt < maxrows) {
+    draw_text_ovf(msgs[lang_id][MSG_SETT_VERROM], frame, 8, offy + rowh*optcnt, 224);
+    draw_central_text(msgs[lang_id][use_verify_rom ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, offy + rowh*optcnt++);
+  }
+
   #ifdef SUPPORT_NORGAMES
   if (optnum++ >= baseopt && optcnt < maxrows) {
     draw_text_ovf(msgs[lang_id][MSG_SETT_VERNOR], frame, 8, offy + rowh*optcnt, 224);
@@ -2130,6 +2136,7 @@ void render_settings(volatile uint8_t *frame) {
     unsigned help_msg = smenu.set.selector == SettBootType ? MSG_BOOT_TYPE_I0 + boot_bios_splash :
                         smenu.set.selector == SettSaveBkp  ? MSG_BACKUP_I :
                         smenu.set.selector == SettFastSD   ? MSG_FASTSD_I :
+                        smenu.set.selector == SettVerifyROM? MSG_VERROM_I :
                         smenu.set.selector == SettFastEWRAM? MSG_FASTEW_I :
                         smenu.set.selector == DefsPatchEng ? MSG_PATCH_TYPE_I0 + patcher_default :
                         smenu.set.selector == DefsLoadPol  ? MSG_DEF_LOADP_I0 + (autoload_default ^ 1) :
@@ -2662,17 +2669,30 @@ static void keypress_popup_loadgba(unsigned newkeys) {
         .ts_step = rtcspeed_default
       };
 
-      unsigned err = load_gba_rom(
-        spop.p.load.i.romfn, spop.p.load.i.romfs,
-        spop.p.load.l.sram_save_type == SaveDisable ? NULL : spop.p.load.l.savefn, p,
-        spop.p.load.l.sram_save_type == SaveDirect ? &dsinfo : NULL,
-        spop.p.load.i.ingame_menu_enabled,
-        spop.p.load.i.rtc_patch_enabled ? &rtci : NULL,
-        spop.p.load.l.use_cheats ? spop.p.load.l.cheats_size : 0,
-        loadrom_progress);
+      sdcard_flush_log();   // Record SD write diagnostics before launching
+      unsigned do_load() {
+        return load_gba_rom(
+          spop.p.load.i.romfn, spop.p.load.i.romfs,
+          spop.p.load.l.sram_save_type == SaveDisable ? NULL : spop.p.load.l.savefn, p,
+          spop.p.load.l.sram_save_type == SaveDirect ? &dsinfo : NULL,
+          spop.p.load.i.ingame_menu_enabled,
+          spop.p.load.i.rtc_patch_enabled ? &rtci : NULL,
+          spop.p.load.l.use_cheats ? spop.p.load.l.cheats_size : 0,
+          loadrom_progress);
+      }
+      unsigned err = do_load();
+      if (err && !use_slowld) {
+        // Fast loading is not reliable with some carts/SD cards, retry slowly.
+        WRITE_LOG("Fast ROM load failed (%u), retrying in slow mode", err);
+        use_slowld = 1;
+        err = do_load();
+        use_slowld = 0;
+      }
       if (err) {
+        WRITE_LOG("ROM load failed: %u", err);
+        sdcard_flush_log();
         // Show any errors that might have happened!
-        spop.alert_msg = msgs[lang_id][MSG_ERR_READ];
+        spop.alert_msg = msgs[lang_id][err == ERR_LOAD_VERIFY ? MSG_ERR_VERIFY : MSG_ERR_READ];
         // TODO: We cannot (in many cases) continue since we trash the SDRAM!
       }
     }
@@ -3332,6 +3352,8 @@ static void keypress_menu_settings(unsigned newkeys) {
       autosave_prefer_ds ^= 1;
     else if (smenu.set.selector == SettFastSD)
       use_slowld ^= 1;
+    else if (smenu.set.selector == SettVerifyROM)
+      use_verify_rom ^= 1;
     else if (smenu.set.selector == SettFastEWRAM)
       use_fastew = fastew ? (use_fastew ^ 1) : 0;
     #ifdef SUPPORT_NORGAMES

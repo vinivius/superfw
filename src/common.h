@@ -167,6 +167,8 @@ void nds_launch();
 void gba_irq_handler();
 void set_irq_enable(bool enable);
 void rom_copy_write16(void *dst, const void *src, unsigned cnt);
+// Running checksum over 32 bit words, state is {a, b} (init to zero).
+void checksum_words(const void *src, unsigned nwords, uint32_t *state);
 int check_erased_32xff(const void *buffer, unsigned blk32cnt);
 void set_undef_lrsp(uint32_t lr, uint32_t sp);
 void set_abort_lr(uint32_t value);
@@ -252,6 +254,7 @@ struct struct_t_patch;
 #define ERR_NO_PAYLOAD_SPACE    0x3
 #define ERR_LOAD_NOEMU          0x4
 #define ERR_FLASH_OP            0x5
+#define ERR_LOAD_VERIFY         0x6
 
 // Prepares the save game files, readin and writing files in some cases.
 unsigned prepare_savegame(t_sram_load_policy loadp, t_sram_save_policy savep, EnumSavetype stype, t_dirsave_info *dsinfo, const char *savefn);

@@ -210,6 +210,108 @@ unsigned preload_gba_rom(const char *fn, uint32_t fs, t_rom_header *romh) {
 }
 
 NOINLINE
+// Copies a loaded chunk into SDRAM and reads it back, rewriting it if the
+// copy did not stick (some carts occasionally drop SDRAM writes). Returns the
+// number of extra writes needed, or -1 if it never verified.
+#define CHUNK_WRITE_TRIES   8
+static unsigned chunk_rewrites = 0;
+#ifdef HAVE_LOGGING
+  static uint32_t chunk_rewrite_off[16];
+  static uint8_t chunk_rewrite_cnt[16];
+  static unsigned chunk_rewrite_num = 0;
+#endif
+
+static int copy_chunk_verified(uint8_t *dst, const uint32_t *src, unsigned bytes, uint32_t offset) {
+  uint32_t ck_src[2] = {0, 0};
+  checksum_words(src, bytes / 4, ck_src);
+
+  set_supercard_mode(MAPPED_SDRAM, true, false);
+  int ret = -1;
+  for (unsigned t = 0; t < CHUNK_WRITE_TRIES; t++) {
+    if (use_slowld)
+      rom_copy_write16(dst, src, bytes);
+    else
+      dma_memcpy32(dst, src, bytes/4);
+
+    uint32_t ck_dst[2] = {0, 0};
+    checksum_words(dst, bytes / 4, ck_dst);
+    if (ck_dst[0] == ck_src[0] && ck_dst[1] == ck_src[1]) {
+      ret = t;
+      break;
+    }
+  }
+  set_supercard_mode(MAPPED_SDRAM, true, true);
+
+  if (ret != 0) {
+    chunk_rewrites++;
+    #ifdef HAVE_LOGGING
+    if (chunk_rewrite_num < 16) {
+      chunk_rewrite_off[chunk_rewrite_num] = offset;
+      chunk_rewrite_cnt[chunk_rewrite_num++] = ret < 0 ? 0xFF : ret;
+    }
+    #endif
+  }
+  return ret;
+}
+
+// Checksums ROM data already loaded in SDRAM (used to verify the load).
+static void checksum_loaded_rom(uint32_t start, uint32_t end, uint32_t *st) {
+  if (end <= start)
+    return;
+  // The SD interface overlaps the upper ROM area, unmap it while reading.
+  set_supercard_mode(MAPPED_SDRAM, true, false);
+  checksum_words((const void*)(GBA_ROM_ADDR + start), (end - start) / 4, st);
+  set_supercard_mode(MAPPED_SDRAM, true, true);
+}
+
+#ifdef HAVE_LOGGING
+// Diagnostics: finds and logs the first words where SDRAM differs from the file.
+static void log_rom_mismatches(FIL *fd, uint32_t start, uint32_t end) {
+  struct { uint32_t off, file, mem; } d[8];
+  unsigned nd = 0, total = 0;
+  if (FR_OK != f_lseek(fd, start))
+    return;
+  for (uint32_t offset = start; offset < end; offset += LOAD_BS) {
+    unsigned toread = MIN(LOAD_BS, end - offset);
+    UINT rdbytes;
+    uint32_t tmp[LOAD_BS/4];
+    if (FR_OK != f_read(fd, tmp, toread, &rdbytes))
+      break;
+    set_supercard_mode(MAPPED_SDRAM, true, false);
+    const uint32_t *mem = (const uint32_t*)(GBA_ROM_ADDR + offset);
+    for (unsigned i = 0; i < rdbytes / 4; i++) {
+      uint32_t m = mem[i];
+      if (m != tmp[i]) {
+        if (nd < 8)
+          d[nd++] = (typeof(d[0])){ offset + i*4, tmp[i], m };
+        total++;
+      }
+    }
+    set_supercard_mode(MAPPED_SDRAM, true, true);
+  }
+  for (unsigned i = 0; i < nd; i++)
+    WRITE_LOG("ROM mismatch at 0x%06lx: file %08lx sdram %08lx", d[i].off, d[i].file, d[i].mem);
+  WRITE_LOG("ROM mismatch: %u differing words in [0x%06lx, 0x%06lx)", total, start, end);
+}
+#endif
+
+// Reads a file region again from the SD card, checksumming it.
+static bool checksum_file_region(FIL *fd, uint32_t start, uint32_t end, uint32_t *st) {
+  if (end <= start)
+    return true;
+  if (FR_OK != f_lseek(fd, start))
+    return false;
+  for (uint32_t offset = start; offset < end; offset += LOAD_BS) {
+    unsigned toread = MIN(LOAD_BS, end - offset);
+    UINT rdbytes;
+    uint32_t tmp[LOAD_BS/4];
+    if (FR_OK != f_read(fd, tmp, toread, &rdbytes))
+      return false;
+    checksum_words(tmp, rdbytes / 4, st);
+  }
+  return true;
+}
+
 unsigned load_gba_rom(
   const char *fn, uint32_t fs,
   const char *savefn,
@@ -223,8 +325,14 @@ unsigned load_gba_rom(
 
   bool use_rtc_patches = rtcinfo != NULL;
 
+  chunk_rewrites = 0;
+  #ifdef HAVE_LOGGING
+    chunk_rewrite_num = 0;
+  #endif
+
   // Determine how much ROM space we need for the IGM and DirSav payloads
   const unsigned igm_reqsz = ingame_menu_payload.menu_rsize + font_block_size();
+  WRITE_LOG("Load sizes: rom %lu, igm %u, fonts %u", fs, ingame_menu_payload.menu_rsize, font_block_size());
   // Round it up, reserve ~1KB after the ROM for patches.
   // 32MiB games cannot generate patches beyond the end.
   const unsigned romrsize = ROUND_UP2(fs, 1024) + (fs < MAX_GBA_ROM_SIZE ? 1024 : 0);
@@ -281,6 +389,9 @@ unsigned load_gba_rom(
   // Honor fast loading (switch mirror if appropriate)
   slowsd = use_slowld;
 
+  // Checksum of the data as read from the SD card, to verify the SDRAM copy.
+  uint32_t ck_load[2] = {0, 0};
+
   uint8_t *ptr = (uint8_t*)(GBA_ROM_ADDR);
   for (uint32_t offset = 0; offset < gap_start; offset += LOAD_BS, steps++) {
     if (progress && (steps & (31)) == 0)
@@ -295,12 +406,14 @@ unsigned load_gba_rom(
       return ERR_LOAD_BADROM;
     }
 
-    set_supercard_mode(MAPPED_SDRAM, true, false);
-    if (use_slowld)
-      rom_copy_write16(&ptr[offset], tmp, toread);
-    else
-      dma_memcpy32(&ptr[offset], tmp, toread/4);
-    set_supercard_mode(MAPPED_SDRAM, true, true);
+    checksum_words(tmp, rdbytes / 4, ck_load);
+
+    if (copy_chunk_verified(&ptr[offset], tmp, toread, offset) < 0) {
+      WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", offset);
+      slowsd = true;
+      f_close(&fd);
+      return ERR_LOAD_VERIFY;
+    }
   }
   // Skip over the gap
   if (FR_OK != f_lseek(&fd, gap_end)) {
@@ -321,14 +434,60 @@ unsigned load_gba_rom(
       return ERR_LOAD_BADROM;
     }
 
-    set_supercard_mode(MAPPED_SDRAM, true, false);
-    if (use_slowld)
-      rom_copy_write16(&ptr[offset], tmp, toread);
-    else
-      dma_memcpy32(&ptr[offset], tmp, toread/4);
-    set_supercard_mode(MAPPED_SDRAM, true, true);
+    checksum_words(tmp, rdbytes / 4, ck_load);
+
+    if (copy_chunk_verified(&ptr[offset], tmp, toread, offset) < 0) {
+      WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", offset);
+      slowsd = true;
+      f_close(&fd);
+      return ERR_LOAD_VERIFY;
+    }
   }
   progress(1, 1);  // Mark as complete
+
+  #ifdef HAVE_LOGGING
+    for (unsigned i = 0; i < chunk_rewrite_num; i++)
+      WRITE_LOG("ROM chunk at 0x%06lx needed rewriting (%u extra writes)",
+                chunk_rewrite_off[i], chunk_rewrite_cnt[i]);
+    if (chunk_rewrites)
+      WRITE_LOG("ROM chunks rewritten: %u", chunk_rewrites);
+  #endif
+
+  // Verify the load (before patching, which modifies the ROM). The loaded
+  // regions are [0, gap_start) and [gap_end, fs), file data only.
+  const uint32_t seg1_end = MIN(gap_start, fs);
+  {
+    uint32_t ck_mem[2] = {0, 0};
+    checksum_loaded_rom(0, seg1_end, ck_mem);
+    checksum_loaded_rom(gap_end, fs, ck_mem);
+    if (ck_mem[0] != ck_load[0] || ck_mem[1] != ck_load[1]) {
+      WRITE_LOG("ROM verify: SDRAM copy mismatch (%08lx:%08lx vs %08lx:%08lx)",
+                ck_mem[0], ck_mem[1], ck_load[0], ck_load[1]);
+      #ifdef HAVE_LOGGING
+        log_rom_mismatches(&fd, 0, seg1_end);
+        log_rom_mismatches(&fd, gap_end, fs);
+      #endif
+      slowsd = true;
+      f_close(&fd);
+      return ERR_LOAD_VERIFY;
+    }
+  }
+
+  // Optionally read the file again, to catch corrupted reads from the SD card.
+  if (use_verify_rom) {
+    uint32_t ck_file[2] = {0, 0};
+    bool ok = checksum_file_region(&fd, 0, seg1_end, ck_file) &&
+              checksum_file_region(&fd, gap_end, fs, ck_file);
+    if (!ok || ck_file[0] != ck_load[0] || ck_file[1] != ck_load[1]) {
+      WRITE_LOG("ROM verify: SD re-read mismatch (ok %d, %08lx:%08lx vs %08lx:%08lx)",
+                ok, ck_file[0], ck_file[1], ck_load[0], ck_load[1]);
+      slowsd = true;
+      f_close(&fd);
+      return ERR_LOAD_VERIFY;
+    }
+  }
+
+  WRITE_LOG("ROM verify OK (%08lx:%08lx, %lu bytes, re-read %u)", ck_load[0], ck_load[1], fs, use_verify_rom);
 
   slowsd = true;
 

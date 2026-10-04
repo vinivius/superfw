@@ -69,6 +69,7 @@ extern uint8_t boot_bios_splash;
 extern uint8_t use_slowld;
 extern uint8_t use_fastew;
 extern uint8_t use_verify_nor;
+extern uint8_t use_verify_rom;
 extern uint8_t save_path_default;
 extern uint8_t save_path_nor_default;
 extern uint8_t state_path_default;

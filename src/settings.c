@@ -84,6 +84,7 @@ uint8_t boot_bios_splash = 0;   // Whether the BIOS boots to the splash screen
 uint8_t use_slowld = 0;         // Use slow mirrors for ROM loading, check loaded data.
 uint8_t use_fastew = 0;         // Overclock EWRAM while playing.
 uint8_t use_verify_nor = 0;     // Verify flash writes
+uint8_t use_verify_rom = 0;     // Re-read loaded ROMs from SD to verify them
 
 uint8_t save_path_default = SaveSavegameDir;
 uint8_t save_path_nor_default = SaveSavegameDir;
@@ -158,6 +159,7 @@ bool save_settings() {
     "enable_slowld=%u\n"
     "enable_fastewram=%u\n"
     "enable_norwrcheck=%u\n"
+    "enable_romverify=%u\n"
     "default_patcher=%u\n"
     "default_igmenu=%u\n"
     "default_rtcpatch=%u\n"
@@ -168,7 +170,7 @@ bool save_settings() {
     "default_rtcts=%lu\n",
     hotkey_combo, boot_bios_splash, save_path_default, save_path_nor_default,
     state_path_default, backup_sram_default, enable_cheats, use_slowld, use_fastew,
-    use_verify_nor, (unsigned int)patcher_default, ingamemenu_default, rtcpatch_default,
+    use_verify_nor, use_verify_rom, (unsigned int)patcher_default, ingamemenu_default, rtcpatch_default,
     rtcspeed_default, autoload_default, autosave_default, autosave_prefer_ds,
     rtcvalue_default);
 
@@ -194,6 +196,7 @@ static void parse_settings(void *usr, const char *var, const char *value) {
       { "enable_slowld",     &use_slowld },
       { "enable_fastewram",  &use_fastew },
       { "enable_norwrcheck", &use_verify_nor },
+      { "enable_romverify",  &use_verify_rom },
       { "default_rtcpatch",  &rtcpatch_default },
       { "default_loadgame",  &autoload_default },
       { "default_savegame",  &autosave_default },
