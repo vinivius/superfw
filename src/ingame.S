@@ -680,28 +680,35 @@ def_function(get_undef_sp):
 #ifdef UART_DEBUG_CONTROL
 // Serial debug control (UART debug builds), called on every V-blank with
 // r0 = 0x04000000. A '!' received on the link port reboots into SuperFW.
-// The game reset cleared the SIO setup, so set the UART up again, unless the
-// game is using the link port itself. Clobbers r1-r3.
+// Games reset the SIO setup, and many probe or set up the link port (ie.
+// Pokemon games looking for the Wireless Adapter), so the UART is set up
+// again whenever it is not in UART mode: link play does not work in these
+// builds. A '~' is sent every time, to show this in the log. Clobbers r1-r3.
 uart_dbg_poll:
   add r3, r0, $0x100
+  ldrh r1, [r3, #0x34]       // REG_RCNT
+  tst r1, $0x8000            // General purpose or JOY Bus mode?
+  bne 1f
   ldrh r1, [r3, #0x28]       // REG_SIOCNT
   and r2, r1, $0x3000
-  cmp r2, $0x3000            // Already in UART mode?
-  beq 1f
-  cmp r1, $0                 // Untouched by the game? Set up the UART
-  bxne lr
-  strh r1, [r3, #0x34]       // REG_RCNT = 0 (serial mode)
-  mov r2, $0x3D00
-  orr r2, $0x83
-  strh r2, [r3, #0x28]       // REG_SIOCNT = 115200 8N1, FIFO, TX+RX
-  bx lr
-1:
+  cmp r2, $0x3000            // UART mode?
+  bne 1f
   tst r1, $0x20              // Receive FIFO empty?
   bxne lr
   ldrh r1, [r3, #0x2A]       // REG_SIODATA8
   and r1, $0xFF
   cmp r1, $0x21              // '!'
   beq reset_fw
+  bx lr
+1:
+  mov r1, $0
+  strh r1, [r3, #0x34]       // REG_RCNT = 0 (serial mode)
+  strh r1, [r3, #0x28]       // REG_SIOCNT = 0, then UART mode:
+  mov r2, $0x3D00
+  orr r2, $0x83
+  strh r2, [r3, #0x28]       // 115200 8N1, FIFO, TX+RX
+  mov r1, $0x7E              // '~'
+  strh r1, [r3, #0x2A]       // REG_SIODATA8
   bx lr
 #endif
 
