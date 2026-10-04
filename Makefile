@@ -47,6 +47,7 @@ ifeq ($(ENABLE_EMU_LOGGING),1)
 endif
 ifeq ($(ENABLE_UART_LOGGING),1)
   PAYLOADFLAGS += -DENABLE_UART_LOGGING
+  INGAMEFLAGS += -DUART_DEBUG_CONTROL
 endif
 
 ifeq ($(COMPRESS_FIRMWARE),1)
@@ -81,7 +82,7 @@ CFLAGS=-O2 -ggdb \
 
 
 INGAME_CFLAGS=-Os -ggdb \
-              $(BASEFLAGS) \
+              $(BASEFLAGS) $(INGAMEFLAGS) \
               -DNO_SUPERCARD_INIT \
               -DSD_PREERASE_BLOCKS_WRITE \
               -Wall -Isrc -I. \
@@ -132,6 +133,7 @@ MENUFILES=src/ingame.S \
 INFILES=src/gba_ewram_crt0.S \
         src/main.c \
         src/log.c \
+        src/uart_xfer.c \
         src/cimpl.c \
         src/settings.c \
         src/loader.c \

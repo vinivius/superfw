@@ -1,5 +1,6 @@
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdarg.h>
 #include "common.h"
 #include "gbahw.h"
@@ -57,7 +58,18 @@ static void uart_putc(int c, void *ctx) {
   REG_SIODATA8 = (unsigned char)c;
 }
 
+// Sends raw bytes over the UART (debug screenshots and such).
+void uart_write(const void *data, unsigned size) {
+  const volatile uint8_t *p = (const volatile uint8_t*)data;
+  while (size--)
+    uart_putc(*p++, NULL);
+}
+
+extern volatile bool uart_xfer_active;
+
 void write_log_uart(const char *fname, int line, const char *format, ...) {
+  if (uart_xfer_active)
+    return;       // A file transfer owns the UART
 
   npf_pprintf(uart_putc, NULL, "[%s:%d] ", fname, line);
 

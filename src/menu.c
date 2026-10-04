@@ -440,11 +440,14 @@ unsigned lang_lookup(uint16_t code) {
 
 #ifdef ENABLE_UART_LOGGING
   extern volatile uint16_t uart_keys;   // Keys injected over the serial link
+  extern volatile bool uart_keys_seen;  // Set once the menu has read them
 #endif
 
 inline uint16_t curr_pressed_keys() {
   #ifdef ENABLE_UART_LOGGING
-    return (REG_KEYINPUT ^ 0x3FF) | uart_keys;
+    uint16_t k = (REG_KEYINPUT ^ 0x3FF) | uart_keys;
+    uart_keys_seen = true;
+    return k;
   #else
     return REG_KEYINPUT ^ 0x3FF;
   #endif
@@ -1224,6 +1227,14 @@ static void browser_reload() {
   // Filter and sort list of files/dirs
   browser_reload_filter();
 }
+
+#ifdef ENABLE_UART_LOGGING
+// Files may have changed over the serial link (uart_xfer.c), reload the lists.
+void browser_refresh_after_xfer() {
+  browser_reload();
+  recent_reload();
+}
+#endif
 
 // Loads NOR game entries so they can be browsed.
 static void flashbrowser_reload() {

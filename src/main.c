@@ -131,10 +131,14 @@ volatile unsigned frame_count = 0;
 //   L R      L / R triggers       s e       Start / Select
 //   [...]    press several keys at once, ie. "[LRu]"
 //   !        reboot into SuperFW (BIOS hard reset)
-// Each key is pressed for 6 frames and released for 6 frames, in order.
+//   P        send a screenshot of the menu
+//   X        enter file transfer mode (see uart_xfer.c)
+// Each key stays pressed until the menu has read it, then released until the
+// menu has read that too, so no press is lost while the menu is busy.
 volatile uint16_t uart_keys = 0;      // Currently injected (pressed) keys
+volatile bool uart_keys_seen = false; // Set by curr_pressed_keys()
 static uint16_t uart_q[32];
-static unsigned uart_qh = 0, uart_qt = 0, uart_tick = 0;
+static unsigned uart_qh = 0, uart_qt = 0, uart_state = 0;
 static uint16_t uart_combo = 0;
 static bool uart_in_combo = false;
 
@@ -157,11 +161,42 @@ static void uart_enqueue(uint16_t keys) {
   }
 }
 
+void uart_write(const void *data, unsigned size);
+
+// Sends the displayed menu frame over the UART: Mode 4 frame + palettes,
+// OAM and OBJ tiles (so icons can be drawn too). ~57KB, takes ~5 seconds.
+//   "\n@@SCR1" DISPCNT(2) BGPAL(512) FRAME(38400) OBJPAL(512) OAM(1024)
+//   OBJTILES(16384, from 0x06014000) "@@END\n"
+static void uart_send_screenshot() {
+  uint16_t dispcnt = REG_DISPCNT;
+  const unsigned page = (dispcnt >> 4) & 1;
+  uart_write("\n@@SCR1", 7);
+  uart_write(&dispcnt, 2);
+  uart_write((const void*)0x05000000, 512);
+  uart_write((const void*)(0x06000000 + 0xA000 * page), 240 * 160);
+  uart_write((const void*)0x05000200, 512);
+  uart_write((const void*)0x07000000, 1024);
+  uart_write((const void*)0x06014000, 16384);
+  uart_write("@@END\n", 6);
+}
+
+extern volatile bool uart_xfer_active;     // File transfer running (uart_xfer.c)
+static volatile bool uart_xfer_req = false;
+void uart_xfer_mode();
+void browser_refresh_after_xfer();
+
 static void uart_poll() {
+  if (uart_xfer_active)
+    return;         // The transfer code owns the UART
+
   // Bounded, in case the flag never clears (ie. no UART hardware/emulation).
   for (unsigned n = 0; n < 8 && !(REG_SIOCNT & (1 << 5)); n++) {   // Receive FIFO not empty
     uint8_t c = REG_SIODATA8 & 0xFF;
-    if (c == '!') {
+    if (c == 'P')
+      uart_send_screenshot();
+    else if (c == 'X')
+      uart_xfer_req = true;     // Handled by the menu loop (needs FatFs)
+    else if (c == '!') {
       // Map the firmware flash back and reboot through the BIOS.
       set_supercard_mode(MAPPED_FIRMWARE, false, false);
       launch_reset(true, false);
@@ -180,14 +215,22 @@ static void uart_poll() {
       uart_enqueue(uart_key_for(c));
   }
 
-  if (uart_tick) {
-    if (--uart_tick == 6)
-      uart_keys = 0;       // Release, then wait 6 more frames
+  if (uart_state == 1) {          // Pressed: release once read
+    if (uart_keys_seen) {
+      uart_keys = 0;
+      uart_keys_seen = false;
+      uart_state = 2;
+    }
+  }
+  else if (uart_state == 2) {     // Released: next key once read
+    if (uart_keys_seen)
+      uart_state = 0;
   }
   else if (uart_qh != uart_qt) {
     uart_keys = uart_q[uart_qh];
     uart_qh = (uart_qh + 1) % (sizeof(uart_q) / sizeof(uart_q[0]));
-    uart_tick = 12;
+    uart_keys_seen = false;
+    uart_state = 1;
   }
 }
 #endif
@@ -264,6 +307,11 @@ static int main_gba() {
   #endif
   while (1) {
     #ifdef ENABLE_UART_LOGGING
+      if (uart_xfer_req) {
+        uart_xfer_req = false;
+        uart_xfer_mode();
+        browser_refresh_after_xfer();
+      }
       // Heartbeat, so the serial link can be checked (RX LED blinks every second).
       if (frame_count - last_beat >= 60) {
         last_beat = frame_count;

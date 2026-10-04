@@ -198,6 +198,12 @@ ingame_menu_entrypoint_nocheats:
   tst r1, $0x1               // Check for V-Blank interrupt
   ldreq pc, [r0, #-12]       // No V-blank IRQ, resume executing the user's IRQ handler
 
+#ifdef UART_DEBUG_CONTROL
+  mov r12, lr                // Serial debug control ('!' reboots into SuperFW)
+  bl uart_dbg_poll
+  mov lr, r12
+#endif
+
   ldr r2, (ingame_menu_hotkey + 2)    // Read mask from constant pool (rotate by 16)
   ldr r1, [r0, #REG_P1]      // It's actually a 16 bit reg really
   cmp r2, r1, lsl #16        // Compare the lowest 16 bits only!
@@ -217,6 +223,12 @@ ingame_menu_entrypoint_cheats:
   pop {r5-r6, lr}
 
   mov r0, $0x04000000
+#ifdef UART_DEBUG_CONTROL
+  mov r12, lr                // Serial debug control ('!' reboots into SuperFW)
+  bl uart_dbg_poll
+  mov lr, r12
+#endif
+
   ldr r2, (ingame_menu_hotkey + 2)    // Read mask from constant pool (rotate by 16)
   ldr r1, [r0, #REG_P1]      // It's actually a 16 bit reg really
   cmp r2, r1, lsl #16        // Compare the lowest 16 bits only!
@@ -664,6 +676,34 @@ def_function(get_undef_sp):
   mov r0, sp           // Read UNDEF[SP]
   msr CPSR_c, r2       // Restore original model and CPSR
   bx lr
+
+#ifdef UART_DEBUG_CONTROL
+// Serial debug control (UART debug builds), called on every V-blank with
+// r0 = 0x04000000. A '!' received on the link port reboots into SuperFW.
+// The game reset cleared the SIO setup, so set the UART up again, unless the
+// game is using the link port itself. Clobbers r1-r3.
+uart_dbg_poll:
+  add r3, r0, $0x100
+  ldrh r1, [r3, #0x28]       // REG_SIOCNT
+  and r2, r1, $0x3000
+  cmp r2, $0x3000            // Already in UART mode?
+  beq 1f
+  cmp r1, $0                 // Untouched by the game? Set up the UART
+  bxne lr
+  strh r1, [r3, #0x34]       // REG_RCNT = 0 (serial mode)
+  mov r2, $0x3D00
+  orr r2, $0x83
+  strh r2, [r3, #0x28]       // REG_SIOCNT = 115200 8N1, FIFO, TX+RX
+  bx lr
+1:
+  tst r1, $0x20              // Receive FIFO empty?
+  bxne lr
+  ldrh r1, [r3, #0x2A]       // REG_SIODATA8
+  and r1, $0xFF
+  cmp r1, $0x21              // '!'
+  beq reset_fw
+  bx lr
+#endif
 
 // Reset routines
 def_function(reset_game):
