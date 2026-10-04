@@ -2647,6 +2647,8 @@ static void keypress_popup_loadgba(unsigned newkeys) {
         spop.p.load.l.sram_load_type, spop.p.load.l.sram_save_type,
         st, &dsinfo, spop.p.load.l.savefn);
       if (errsave) {
+        WRITE_LOG("Save game preparation failed: %u", errsave);
+        sdcard_flush_log();
         unsigned errmsg = (errsave == ERR_SAVE_BADSAVE)   ? MSG_ERR_SAVERD :
                           (errsave == ERR_SAVE_CANTALLOC) ? MSG_ERR_SAVEPR :
                           (errsave == ERR_SAVE_BADARG)    ? MSG_ERR_SAVEIT :
@@ -2905,6 +2907,8 @@ static void keypress_popup_norload(unsigned newkeys) {
         spop.p.norld.l.sram_load_type, spop.p.norld.l.sram_save_type,
         st, &dsinfo, spop.p.norld.l.savefn);
       if (errsave) {
+        WRITE_LOG("Save game preparation failed: %u", errsave);
+        sdcard_flush_log();
         unsigned errmsg = (errsave == ERR_SAVE_BADSAVE)   ? MSG_ERR_SAVERD :
                           (errsave == ERR_SAVE_CANTALLOC) ? MSG_ERR_SAVEPR :
                           (errsave == ERR_SAVE_BADARG)    ? MSG_ERR_SAVEIT :

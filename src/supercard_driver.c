@@ -25,6 +25,8 @@
 #include "gbahw.h"
 #include "supercard_driver.h"
 #include "crc.h"
+#include "common.h"
+
 
 extern bool isgba;
 extern bool slowsd;
@@ -77,7 +79,7 @@ void send_sdcard_commandbuf(const uint8_t *buffer, unsigned maxsize);
 #define REG_SC_MODE_REG_ADDR     0x09FFFFFE
 #define MODESWITCH_MAGIC         0xA55A
 
-#define MAX_WRITE_RETRIES        2            // Try up to 3 times to write a block.
+#define MAX_WRITE_RETRIES        7            // Try up to 8 times to write a block.
 #define MAX_REINIT_RETRIES       9            // Try up to 10 to re-init the card.
 
 #define WAIT_IDLE_TIMEOUT    (0x800000 / SDDRV_TIMEOUT_MULT)   // Number of iterations to wait for card ready
@@ -221,16 +223,6 @@ static bool send_sdcard_command(uint8_t cmd, uint32_t arg, uint8_t *resp, unsign
   send_empty_clocks(32);
 
   return ret;
-}
-
-static bool send_get_status(uint16_t *status) {
-  uint8_t resp[6];
-  if (!send_sdcard_command(SD_CMD13, sc_rca() << 16, resp, sizeof(resp)))
-    return false;
-
-  if (status)
-    *status = (resp[1] << 8) | resp[2];
-  return true;
 }
 
 #ifndef NO_SUPERCARD_INIT
@@ -438,6 +430,90 @@ unsigned sdcard_read_blocks(uint8_t *buffer, uint32_t blocknum, unsigned blkcnt)
   return 0;
 }
 
+// Write failure diagnostics. Errors cannot be logged to disk from here (we
+// are in the middle of a FatFs operation), so they are kept in RAM and
+// dumped later by sdcard_flush_log().
+#if defined(HAVE_LOGGING) && !defined(NO_SUPERCARD_INIT)
+  #define SDWR_LOG_CNT   16
+  static struct {
+    uint32_t blk, status;
+    uint8_t cnt, attempt, stage, code;
+  } sdwr_log[SDWR_LOG_CNT];
+  static unsigned sdwr_log_num = 0, sdwr_fails = 0, sdwr_giveups = 0, sdwr_recovered = 0;
+
+  static void sdwr_record(uint32_t blk, unsigned cnt, unsigned attempt,
+                          unsigned stage, unsigned code, uint32_t status) {
+    sdwr_fails++;
+    if (sdwr_log_num < SDWR_LOG_CNT)
+      sdwr_log[sdwr_log_num++] = (typeof(sdwr_log[0])){ blk, status, cnt, attempt, stage, code };
+  }
+
+
+  void sdcard_flush_log() {
+    if (!sdwr_fails && !sdwr_log_num)
+      return;
+    unsigned n = sdwr_log_num;
+    sdwr_log_num = 0;    // Logging writes to disk too, avoid re-dumping
+    for (unsigned i = 0; i < n; i++)
+      WRITE_LOG("SD write fail: blk %u cnt %u attempt %u stage %u code 0x%x status 0x%08x",
+                sdwr_log[i].blk, sdwr_log[i].cnt, sdwr_log[i].attempt,
+                sdwr_log[i].stage, sdwr_log[i].code, sdwr_log[i].status);
+    WRITE_LOG("SD write stats: failed attempts %u, recovered writes %u, failed writes %u",
+              sdwr_fails, sdwr_recovered, sdwr_giveups);
+  }
+  #define SDWR_RECORD(...)   sdwr_record(__VA_ARGS__)
+  #define SDWR_RECOVERED()   sdwr_recovered++
+  #define SDWR_GIVEUP()      sdwr_giveups++
+#else
+  void sdcard_flush_log() {}
+  #define SDWR_RECORD(...)   do {} while (0)
+  #define SDWR_RECOVERED()   do {} while (0)
+  #define SDWR_GIVEUP()      do {} while (0)
+#endif
+
+// Write stages, for diagnostics
+#define SDWR_ST_NOTREADY   1    // Card never became ready for data
+#define SDWR_ST_CMD25      2    // No response to CMD25
+#define SDWR_ST_DATA       3    // Data rejected (code: 0x10|token) or busy timeout (0x40)
+#define SDWR_ST_CMD12      4    // No response to CMD12
+#define SDWR_ST_STATUS     5    // CMD13 failed or reported an error
+
+static void sd_delay(unsigned iters) {
+  for (volatile unsigned i = 0; i < iters; i++);
+}
+
+// Gets the full 32 bit card status (R1)
+static bool send_get_status32(uint32_t *status) {
+  uint8_t resp[6];
+  if (!send_sdcard_command(SD_CMD13, sc_rca() << 16, resp, sizeof(resp)))
+    return false;
+  *status = (resp[1] << 24) | (resp[2] << 16) | (resp[3] << 8) | resp[4];
+  return true;
+}
+
+// Waits (polling CMD13) until the card is in the transfer state and ready for
+// data. Some cards refuse new data for a while after a write (internal
+// housekeeping) without signaling busy on DAT0.
+static bool wait_card_ready(uint32_t *status) {
+  unsigned nresp = 0;
+  for (unsigned i = 0; i < 20; i++) {
+    wait_dat0_idle(WAIT_EREADY_TIMEOUT / 8);
+    if (send_get_status32(status)) {
+      unsigned state = (*status >> 9) & 0xF;
+      if ((*status & (1 << 8)) && state == 4)
+        return true;
+    } else if (++nresp >= 3) {
+      #ifndef NO_SUPERCARD_INIT
+        // The card stopped answering, re-initialize it and keep going.
+        nresp = 0;
+        sdcard_reinit();
+      #endif
+    }
+    sd_delay(4000);      // ~1ms
+  }
+  return false;
+}
+
 unsigned sdcard_write_blocks(const uint8_t *buffer, uint32_t blocknum, unsigned blkcnt) {
   // Send a write intent / clear command, for faster writes. Do not take errors
   // too seriously, this is "optional" really.
@@ -447,30 +523,50 @@ unsigned sdcard_write_blocks(const uint8_t *buffer, uint32_t blocknum, unsigned 
   #endif
 
   // Perform a block write. The ASM function handles it all (CRC and all).
+  // On failure, wait for the card to be ready again and retry, backing off.
   for (unsigned j = 0; j < 1+MAX_WRITE_RETRIES; j++) {
-    if (!send_sdcard_command_noclock(SD_CMD25, sc_issdhc() ? blocknum : blocknum * 512, NULL, SD_R1_RESP))
-      return SD_ERR_BADWRITE;
+    uint32_t status = 0;
+    if (j) {
+      sd_delay(j * 40000);     // ~10ms per retry, growing
+      if (!wait_card_ready(&status)) {
+        SDWR_RECORD(blocknum, blkcnt, j, SDWR_ST_NOTREADY, 0, status);
+        continue;
+      }
+    }
 
-    bool wr_ok = !sc_write_sectors[SC_FAST_ROM_MIRROR ? 1 : 0](buffer, blkcnt, WAIT_DATA_TIMEOUT);
+    if (!send_sdcard_command_noclock(SD_CMD25, sc_issdhc() ? blocknum : blocknum * 512, NULL, SD_R1_RESP)) {
+      SDWR_RECORD(blocknum, blkcnt, j, SDWR_ST_CMD25, 0, 0);
+      continue;
+    }
+
+    int wres = sc_write_sectors[SC_FAST_ROM_MIRROR ? 1 : 0](buffer, blkcnt, WAIT_DATA_TIMEOUT);
 
     // Send CMD12 to signal the end of the write sequence!
-    if (!send_sdcard_command(SD_CMD12, 0, NULL, SD_MAX_RESP))
-      return SD_ERR_BADWRITE;
+    if (!send_sdcard_command(SD_CMD12, 0, NULL, SD_MAX_RESP)) {
+      SDWR_RECORD(blocknum, blkcnt, j, SDWR_ST_CMD12, wres, 0);
+      continue;
+    }
 
     // CMD12 pulls DAT0 low while busy (usually writing). Wait for !busy.
     wait_dat0_idle(WAIT_EREADY_TIMEOUT);
 
-    if (wr_ok) {
-      // Check the status/error code reported by CMD13, should be zero.
-      uint16_t cardst = 0xFFFF;
-      if (!send_get_status(&cardst))
-        return SD_ERR_BADWRITE;
-
-      if (cardst == 0)
-        return 0;     // Write seq successful!
+    if (wres) {
+      SDWR_RECORD(blocknum, blkcnt, j, SDWR_ST_DATA, wres, 0);
+      continue;
     }
+
+    // Check the status/error code reported by CMD13 (error bits), should be zero.
+    if (!send_get_status32(&status) || (status & 0xFFFF0000)) {
+      SDWR_RECORD(blocknum, blkcnt, j, SDWR_ST_STATUS, 0, status);
+      continue;
+    }
+
+    if (j)
+      SDWR_RECOVERED();
+    return 0;     // Write seq successful!
   }
 
+  SDWR_GIVEUP();
   return SD_ERR_BADWRITE;
 }
 

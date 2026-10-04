@@ -310,6 +310,9 @@ int sdbench_read(progress_abort_fn progcb);
 #else
   #define WRITE_LOG(...) do {} while(0)
 #endif
+#if defined(ENABLE_DISK_LOGGING) || defined(ENABLE_EMU_LOGGING) || defined(ENABLE_UART_LOGGING)
+  #define HAVE_LOGGING 1
+#endif
 
 #endif
 

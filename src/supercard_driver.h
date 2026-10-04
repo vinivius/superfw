@@ -64,5 +64,8 @@ unsigned sdcard_write_blocks(const uint8_t *buffer, uint32_t blocknum, unsigned 
 #define SD_ERR_READTIMEOUT     10
 #define SD_ERR_WRITETIMEOUT    11
 
+// Dumps (to the disk log) any recorded SD write failures. Call it outside FatFs.
+void sdcard_flush_log();
+
 #endif
 
