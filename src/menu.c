@@ -438,8 +438,16 @@ unsigned lang_lookup(uint16_t code) {
   return 0;  // Fallback to default (english)
 }
 
+#ifdef ENABLE_UART_LOGGING
+  extern volatile uint16_t uart_keys;   // Keys injected over the serial link
+#endif
+
 inline uint16_t curr_pressed_keys() {
-  return REG_KEYINPUT ^ 0x3FF;
+  #ifdef ENABLE_UART_LOGGING
+    return (REG_KEYINPUT ^ 0x3FF) | uart_keys;
+  #else
+    return REG_KEYINPUT ^ 0x3FF;
+  #endif
 }
 
 uint16_t lang_getcode() {
@@ -2209,7 +2217,11 @@ void render_info(volatile uint8_t *frame) {
     draw_central_text("by davidgf", frame, 120, 70);
     npf_snprintf(tmp, sizeof(tmp), "Version %lu.%lu (%08lx)", vmaj, vmin, gitver);
     draw_central_text(tmp, frame, 120, 95);
-    draw_central_text(FW_FLAVOUR " variant", frame, 120, 114);
+    #ifdef ENABLE_UART_LOGGING
+      draw_central_text(FW_FLAVOUR " variant - UART debug", frame, 120, 114);
+    #else
+      draw_central_text(FW_FLAVOUR " variant", frame, 120, 114);
+    #endif
     break;
   case 1:
     draw_central_text("Flash info", frame, 120, 70);

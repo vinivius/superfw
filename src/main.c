@@ -123,11 +123,83 @@ void check_pending_saves() {
 
 volatile unsigned frame_count = 0;
 
+#ifdef ENABLE_UART_LOGGING
+// Serial debug control (UART debug builds only). Characters received over the
+// link cable are polled on every V-blank, so they work even if the main code
+// is stuck in a loop (as long as interrupts are enabled):
+//   a b      A / B buttons        u d l r   D-pad
+//   L R      L / R triggers       s e       Start / Select
+//   [...]    press several keys at once, ie. "[LRu]"
+//   !        reboot into SuperFW (BIOS hard reset)
+// Each key is pressed for 6 frames and released for 6 frames, in order.
+volatile uint16_t uart_keys = 0;      // Currently injected (pressed) keys
+static uint16_t uart_q[32];
+static unsigned uart_qh = 0, uart_qt = 0, uart_tick = 0;
+static uint16_t uart_combo = 0;
+static bool uart_in_combo = false;
+
+static uint16_t uart_key_for(uint8_t c) {
+  switch (c) {
+  case 'a': return KEY_BUTTA;     case 'b': return KEY_BUTTB;
+  case 'u': return KEY_BUTTUP;    case 'd': return KEY_BUTTDOWN;
+  case 'l': return KEY_BUTTLEFT;  case 'r': return KEY_BUTTRIGHT;
+  case 'L': return KEY_BUTTL;     case 'R': return KEY_BUTTR;
+  case 's': return KEY_BUTTSTA;   case 'e': return KEY_BUTTSEL;
+  default:  return 0;
+  };
+}
+
+static void uart_enqueue(uint16_t keys) {
+  unsigned nt = (uart_qt + 1) % (sizeof(uart_q) / sizeof(uart_q[0]));
+  if (keys && nt != uart_qh) {
+    uart_q[uart_qt] = keys;
+    uart_qt = nt;
+  }
+}
+
+static void uart_poll() {
+  // Bounded, in case the flag never clears (ie. no UART hardware/emulation).
+  for (unsigned n = 0; n < 8 && !(REG_SIOCNT & (1 << 5)); n++) {   // Receive FIFO not empty
+    uint8_t c = REG_SIODATA8 & 0xFF;
+    if (c == '!') {
+      // Map the firmware flash back and reboot through the BIOS.
+      set_supercard_mode(MAPPED_FIRMWARE, false, false);
+      launch_reset(true, false);
+    }
+    else if (c == '[') {
+      uart_in_combo = true;
+      uart_combo = 0;
+    }
+    else if (c == ']') {
+      uart_in_combo = false;
+      uart_enqueue(uart_combo);
+    }
+    else if (uart_in_combo)
+      uart_combo |= uart_key_for(c);
+    else
+      uart_enqueue(uart_key_for(c));
+  }
+
+  if (uart_tick) {
+    if (--uart_tick == 6)
+      uart_keys = 0;       // Release, then wait 6 more frames
+  }
+  else if (uart_qh != uart_qt) {
+    uart_keys = uart_q[uart_qh];
+    uart_qh = (uart_qh + 1) % (sizeof(uart_q) / sizeof(uart_q[0]));
+    uart_tick = 12;
+  }
+}
+#endif
+
 void irq_handler_fn() {
   // Clear all IRQs just in case
   REG_IF = 0xFFFF;
   // Gets called on every V-blank IRQ.
   frame_count++;
+  #ifdef ENABLE_UART_LOGGING
+    uart_poll();
+  #endif
 }
 
 uint32_t systime() {
@@ -139,7 +211,7 @@ static int main_gba() {
   #ifdef ENABLE_UART_LOGGING
     REG_RCNT   = 0x0000;
     REG_SIOCNT = 0x0000;
-    REG_SIOCNT = 0x3583;  // UART MODE (115200bps)
+    REG_SIOCNT = 0x3D83;  // UART MODE (115200bps, 8N1, FIFO, send+receive)
   #endif
 
   // Setup WAITCNT for faster SD-card access.
@@ -187,7 +259,17 @@ static int main_gba() {
   menu_flip();
 
   unsigned prev_frame = frame_count;
+  #ifdef ENABLE_UART_LOGGING
+    unsigned last_beat = frame_count;
+  #endif
   while (1) {
+    #ifdef ENABLE_UART_LOGGING
+      // Heartbeat, so the serial link can be checked (RX LED blinks every second).
+      if (frame_count - last_beat >= 60) {
+        last_beat = frame_count;
+        WRITE_LOG("alive %u", frame_count / 60);
+      }
+    #endif
     uint16_t mkeys = get_keypress();
     if (mkeys)
       menu_keypress(mkeys);
