@@ -291,19 +291,31 @@ sc_write_sectors_w0:
     // Response token is 8 bits, only transmitted via DAT0.
     // Write one to the bus, read a couple more times (ignore 3 MSB)
     mov  r2, $(~0)            // All data lines high after last bit
-    bl sd_strh
-    bl sd_strh
-    bl sd_strh
-    bl sd_strh
+    bl sd_strh             // End bit
 
-    // Get status code (3 bits) + dummy bit
+    // The CRC status token (0.SSS.1) comes N_CRC clocks after the end bit.
+    // Most cards answer after 2 clocks but some take longer, so scan for
+    // the start bit instead of sampling at a fixed position.
+    mov r1, $16
+    20:
+      bl sd_ldrh
+      tst r2, $SD_DATA0
+      beq 21f
+      subs r1, r1, $1
+      bne 20b
+    mov r0, $0x8              // No token found
+    b 22f
+    21:
+    // Get status code (3 bits) and clock the end bit
     mov r0, $0
-    .rept 4
+    .rept 3
       lsl r0, $1
       bl sd_ldrh
       tst r2, $SD_DATA0
       orrne r0, $0x1
     .endr
+    bl sd_ldrh
+    22:
 
     // Pipe one byte, some cards do not start actually writing (ie. go busy?)
     // until we pipe an extra clock? Perhaps not, but does no harm.
@@ -312,7 +324,7 @@ sc_write_sectors_w0:
     .endr
 
     // Check status code, bail on error
-    cmp r0, $0x5              // 0.010.1 means "data accepted" (0.status.1)
+    cmp r0, $0x2              // Status 010 means "data accepted"
     bne 3f                    // Wait and exit with error
 
     // Break out if we are on the last block!
