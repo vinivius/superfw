@@ -38,7 +38,7 @@ from superfw_romlib import (  # noqa: E402
   ART_DIR, CONFIG_DIR, DEFAULT_CACHE, EXT_SYSTEMS, MAX_FN_LEN, PATCHDB_DIR,
   PENDING_SAVE_FILE, RECENT_FILE, ROM_EXTS, SAVE_DIRS, STATE_DIRS, SUPERFW_DIR,
   LEVELS, Options, Organizer, Reporter,
-  art_is_valid, default_threads, encode_art, fat_sanitize, fetch_thumbnail,
+  art_is_valid, art_relpath, default_threads, migrate_flat_art, encode_art, fat_sanitize, fetch_thumbnail,
   hash_rom, load_dats, log, preview, sfw_stem, warn, write_atomic)
 
 
@@ -198,10 +198,14 @@ class Renamer(object):
         self.pending_map[sd_path(self.sd, os.path.join(d, old_stem)).lower()] = \
           sd_path(self.sd, os.path.join(d, new_stem))
 
-    # Existing art is keyed by the full ROM file name.
-    artdir = os.path.join(self.sd, ART_DIR)
-    for real, suffix in self._matching(artdir, rom.fname, r"\.img"):
-      self._do_rename(os.path.join(artdir, real), os.path.join(artdir, new_fname + suffix))
+    # Existing art is keyed by the full ROM file name, in a bucket subfolder
+    # (see art_relpath), or directly in the art dir with the old layout.
+    newart = os.path.join(self.sd, art_relpath(new_fname))
+    for artdir in (os.path.dirname(os.path.join(self.sd, art_relpath(rom.fname))),
+                   os.path.join(self.sd, ART_DIR)):
+      for real, suffix in self._matching(artdir, rom.fname, r"\.img"):
+        os.makedirs(os.path.dirname(newart), exist_ok=True)
+        self._do_rename(os.path.join(artdir, real), newart[:-4] + suffix)
 
     self.recent_map[sd_path(self.sd, old_path).lower()] = sd_path(self.sd, new_path)
     return True
@@ -431,6 +435,9 @@ def main():
   if not paths:
     return 0
 
+  # Move box art from the old flat layout to the bucketed one, if needed.
+  migrate_flat_art(sd, args.dry_run, log)
+
   # Identify
   roms = []
   for p in paths:
@@ -493,11 +500,10 @@ def main():
   art_written, art_skipped, art_failed = 0, 0, []
   if not args.no_art:
     log("\n== Box art ==")
-    artdir = os.path.join(sd, ART_DIR)
     for rom in roms:
       if not rom.name:
         continue
-      out = os.path.join(artdir, rom.final_fname + ".img")
+      out = os.path.join(sd, art_relpath(rom.final_fname))
       if not args.force_art and os.path.exists(out):
         if art_is_valid(out):
           art_skipped += 1

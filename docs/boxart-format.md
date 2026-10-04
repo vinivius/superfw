@@ -1,8 +1,13 @@
 # SuperFW box-art file format (.img) — shared spec
 
-Location on SD card: /.superfw/art/<full ROM filename>.img
+Location on SD card: /.superfw/art/<XX>/<full ROM filename>.img
   e.g. ROM "/GBA/Golden Sun (USA).gba" -> "/.superfw/art/Golden Sun (USA).gba.img"
   (lookup is by ROM filename only, directory is ignored)
+  <XX> is a subfolder 00..3F: FNV-1a (32 bit, offset 0x811C9DC5, prime
+  0x01000193) over the UTF-8 ROM file name, modulo 64, as two uppercase hex
+  digits. FatFs searches directories linearly, so a single folder with
+  thousands of files makes every lookup slow on the GBA.
+  e.g. "Mario Kart Super Circuit (U) [!].gba" -> /.superfw/art/38/...
 
 Layout (all integers little-endian):
   offset 0   char[4]  magic "SFWA"

@@ -82,6 +82,7 @@ THUMB_MAX_CONCURRENCY = 8        # Be polite with thumbnails.libretro.com
 # SuperFW paths (see src/config.h and src/settings.c)
 SUPERFW_DIR = ".superfw"
 ART_DIR = ".superfw/art"
+ART_BUCKETS = 64      # Art is spread in subfolders: big FAT dirs are slow to search
 SAVE_DIRS = ["SAVEGAME", "SAVES"]                       # settings.c save_paths[]
 STATE_DIRS = ["SAVESTATE", ".superfw/savestate"]        # settings.c savestates_paths[]
 CONFIG_DIR = ".superfw/config"                          # config.h ROMCONFIG_PATH
@@ -529,6 +530,43 @@ def fat_sanitize(name):
   out = "".join("_" if (c in FAT_INVALID or ord(c) < 32) else c for c in name)
   out = out.strip(" ").rstrip(" .")
   return out or "_"
+
+
+def art_bucket(rom_fname):
+  """Art subfolder (00..3F) for a ROM file name. Must match the firmware:
+     FNV-1a (32 bit) over the UTF-8 file name, modulo ART_BUCKETS."""
+  h = 0x811C9DC5
+  for b in rom_fname.encode("utf-8"):
+    h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+  return "%02X" % (h % ART_BUCKETS)
+
+
+def art_relpath(rom_fname):
+  """Path of a ROM's box art, relative to the SD card root."""
+  return os.path.join(ART_DIR, art_bucket(rom_fname), rom_fname + ".img")
+
+
+def migrate_flat_art(sd_root, dry_run=False, log=None):
+  """Moves art from the old flat layout (.superfw/art/<rom>.img) to the
+     bucketed one. Returns the number of files moved."""
+  artdir = os.path.join(sd_root, ART_DIR)
+  try:
+    names = [n for n in os.listdir(artdir) if n.lower().endswith(".img") and
+             os.path.isfile(os.path.join(artdir, n))]
+  except OSError:
+    return 0
+  moved = 0
+  for n in names:
+    dst = os.path.join(sd_root, art_relpath(n[:-4]))
+    if os.path.exists(dst):
+      continue
+    if not dry_run:
+      os.makedirs(os.path.dirname(dst), exist_ok=True)
+      os.rename(os.path.join(artdir, n), dst)
+    moved += 1
+  if moved and log:
+    log("%s %d box art file(s) to the bucketed layout" % ("Would move" if dry_run else "Moved", moved))
+  return moved
 
 
 def sfw_stem(fname):
@@ -1012,6 +1050,7 @@ class Organizer(object):
       self.log("info", "Input:  %s" % o.input_dir)
       self.log("info", "Output: %s" % o.output_dir)
       self.log("info", "Threads: %d" % o.threads)
+      migrate_flat_art(o.output_dir, o.dry_run, lambda m: self.log("info", m))
       roms = self.scan()
       self.identify(roms)
       entries = self.plan(roms)
@@ -1414,7 +1453,7 @@ class Organizer(object):
           if c:
             e.cheat = (c, os.path.join(os.path.dirname(placed), pstem + ".cht"))
             break
-      e.art_target = os.path.join(artdir, os.path.basename(placed) + ".img")
+      e.art_target = os.path.join(o.output_dir, art_relpath(os.path.basename(placed)))
       if e.rom.name:
         e.art_src = (e.rom.system, e.rom.name, "crc")
       else:

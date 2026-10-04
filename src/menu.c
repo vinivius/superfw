@@ -1527,12 +1527,23 @@ static struct {
   char fn[MAX_FN_LEN];             // Filename the cached art belongs to
 } bart;
 
+// Art is spread over 64 subfolders, since FatFs searches directories
+// linearly and a single folder with thousands of files makes lookups slow.
+// The subfolder is FNV-1a (32 bit) of the ROM file name, modulo 64 (the
+// ROM manager tool computes the same, see tools/superfw_romlib.py).
+static unsigned boxart_bucket(const char *fn) {
+  uint32_t h = 0x811C9DC5;
+  for (; *fn; fn++)
+    h = (h ^ (uint8_t)*fn) * 0x01000193;
+  return h % 64;
+}
+
 static void boxart_load(const char *fn) {
   strcpy(bart.fn, fn);
   bart.w = 0;
 
   char path[MAX_FN_LEN + 24];
-  npf_snprintf(path, sizeof(path), SUPERFW_DIR "/art/%s.img", fn);
+  npf_snprintf(path, sizeof(path), SUPERFW_DIR "/art/%02X/%s.img", boxart_bucket(fn), fn);
   FIL fd;
   if (FR_OK != f_open(&fd, path, FA_READ))
     return;
