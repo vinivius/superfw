@@ -709,9 +709,8 @@ uart_dbg_poll:
 def_function(reset_game):
   ldr r0, running_on_nor
   cmp r0, $0
-  movne r0, $0x0       // NOR, readonly mode
-  moveq r0, $0x1       // SD-RAM, Readonly mode
-  bl set_cpld_mode
+  movne r4, $0x0       // NOR, readonly mode
+  moveq r4, $0x1       // SD-RAM, Readonly mode
   b clear_and_reset
 
 def_function(reset_fw):
@@ -721,8 +720,7 @@ def_function(reset_fw):
       bl set_cpld_mode
     .endr
   #endif
-  mov r0, $0x0               // FW mapped, read-only mode
-  bl set_cpld_mode
+  mov r4, $0x0               // FW mapped, read-only mode
   b clear_and_reset
 
 // Clears a buffer (4 byte aligned) in blocks of 256 bytes
@@ -766,6 +764,9 @@ def_function(get_cheat_table):
   add r0, r0, r3
   bx lr
 
+// Switches the cartridge to mode r4 and resets. The switch happens from IWRAM,
+// since the caller might be running from the SD-RAM (ie. the in-game IRQ hook)
+// and mapping the firmware would pull the code from under its feet.
 def_function(clear_and_reset):
   // Setup a proper system and SVC mode stack, not sure if the game could have borked it.
   mov r0, #0xD3
@@ -780,12 +781,23 @@ def_function(clear_and_reset):
   adr r0, 1f
   ldr r1, =0x03007f00
   mov r2, $((clear_and_reset_end - 1f) / 4)
+  push {r4}
   swi 0x0C0000           // Copy the following code into IWRAM
+  pop {r4}
 
   ldr r1, =0x03007f00    // Continue from there.
   bx r1
 
 1:
+  // Switch the cartridge mode (see set_cpld_mode, no literal pool here)
+  mov r1, $0x0A000000
+  mov r2, $0xA500
+  orr r2, $0x5A
+  strh r2, [r1, #-2]
+  strh r2, [r1, #-2]
+  strh r4, [r1, #-2]
+  strh r4, [r1, #-2]
+
   // Clear memory first (all memories, save the last 256 bytes of IWRAM)
   mov r0, $0xFF
   swi 0x010000
