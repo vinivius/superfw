@@ -104,14 +104,19 @@ void check_pending_saves() {
     display_info_msg("Writing previous savegame ...");
 
     unsigned ecode = flush_pending_sram();
+    WRITE_LOG("Pending save flush result: %u", ecode);
+    sdcard_flush_log();
     if (ecode == ERR_SAVE_FLUSH_WRITEFAIL) {
       // Display error messages briefly if any
       display_info_clear();
       display_info_msg("Failed to write savegame to SD!");
       wait_ms(4000);
+      // Keep the sentinel file, so the save is retried on the next boot
+      // (the SRAM still holds the game data as long as no game is loaded).
+      return;
     }
 
-    // Delete the sentinel file unconditionally.
+    // Delete the sentinel file, the save was flushed (or is not recoverable).
     f_unlink(PENDING_SAVE_FILEPATH);
   }
 }

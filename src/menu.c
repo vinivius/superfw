@@ -1008,11 +1008,20 @@ void start_emu_game(const t_emu_loader *ldinfo, const char *fn, uint32_t fs) {
       if (recent_menu)
         insert_recent_flush(fn, FLAG_RECENT_SD);
 
-      unsigned errcode = load_extemu_rom(fn, fs, ldinfo, loadrom_progress);
+      errcode = load_extemu_rom(fn, fs, ldinfo, loadrom_progress);
+      if (errcode && errcode != ERR_LOAD_NOEMU && !use_slowld) {
+        // Fast loading is not reliable with some carts/SD cards, retry slowly.
+        WRITE_LOG("Fast emulator ROM load failed (%u), retrying in slow mode", errcode);
+        use_slowld = 1;
+        errcode = load_extemu_rom(fn, fs, ldinfo, loadrom_progress);
+        use_slowld = 0;
+      }
       if (errcode && errcode != ERR_LOAD_NOEMU)
         break;
       ldinfo++;
     }
+    WRITE_LOG("Emulator ROM load failed: %u", errcode);
+    sdcard_flush_log();
     unsigned errmsg = (errcode == ERR_LOAD_NOEMU) ? MSG_ERR_NOEMU :
                                                     MSG_ERR_READ;
     spop.alert_msg = msgs[lang_id][errmsg];
