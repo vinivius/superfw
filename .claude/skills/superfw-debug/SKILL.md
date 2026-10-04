@@ -71,10 +71,17 @@ current.
 - Be careful with `a` on a ROM: it launches it. In GB/GBC/NES games (run
   through bundled emulators) nothing listens to the UART, so only a power
   cycle by the user gets back to the menu.
-- `!` while a GBA game runs works through the in-game menu IRQ hook
-  (`uart_dbg_poll` in `src/ingame.S`), so only when the in-game menu is
-  enabled and the game doesn't use the link port. Not yet confirmed on
-  hardware; update this line once it is.
+- `!` also works while a GBA game runs (verified on hardware with Pokemon
+  FireRed: back in the menu ~8 s later). It goes through the in-game menu
+  IRQ hook (`uart_dbg_poll` in `src/ingame.S`), so it needs the in-game menu
+  to be loaded for the game (`igm` in the "Load sizes" log line). Games
+  reset or reconfigure the link port (Pokemon games probe for the Wireless
+  Adapter at boot), so the hook sets the UART up again whenever it is not in
+  UART mode and sends a `~` each time: a burst of `~` after a game starts
+  means the hook runs. Link play doesn't work in debug builds.
+- After `!`, wait for `Loaded recently played games` and `alive 1` in the
+  log (~8 s); a quick look at the last heartbeat can still show the old
+  count.
 
 ### Tools (`tools/debug/`)
 
@@ -93,6 +100,9 @@ current.
 
 1. `gba-serial.py put superfw.gba /superfw-sd-uart.fw` (~50 s). Keep only one
    `.fw` on the card (delete old ones with `rm`), so the right one is picked.
+   Read it back with `get` and `cmp` it before flashing (another ~50 s).
+   Builds can't be compared with each other: the firmware is compressed and
+   embeds the git hash, so a new commit changes almost every byte.
 2. `gba-shot.sh RRRRRR 3`: Info tab. Tabs: Recent (if enabled and not
    empty), Browser, Settings, UI/Language, Tools, Info; L/R stop at the ends
    (no wrap), so extra presses are harmless.
@@ -104,6 +114,9 @@ current.
    (heartbeats pause while flashing). Screenshot: "Flash update complete!".
    If anything else shows, stop and tell the user before rebooting.
 7. `gba-serial.py send '!'`, wait ~10 s: the heartbeat restarts at `alive 1`.
+
+Steps can be batched (`gba-shot.sh` prints only the last screenshot), but
+look at the unlock and "Firmware update" screenshots before pressing L+R+Up.
 
 ### Other
 
@@ -125,9 +138,16 @@ expose the UART as a pty and to keep SD image writes.
   (mounts it); unmount and `udisksctl loop-delete` before running the
   emulator. The emulator writes to the image, so work on a copy.
 - Interactive: `cd DIR && retroarch -L $SUPERFW_DEV/gpsp-supercard/gpsp_libretro.so superfw.gba`.
+- `GPSP_SIO_TRACE=1` (environment of `run.sh`) prints every SIOCNT/RCNT
+  write and every Supercard mode write to stderr: shows what a game does to
+  the link port, and whether a reset reached the cartridge mode switch.
 - Limitations: interpreter only (the dynarec bypasses the Supercard hooks);
-  its built-in BIOS can't do a hard reset, so `!` hangs; SD timing is ideal,
+  its built-in BIOS lacks the hard reset (`swi 0x26`), so the menu's `!`
+  hangs (the in-game `!` uses a soft reset and works); SD timing is ideal,
   so the hardware quirks below don't reproduce.
+- Don't write off an emulator crash or hang as an emulator limitation
+  without checking: the in-game `!` crashed gpsp for the same reason it
+  froze the GBA.
 - Don't rebuild or replace the core while an emulator uses it (SIGBUS).
 
 ## Known hardware behaviour (Supercard SD)
@@ -145,6 +165,11 @@ expose the UART as a pty and to keep SD image writes.
   name modulo 64 (`docs/boxart-format.md`); FatFs searches folders
   linearly, so one big folder made the menu slow. `migrate_flat_art()` in
   `tools/superfw_romlib.py` converts old cards.
+- In-game code (`src/ingame.S`) runs from the cartridge SD-RAM, or from
+  EWRAM once the in-game menu is open. Code running from the cartridge must
+  not switch the cartridge mapping (`set_cpld_mode`): the next instruction
+  is fetched from the newly mapped memory. The resets do the switch from
+  IWRAM (`clear_and_reset`).
 - Open: Mario Kart Super Circuit with DirectSave shows a blank screen in game.
 
 ## Shell gotchas

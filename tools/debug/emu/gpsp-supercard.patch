@@ -12,7 +12,7 @@ index 19bb692..88d6a09 100644
  
  DEFINES := -DHAVE_STRINGS_H -DHAVE_STDINT_H -DHAVE_INTTYPES_H -D__LIBRETRO__ -DINLINE=inline -Wall
 diff --git a/gba_memory.c b/gba_memory.c
-index 4b58f8f..9544664 100644
+index 4b58f8f..ba64db5 100644
 --- a/gba_memory.c
 +++ b/gba_memory.c
 @@ -24,6 +24,72 @@
@@ -97,7 +97,16 @@ index 4b58f8f..9544664 100644
  u32 clkcnt = 0;
  u32 bytesread = 0;
  u32 tokenbits = 0;
-@@ -742,7 +808,7 @@ void supercard_cmd_write_16(u16 value) {
+@@ -610,6 +676,8 @@ bool supercard_we = false;
+ bool supercard_sdcard = false;
+ u16 modeq[4] = {0};
+ void supercard_mode(u16 data) {
++  if (getenv("GPSP_SIO_TRACE"))
++    fprintf(stderr, "Supercard mode <- %x\n", data);
+   for (unsigned i = 0; i < 3; i++)
+     modeq[i] = modeq[i+1];
+   modeq[3] = data;
+@@ -742,7 +810,7 @@ void supercard_cmd_write_16(u16 value) {
          sdrespsz = 8;
          sdresp[0] = 0;
          sdst = WriteResp;
@@ -106,7 +115,7 @@ index 4b58f8f..9544664 100644
          //printf("\nread card addr %d\n", d);
          blkstate = SDBusy;
          bytesread = 0;
-@@ -753,7 +819,7 @@ void supercard_cmd_write_16(u16 value) {
+@@ -753,7 +821,7 @@ void supercard_cmd_write_16(u16 value) {
          sdrespsz = 8;
          sdresp[0] = 0;
          sdst = WriteResp;
@@ -115,7 +124,7 @@ index 4b58f8f..9544664 100644
          //printf("\nwrite card addr %d\n", d);
          blkstate = SDWaitData;
          bytesread = 0;
-@@ -787,7 +853,7 @@ void supercard_writereg_write(u16 value) {
+@@ -787,7 +855,7 @@ void supercard_writereg_write(u16 value) {
      // TODO: Do not ignore the CRC and return errors if necessary
      if (bytesread == 520) {
        blkstate = SDDataWriteToken;
@@ -124,7 +133,7 @@ index 4b58f8f..9544664 100644
        clkcnt = 0;
      }
  
-@@ -890,7 +956,7 @@ u16 supercard_readreg_read() {
+@@ -890,7 +958,7 @@ u16 supercard_readreg_read() {
      return 0xF00;
  
    {
@@ -133,7 +142,7 @@ index 4b58f8f..9544664 100644
      //if (foffset > 0) {
      {
  
-@@ -1031,6 +1097,8 @@ u32 function_cc read_eeprom(void)
+@@ -1031,6 +1099,8 @@ u32 function_cc read_eeprom(void)
                                                                                \
      case 0x04:                                                                \
        /* I/O registers */                                                     \
@@ -142,8 +151,12 @@ index 4b58f8f..9544664 100644
        value = readaddress##type(io_registers, address & 0x3FF);               \
        break;                                                                  \
                                                                                \
-@@ -1303,6 +1371,11 @@ cpu_alert_type function_cc write_io_register16(u32 address, u32 value)
+@@ -1301,9 +1371,18 @@ cpu_alert_type function_cc write_io_register16(u32 address, u32 value)
+ 
+     // Serial port registers
      case REG_SIOCNT:
++      if (getenv("GPSP_SIO_TRACE"))
++        fprintf(stderr, "SIOCNT <- %04x (RCNT %04x)\n", value, read_ioreg(REG_RCNT));
        return write_siocnt(value);
  
 +    case REG_SIOMLT_SEND:     // 0x12A, also SIODATA8 (UART data)
@@ -152,9 +165,12 @@ index 4b58f8f..9544664 100644
 +      break;
 +
      case REG_RCNT:
++      if (getenv("GPSP_SIO_TRACE"))
++        fprintf(stderr, "RCNT <- %04x (SIOCNT %04x)\n", value, read_ioreg(REG_SIOCNT));
        return write_rcnt(value);
  
-@@ -2655,7 +2728,7 @@ void init_gamepak_buffer(void)
+     // Interrupt flag, clears the bits it tries to write
+@@ -2655,7 +2734,7 @@ void init_gamepak_buffer(void)
    assert(sdfd >= 0);
    fstat(sdfd, &st);
    printf("Maping SD card file (size %d bytes)\n", st.st_size);
@@ -163,7 +179,7 @@ index 4b58f8f..9544664 100644
    assert(sdcardmap != NULL);
    sdcardsize = st.st_size;
  }
-@@ -3049,3 +3122,8 @@ s32 load_bios(char *name)
+@@ -3049,3 +3128,8 @@ s32 load_bios(char *name)
  }
  
  
