@@ -928,8 +928,12 @@ static void browser_open_nor(const t_flash_game_entry * e) {
 void patch_gen_callback(bool confirm) {
   // Generate patches if confirm was selected
   if (confirm) {
-    generate_patches_progress(spop.p.load.i.romfn, spop.p.load.i.romfs);
-    spop.alert_msg = msgs[lang_id][MSG_PATCHGEN_OK];
+    bool ok = generate_patches_progress(spop.p.load.i.romfn, spop.p.load.i.romfs);
+    spop.alert_msg = msgs[lang_id][ok ? MSG_PATCHGEN_OK : MSG_PATCHGEN_ERR];
+  } else {
+    // Don't ask again for this ROM: remember that it loads without patches
+    // (as it does now). Can be changed in the load popup's patching page.
+    save_rom_patchmode(spop.p.load.i.romfn, PatchNone);
   }
 
   // Either way, show the popup screen afterwards without prompt
@@ -2950,8 +2954,8 @@ static void keypress_popup_loadgba(unsigned newkeys) {
       }
     }
     else if (spop.submenu == GbaLoadPopPatch && spop.selector == GBAPatchGen) {
-      generate_patches_progress(spop.p.load.i.romfn, spop.p.load.i.romfs);
-      spop.alert_msg = msgs[lang_id][MSG_PATCHGEN_OK];
+      bool ok = generate_patches_progress(spop.p.load.i.romfn, spop.p.load.i.romfs);
+      spop.alert_msg = msgs[lang_id][ok ? MSG_PATCHGEN_OK : MSG_PATCHGEN_ERR];
       // Try/Load the just-generated patches.
       spop.p.load.i.patches_cache_found = load_cached_patches(spop.p.load.i.romfn, &spop.p.load.i.patches_cache);
     }
@@ -3116,8 +3120,8 @@ static void keypress_popup_norwrite(unsigned newkeys) {
       spop.p.norwr.i.rtc_patch_enabled = false;
 
     if ((newkeys & KEY_BUTTA) && spop.selector == GBAPatchGen) {
-      generate_patches_progress(spop.p.norwr.i.romfn, spop.p.norwr.i.romfs);
-      spop.alert_msg = msgs[lang_id][MSG_PATCHGEN_OK];
+      bool ok = generate_patches_progress(spop.p.norwr.i.romfn, spop.p.norwr.i.romfs);
+      spop.alert_msg = msgs[lang_id][ok ? MSG_PATCHGEN_OK : MSG_PATCHGEN_ERR];
       // Try/Load the just-generated patches.
       spop.p.norwr.i.patches_cache_found = load_cached_patches(spop.p.norwr.i.romfn, &spop.p.norwr.i.patches_cache);
     }

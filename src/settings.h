@@ -92,6 +92,7 @@ void load_settings();
 
 // ROM-specific setting load/store
 bool load_rom_settings(const char *fn, t_rom_load_settings *rld, t_rom_launch_settings *rlh);
+bool save_rom_patchmode(const char *fn, unsigned mode);
 bool save_rom_settings(const char *fn, const t_rom_load_settings *rld, const t_rom_launch_settings *rlh);
 
 #endif

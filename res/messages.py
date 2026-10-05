@@ -37,6 +37,7 @@ en_strings = [
   "MSG_Q4_DELREC":   "Delete recently played game? (Does not delete the ROM!)",
 
   "MSG_PATCHGEN_OK": "Patch generation completed!",        # alertmsg
+  "MSG_PATCHGEN_ERR": "Patch generation failed!",          # alertmsg
   "MSG_SRAMTST_RDY": "You might now power off!",           # alertmsg
 
   "MSG_SRAMTST_OK":    "SRAM test passed!",                # alertmsg

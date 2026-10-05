@@ -362,6 +362,28 @@ bool load_rom_settings(const char *fn, t_rom_load_settings *rld, t_rom_launch_se
   return true;
 }
 
+// Records the patch mode for a ROM, appended to its config (created if
+// needed): later lines win, and the other settings keep following the
+// global defaults unless the config already sets them.
+bool save_rom_patchmode(const char *fn, unsigned mode) {
+  f_mkdir(SUPERFW_DIR);
+  f_mkdir(ROMCONFIG_PATH);
+  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
+
+  char buf[MAX_FN_LEN + 32];
+  strcpy(buf, ROMCONFIG_PATH);
+  strcat(buf, file_basename(fn));
+  replace_extension(buf, ".config");
+
+  FIL fd;
+  if (FR_OK != f_open(&fd, buf, FA_WRITE | FA_OPEN_APPEND))
+    return false;
+  npf_snprintf(buf, sizeof(buf), "patchmode=%u\n", mode);
+  UINT wrbytes;
+  FRESULT res = f_write(&fd, buf, strlen(buf), &wrbytes);
+  return (FR_OK == f_close(&fd)) && res == FR_OK && wrbytes == strlen(buf);
+}
+
 bool save_rom_settings(const char *fn, const t_rom_load_settings *rld, const t_rom_launch_settings *rlh) {
   // Create the directory (just in case it doesn't exist
   f_mkdir(SUPERFW_DIR);
