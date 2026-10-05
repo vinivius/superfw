@@ -112,7 +112,12 @@ before flashing a build.
    SuperFW images). Its heartbeat format tells it apart.
 3. `!` (menu or in-game) maps the flash and reboots: that's the flashed
    firmware, not the test build.
-4. It adds itself to the Recent list; that is harmless.
+4. It adds itself to the Recent list. When done, `gba-serial.py rm
+   /superfw-next.gba` and remove the entry (Recent tab: SELECT, Yes), so the
+   card only keeps the real firmware file.
+5. Tests read the key register directly and may need a physical press:
+   builds from `superfw-next` on also accept START sent over serial to
+   abort long operations (memory tests, benchmarks).
 
 ### Flash a firmware over serial
 
