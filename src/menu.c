@@ -1375,12 +1375,36 @@ bool menu_animating() {
   return anim_active;
 }
 
+// Idle animation fast path: when only the scrolling (marquee) text changes,
+// just its row is redrawn (menu_render_idle), as long as the back buffer has
+// a full render of the current state. List rows record their marquee here.
+static struct {
+  const char *t;
+  unsigned x, y, maxw;
+  unsigned *franim;
+} marq;
+static bool marq_record = false;      // Record the next rotate call
+static bool marq_ok = false;          // The last full render can be replayed
+static unsigned menu_gen = 1;         // Bumped on every state change
+static unsigned bufgen[2];            // State each buffer was fully rendered at
+
+static void draw_text_ovf_rotate(const char *t, volatile uint8_t *frame, unsigned x, unsigned y, unsigned maxw, unsigned *franim);
+
 // Draws text that scrolls (marquee) when it does not fit. The text width is
 // cached, since the same (selected) text is drawn on every frame.
 #define ROTATE_GAP_WIDTH  24
 static void draw_text_ovf_rotate(const char *t, volatile uint8_t *frame, unsigned x, unsigned y, unsigned maxw, unsigned *franim) {
   static struct { const char *t; unsigned len, width; } wc;
   uint8_t *basept = (uint8_t*)&frame[y * SCREEN_WIDTH + x];
+  if (marq_record) {
+    marq.t = t;
+    marq.x = x;
+    marq.y = y;
+    marq.maxw = maxw;
+    marq.franim = franim;
+    marq_ok = true;
+    marq_record = false;
+  }
   unsigned len = strlen(t);
   if (wc.t != t || wc.len != len) {
     wc.t = t;
@@ -1511,6 +1535,7 @@ void render_recent(volatile uint8_t *frame) {
 
     // Animate the row entries if they are too long!
     if (i == smenu.recent.selector - smenu.recent.seloff) {
+      marq_record = true;
       draw_text_ovf_rotate(fn, frame, 20, (1 + i) * 16,
                            listw - 24, &smenu.anim_state);
       if (artp)
@@ -1724,6 +1749,7 @@ void render_browser(volatile uint8_t *frame) {
 
       // Animate the row entries if they are too long!
       if (i == smenu.browser.selector - smenu.browser.seloff) {
+        marq_record = true;
         draw_text_ovf_rotate(e->fname, frame, 20, (1 + i) * 16,
                              listw - 26 - font_width(szstr), &smenu.anim_state);
         if (artp) {
@@ -2409,6 +2435,8 @@ static const struct {
 void menu_render(unsigned fcnt) {
   objnum = 0;
   anim_active = false;
+  marq_ok = false;
+  bufgen[framen] = menu_gen;
   volatile uint8_t *frame = &MEM_VRAM_U8[0xA000*framen];
 
   // Render the tab menu on top (rows 0..15), highlighting the selected option
@@ -2460,7 +2488,29 @@ void menu_render(unsigned fcnt) {
     REG_WIN0H = 0;
     REG_WIN0V = 0;
   }
+  // Only plain lists can use the idle fast path (no popups or search on top)
+  if (spop.alert_msg || spop.qpop.message || spop.rtcpop.callback || spop.pop_num || search_win_active)
+    marq_ok = false;
   search_win_active = false;
+}
+
+void menu_invalidate() {
+  menu_gen++;
+}
+
+// Renders a frame where only animations changed. Redraws just the scrolling
+// row when possible, which is much cheaper than a full render.
+void menu_render_idle(unsigned fcnt) {
+  if (!marq_ok || bufgen[framen] != menu_gen) {
+    menu_render(fcnt);
+    return;
+  }
+  smenu.anim_state += fcnt * animspd_lut[anim_speed];
+  volatile uint8_t *frame = &MEM_VRAM_U8[0xA000*framen];
+  for (unsigned r = 0; r < 16; r++)
+    dma_memset16(&frame[(marq.y + r) * SCREEN_WIDTH + (marq.x & ~1)], dup8(BG_COLOR), (marq.maxw + 2) / 2);
+  anim_active = false;
+  draw_text_ovf_rotate(marq.t, frame, marq.x, marq.y, marq.maxw, marq.franim);
 }
 
 // Loads the wanted box art once the cursor has rested on the entry for a

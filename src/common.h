@@ -214,6 +214,8 @@ void menu_flip();       // Swaps front and back buffer to show the last rendered
 uint16_t get_keypress();
 bool menu_tick();       // Deferred work between frames, true if the menu changed.
 bool menu_animating();  // True if the last rendered frame had animations.
+void menu_invalidate();  // The menu state changed (next frames are full renders).
+void menu_render_idle(unsigned fcnt);   // Render where only animations changed.
 
 // Patching system
 typedef enum {

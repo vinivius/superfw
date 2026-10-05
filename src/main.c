@@ -362,7 +362,11 @@ static int main_gba() {
       #ifdef ENABLE_UART_LOGGING
         uint16_t t0 = *(volatile uint16_t*)0x04000108;
       #endif
-      menu_render(cframe - prev_frame);
+      if (redraw) {
+        menu_invalidate();
+        menu_render(cframe - prev_frame);
+      } else
+        menu_render_idle(cframe - prev_frame);
       #ifdef ENABLE_UART_LOGGING
         unsigned dt = (uint16_t)(*(volatile uint16_t*)0x04000108 - t0);
         rnd_cnt++;
