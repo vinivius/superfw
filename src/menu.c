@@ -493,6 +493,9 @@ NOINLINE int romsort(const void *a, const void *b) {
   return strcasecmp(&ca->game_name[ca->bnoffset], &cb->game_name[cb->bnoffset]);
 }
 
+static void draw_box_outline(volatile uint8_t *frame, unsigned left, unsigned right, unsigned top, unsigned bottom, uint8_t color);
+static void draw_central_text(const char *t, volatile uint8_t *frame, unsigned x, unsigned y);
+
 static void loadrom_progress(unsigned done, unsigned total) {
   // Draws and flips the buffer, do not care about vsync here
   volatile uint8_t *frame = &MEM_VRAM_U8[0xA000*framen];
@@ -500,10 +503,15 @@ static void loadrom_progress(unsigned done, unsigned total) {
   // Render the full background to a solid color
   dma_memset16(&frame[0], dup8(BG_COLOR), SCREEN_WIDTH*SCREEN_HEIGHT/2);
 
-  // Render a simple progress bar
-  unsigned prog = done * 200 / total;
+  // Render a progress bar (in a frame) with the percentage below
+  unsigned pct = MIN(100, done * 100 / (total ?: 1));
+  unsigned prog = pct * 2;
+  draw_box_outline(frame, 16, 224, 72, 88, FG_COLOR);
   for (unsigned i = 76; i < 84; i++)
     dma_memset16(&frame[SCREEN_WIDTH * i + 20], dup8(FG_COLOR), prog/2);
+  char tmp[8];
+  npf_snprintf(tmp, sizeof(tmp), "%u%%", pct);
+  draw_central_text(tmp, frame, SCREEN_WIDTH / 2, 92);
 
   dma_memset16(MEM_OAM, 0, 256);  // Clear icons
 
@@ -1575,19 +1583,46 @@ static void draw_central_text_ovf(const char *t, volatile uint8_t *frame, unsign
   }
 }
 
+// Popup pages are switched with L/R.
+static void draw_page_arrows(volatile uint8_t *frame) {
+  draw_text_ovf("L ⯇", frame, 8, 23, 64);
+  draw_rightj_text("⯈ R", frame, SCREEN_WIDTH - 8, 23);
+}
+
+// Bytes of the next wrapped line: breaks at a space if possible, anywhere
+// otherwise (ie. CJK text has no spaces).
+static unsigned wrap_line_len(const char *t, unsigned maxw) {
+  unsigned outw;
+  unsigned n = font_width_cap_space(t, maxw, &outw);
+  if (!n)
+    n = font_width_cap(t, maxw) ?: utf8_chlen(t);
+  return n;
+}
+
+// Number of lines draw_central_text_wrapped uses.
+static unsigned wrapped_lines(const char *t, unsigned maxw) {
+  unsigned n = 0;
+  for (; *t; n++) {
+    t += wrap_line_len(t, maxw);
+    if (*t == ' ')
+      t++;
+  }
+  return n;
+}
+
 static void draw_central_text_wrapped(const char *t, volatile uint8_t *frame, unsigned x, unsigned y, unsigned maxw) {
   while (*t) {
     char tmp[128];
-    unsigned outw;
-    unsigned linechars = font_width_cap_space(t, maxw, &outw);
-    unsigned charcnt = linechars ?: utf8_strlen(t);
-    uint8_t *basept = (uint8_t*)&frame[y * SCREEN_WIDTH + x - outw / 2];
-
+    unsigned charcnt = MIN(wrap_line_len(t, maxw), sizeof(tmp) - 1);
     memcpy(tmp, t, charcnt);
     tmp[charcnt] = 0;
+    unsigned outw = font_width(tmp);
+    uint8_t *basept = (uint8_t*)&frame[y * SCREEN_WIDTH + x - outw / 2];
     draw_text_idx8_bus16(tmp, basept, SCREEN_WIDTH, FT_COLOR);
 
     t += charcnt;      // Advance text
+    if (*t == ' ')
+      t++;             // The space we broke the line at
     y += 16;           // Move down in the buffer
   }
 }
@@ -2013,8 +2048,7 @@ static const char *render_gbarom_loading(volatile uint8_t *frame, const t_load_g
 
 void render_gba_load_popup(volatile uint8_t *frame) {
   draw_box_outline(frame, 2, 240-2, 18, 158, FG_COLOR);
-  draw_text_ovf("⯇", frame, 10, 23, 64);
-  draw_rightj_text("⯈", frame, SCREEN_WIDTH - 10, 23);
+  draw_page_arrows(frame);
 
   const t_load_gba_info *info = &spop.p.load.i;
   const t_patch *p = get_game_patch(info);
@@ -2080,8 +2114,7 @@ void render_filemgr(volatile uint8_t *frame) {
 void render_gba_norwrite(volatile uint8_t *frame) {
   draw_box_outline(frame, 2, 240-2, 18, 158, FG_COLOR);
 
-  draw_text_ovf("⯇", frame, 10, 23, 64);
-  draw_rightj_text("⯈", frame, SCREEN_WIDTH - 10, 23);
+  draw_page_arrows(frame);
 
   if (spop.submenu == GbaLoadPopInfo) {
     const t_load_gba_info *info = &spop.p.norwr.i;
@@ -2109,8 +2142,7 @@ void render_gba_norwrite(volatile uint8_t *frame) {
 void render_gba_norload(volatile uint8_t *frame) {
   draw_box_outline(frame, 2, 240-2, 18, 158, FG_COLOR);
 
-  draw_text_ovf("⯇", frame, 10, 23, 64);
-  draw_rightj_text("⯈", frame, SCREEN_WIDTH - 10, 23);
+  draw_page_arrows(frame);
 
   const t_flash_game_entry *e = spop.p.norld.e;
   if (spop.submenu == GbaLoadPopInfo) {
@@ -2585,10 +2617,13 @@ void menu_render(unsigned fcnt) {
 
   // Render popup window. Use windowing to ensure the pop up is not covered by OBJs.
   if (spop.alert_msg) {
-    draw_box_full(frame, 15, 227, SCREEN_HEIGHT / 2 - 20, SCREEN_HEIGHT / 2 + 20, FG_COLOR, HI_COLOR);
-    draw_central_text(spop.alert_msg, frame, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 8);
+    // Long messages wrap over several lines, the box grows to fit.
+    unsigned lines = MIN(4, wrapped_lines(spop.alert_msg, 200));
+    unsigned half = 12 + lines * 8;
+    draw_box_full(frame, 15, 227, SCREEN_HEIGHT / 2 - half, SCREEN_HEIGHT / 2 + half, FG_COLOR, HI_COLOR);
+    draw_central_text_wrapped(spop.alert_msg, frame, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - lines * 8, 200);
     REG_WIN0H = 226 | (14 << 8);
-    REG_WIN0V = (SCREEN_HEIGHT / 2 + 20) | ((SCREEN_HEIGHT / 2 - 20) << 8);
+    REG_WIN0V = (SCREEN_HEIGHT / 2 + half) | ((SCREEN_HEIGHT / 2 - half) << 8);
   } else if (!search_win_active) {
     REG_WIN0H = 0;
     REG_WIN0V = 0;
