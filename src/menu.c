@@ -1156,11 +1156,19 @@ NOINLINE static void browser_open(const char *fn, uint32_t fs) {
 static const char search_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ";
 #define SEARCH_NCHARS  (sizeof(search_chars) - 1)
 
+// Spinning the wheel only filters the list once it rests for a moment
+// (filtering thousands of names takes a few frames), see menu_tick.
+#define SEARCH_SETTLE   8
+static bool search_pending = false;
+static unsigned search_since;
+
 static inline char ascii_upper(char c) {
   return (c >= 'a' && c <= 'z') ? c - 'a' + 'A' : c;
 }
 
 // Case-insensitive (ASCII only) substring match. q must be uppercase.
+// Runs over every name in the folder (thousands), from IWRAM as ARM code.
+ARM_CODE IWRAM_CODE NOINLINE
 static bool search_match(const char *fname, const char *q) {
   if (!q[0])
     return true;
@@ -2679,6 +2687,13 @@ static void settings_autosave() {
 // Loads the wanted box art once the cursor has rested on the entry for a
 // while (and the D-pad is released), so scrolling never waits for the SD card.
 bool menu_tick() {
+  if (search_pending && frame_count - search_since >= SEARCH_SETTLE) {
+    search_pending = false;
+    smenu.browser.selector = 0;
+    smenu.anim_state = 0;
+    browser_apply_search();
+    return true;
+  }
   if (sett_dirty && frame_count - sett_dirty_since > SETT_SAVE_DELAY) {
     settings_autosave();
     return true;
@@ -3495,20 +3510,23 @@ static void keypress_menu_recent(unsigned newkeys) {
     smenu.recent.seloff = smenu.recent.selector - RECENT_ROWS + 1;
 }
 
-// Search field editor: Up/Down pick a char, Right/A accept it, Left deletes,
-// A/Start close the field (keeping the filter) and B cancels the search.
+// Search field editor: Up/Down pick a char (L/R jump 5), Right/A accept it,
+// Left deletes, A/Start close the field (keeping the filter) and B cancels
+// the search.
 // The picker shows the upcoming chars above the current one, so Up moves
 // forward (A -> B) and Down moves back. Both start at 'A'.
 static void keypress_browse_search(unsigned newkeys) {
   bool changed = false;
-  if (newkeys & KEY_BUTTUP) {
-    smenu.browser.qcand = (smenu.browser.qcand % SEARCH_NCHARS) + 1;
-    changed = true;
-  }
-  else if (newkeys & KEY_BUTTDOWN) {
-    smenu.browser.qcand = smenu.browser.qcand > 1 ? smenu.browser.qcand - 1 :
-                          smenu.browser.qcand ? SEARCH_NCHARS : 1;
-    changed = true;
+  // Up/Down move one char, L/R jump 5.
+  int step = (newkeys & KEY_BUTTUP) ? 1 : (newkeys & KEY_BUTTDOWN) ? -1 :
+             (newkeys & KEY_BUTTR) ? 5 : (newkeys & KEY_BUTTL) ? -5 : 0;
+  if (step) {
+    if (!smenu.browser.qcand)
+      smenu.browser.qcand = step > 0 ? step : SEARCH_NCHARS + 1 + step;
+    else
+      smenu.browser.qcand = (smenu.browser.qcand - 1 + SEARCH_NCHARS + step) % SEARCH_NCHARS + 1;
+    search_pending = true;
+    search_since = frame_count;
   }
 
   if (newkeys & KEY_BUTTB) {
@@ -3535,6 +3553,7 @@ static void keypress_browse_search(unsigned newkeys) {
     smenu.browser.selector = 0;
     smenu.anim_state = 0;
     browser_apply_search();
+    search_pending = false;
   }
 }
 
@@ -3975,25 +3994,27 @@ void menu_keypress(unsigned newkeys) {
       keyfns[spop.pop_num](newkeys);
     }
   } else {
-    // Menu change via trigger buttons (not while typing a search)
+    // Menu change via trigger buttons (not while typing a search, the
+    // search wheel uses them).
     int mintab = (recent_menu && smenu.recent.maxentries) ? MENUTAB_RECENT : MENUTAB_ROMBROWSE;
-    if (smenu.menu_tab == MENUTAB_ROMBROWSE && smenu.browser.qedit)
-      newkeys &= ~(KEY_BUTTL | KEY_BUTTR);
+    bool searching = smenu.menu_tab == MENUTAB_ROMBROWSE && smenu.browser.qedit;
+    unsigned tabkeys = searching ? 0 : (newkeys & (KEY_BUTTL | KEY_BUTTR));
     // Leaving a settings tab saves any changes.
-    if ((newkeys & (KEY_BUTTL | KEY_BUTTR)) && sett_dirty)
+    if (tabkeys && sett_dirty)
       settings_autosave();
 
     // Tabs wrap around, so every tab is reachable with either trigger.
-    if (newkeys & KEY_BUTTL)
+    if (tabkeys & KEY_BUTTL)
       smenu.menu_tab = ((int)smenu.menu_tab <= mintab) ? MENUTAB_MAX - 1 : smenu.menu_tab - 1;
-    else if (newkeys & KEY_BUTTR)
+    else if (tabkeys & KEY_BUTTR)
       smenu.menu_tab = (smenu.menu_tab >= MENUTAB_MAX - 1) ? mintab : smenu.menu_tab + 1;
 
     if (newkeys & (KEY_BUTTL | KEY_BUTTR | KEY_BUTTUP | KEY_BUTTDOWN))
       smenu.anim_state = 0;
 
-    if (smenu.menu_tab == MENUTAB_ROMBROWSE && (newkeys & (KEY_BUTTL | KEY_BUTTR))) {
-      browser_ensure_loaded();
+    if (tabkeys) {
+      if (smenu.menu_tab == MENUTAB_ROMBROWSE)
+        browser_ensure_loaded();
       newkeys &= ~(KEY_BUTTL | KEY_BUTTR);
     }
 
