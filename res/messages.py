@@ -203,6 +203,8 @@ en_strings = [
   "MSG_FWUPD_CHECKING": "Checking image ...",
   "MSG_FWUPD_ERASING":  "Erasing flash ...",
   "MSG_FWUPD_PROGRAM":  "Programming firmware ...",
+  "MSG_FWUPD_NOPOWER":  "Do not turn the console off!",
+  "MSG_FWUP_RETRY":    "Update failed, do not turn off! Retry",  # alertmsg
   "MSG_FWUP_DISABLED": "Flashing is disabled!",            # alertmsg
   "MSG_FWUPD_DONE":    "Flash update complete!",           # alertmsg
   "MSG_FLASH_READOK": "Flash dump successful!",            # alertmsg

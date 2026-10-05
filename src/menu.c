@@ -1792,6 +1792,8 @@ void render_fw_flash_popup(volatile uint8_t *frame) {
   };
 
   draw_central_text(smsg[spop.p.update.curr_state], frame, 120, 120);
+  if (spop.p.update.curr_state >= FlashingErasing)
+    draw_central_text(msgs[lang_id][MSG_FWUPD_NOPOWER], frame, 120, 138);
 }
 
 void render_sav_menu_popup(volatile uint8_t *frame) {
@@ -2544,77 +2546,93 @@ int movedir_up() {
   return 0;
 }
 
-void start_flash_update(const char *fn, unsigned fwsize, bool validate_superfw) {
+// One firmware update attempt: loads the image into SDRAM, validates it and
+// flashes it. Returns 0 or the error message. *touched tells whether the
+// flash was erased/written (if not, the current firmware is still intact).
+static unsigned flash_update_attempt(const char *fn, unsigned fwsize, bool validate_superfw, bool *touched) {
+  *touched = false;
+
   // We read the file into SDRAM, apply the update from there.
   FIL fd;
-  FRESULT res = f_open(&fd, fn, FA_READ);
-  if (res != FR_OK)
-    spop.alert_msg = msgs[lang_id][MSG_FWUP_ERRRD];
-  else {
-    // Loading file...
-    spop.p.update.curr_state = FlashingLoading;
-    menu_render(1); menu_flip();
-    for (unsigned i = 0; i < fwsize; i += 4*1024) {
-      UINT rdbytes;
-      unsigned tord = fwsize >= i + 4*1024 ? 4*1024 : fwsize - i;
-      uint32_t tmp[1024];
-      if (FR_OK != f_read(&fd, tmp, tord, &rdbytes) || rdbytes != tord) {
-        spop.alert_msg = msgs[lang_id][MSG_FWUP_ERRRD];
-        return;
-      }
-      // Copy (ensure aligned copy!)
-      dma_memcpy32(&sdr_state->scratch[i], tmp, 1024);
+  if (FR_OK != f_open(&fd, fn, FA_READ))
+    return MSG_FWUP_ERRRD;
+
+  // Loading file...
+  spop.p.update.curr_state = FlashingLoading;
+  menu_render(1); menu_flip();
+  for (unsigned i = 0; i < fwsize; i += 4*1024) {
+    UINT rdbytes;
+    unsigned tord = fwsize >= i + 4*1024 ? 4*1024 : fwsize - i;
+    uint32_t tmp[1024];
+    if (FR_OK != f_read(&fd, tmp, tord, &rdbytes) || rdbytes != tord) {
+      f_close(&fd);
+      return MSG_FWUP_ERRRD;
     }
-    spop.p.update.curr_state = FlashingChecking;
-    menu_render(1); menu_flip();
-
-    // Now proceed to validate the superfw if necessary.
-    if (validate_superfw && !validate_superfw_variant(sdr_state->scratch))
-      spop.alert_msg = msgs[lang_id][MSG_FWUP_BADFL];
-    else if (validate_superfw && !validate_superfw_checksum(sdr_state->scratch, fwsize))
-      spop.alert_msg = msgs[lang_id][MSG_FWUPD_BADCHK];
-    else {
-      // Can start the flashing!
-      spop.p.update.curr_state = FlashingErasing;
-      menu_render(1); menu_flip();
-
-      bool erased_ok;
-      #ifdef SUPPORT_NORGAMES
-      if (flashinfo.blksize)
-        erased_ok = flash_erase_sectors(ROM_FLASHFIRMW_ADDR, flashinfo.blksize,
-                                        (fwsize + flashinfo.blksize - 1) / flashinfo.blksize);
-      else
-      #endif
-        erased_ok = flash_erase_chip();
-
-      if (!erased_ok)
-        spop.alert_msg = msgs[lang_id][MSG_FWUP_ERRCL];
-      else {
-        spop.p.update.curr_state = FlashingWriting;
-        menu_render(1); menu_flip();
-
-        bool programmed_ok;
-        #ifdef SUPPORT_NORGAMES
-        if (flashinfo.size && flashinfo.blksize && flashinfo.blkcount && flashinfo.blkwrite)
-          programmed_ok = flash_program_buffered(ROM_FLASHFIRMW_ADDR, sdr_state->scratch, fwsize, flashinfo.blkwrite);
-        else
-        #endif
-          programmed_ok = flash_program(ROM_FLASHFIRMW_ADDR, sdr_state->scratch, fwsize);
-
-        if (!programmed_ok)
-          spop.alert_msg = msgs[lang_id][MSG_FWUP_ERRPG];
-        else {
-          if (!flash_verify(ROM_FLASHFIRMW_ADDR, sdr_state->scratch, fwsize))
-            spop.alert_msg = msgs[lang_id][MSG_FWUP_ERRVR];
-          else {
-            // Done! Show a pop up, also go up with pop ups too.
-            spop.alert_msg = msgs[lang_id][MSG_FWUPD_DONE];
-          }
-        }
-      }
-    }
-    spop.pop_num = 0;
+    // Copy (ensure aligned copy!)
+    dma_memcpy32(&sdr_state->scratch[i], tmp, 1024);
   }
+  f_close(&fd);
+  spop.p.update.curr_state = FlashingChecking;
+  menu_render(1); menu_flip();
+
+  // Now proceed to validate the superfw if necessary (this also catches a bad
+  // copy in SDRAM).
+  if (validate_superfw && !validate_superfw_variant(sdr_state->scratch))
+    return MSG_FWUP_BADFL;
+  if (validate_superfw && !validate_superfw_checksum(sdr_state->scratch, fwsize))
+    return MSG_FWUPD_BADCHK;
+
+  // Can start the flashing!
+  *touched = true;
+  spop.p.update.curr_state = FlashingErasing;
+  menu_render(1); menu_flip();
+
+  bool erased_ok;
+  #ifdef SUPPORT_NORGAMES
+  if (flashinfo.blksize)
+    erased_ok = flash_erase_sectors(ROM_FLASHFIRMW_ADDR, flashinfo.blksize,
+                                    (fwsize + flashinfo.blksize - 1) / flashinfo.blksize);
+  else
+  #endif
+    erased_ok = flash_erase_chip();
+
+  if (!erased_ok)
+    return MSG_FWUP_ERRCL;
+
+  spop.p.update.curr_state = FlashingWriting;
+  menu_render(1); menu_flip();
+
+  bool programmed_ok;
+  #ifdef SUPPORT_NORGAMES
+  if (flashinfo.size && flashinfo.blksize && flashinfo.blkcount && flashinfo.blkwrite)
+    programmed_ok = flash_program_buffered(ROM_FLASHFIRMW_ADDR, sdr_state->scratch, fwsize, flashinfo.blkwrite);
+  else
+  #endif
+    programmed_ok = flash_program(ROM_FLASHFIRMW_ADDR, sdr_state->scratch, fwsize);
+
+  if (!programmed_ok)
+    return MSG_FWUP_ERRPG;
+  if (!flash_verify(ROM_FLASHFIRMW_ADDR, sdr_state->scratch, fwsize))
+    return MSG_FWUP_ERRVR;
+  return 0;
+}
+
+void start_flash_update(const char *fn, unsigned fwsize, bool validate_superfw) {
+  // The menu runs from RAM, so a failed update can be retried right away
+  // (powering off with a half written flash would leave the cart unbootable).
+  unsigned err = 0;
+  bool touched = false;
+  for (unsigned attempt = 0; attempt < 3; attempt++) {
+    bool t;
+    err = flash_update_attempt(fn, fwsize, validate_superfw, &t);
+    touched |= t;
+    WRITE_LOG("Firmware update attempt %u: error %u (flash touched: %d)", attempt, err, t);
+    if (!err || !touched)
+      break;     // Done, or failed before touching the flash (still intact)
+  }
+
+  spop.alert_msg = msgs[lang_id][!err ? MSG_FWUPD_DONE : touched ? MSG_FWUP_RETRY : err];
+  spop.pop_num = 0;
 }
 
 static void keypress_popup_loadgba(unsigned newkeys) {
