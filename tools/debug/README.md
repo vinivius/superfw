@@ -17,4 +17,6 @@ GBA SO (pin 2) to adapter RXD, GBA SI (pin 3) to adapter TXD, and GND (pin
 - `gba-keys.sh`       Sends keys, then prints the new log lines.
 - `setup-toolchain.sh` Downloads the Arm GNU toolchain.
 - `emu/setup.sh`      Builds gpsp with Supercard and UART emulation, plus a
-                      headless frontend (`emu/fe.c`); `emu/run.sh` runs it.
+                      headless frontend (`emu/fe.c`); `emu/run.sh` runs it,
+                      `emu/keys.sh` injects keys, `emu/shot.sh` saves the
+                      exact frame, `emu/montage.py` makes contact sheets.

@@ -134,6 +134,16 @@ expose the UART as a pty and to keep SD image writes.
     export GBA_PORT=$(cat DIR/uart.pty) GBA_LOG=DIR/raw.log
     python3 tools/debug/gba-rawlog.py &                         # then the same tools
 
+- `tools/debug/emu/keys.sh DIR KEYS` injects keys straight into the emulator
+  (same characters as the UART commands; works with release builds and in
+  games). `tools/debug/emu/shot.sh DIR [OUT.png]` saves the exact frame (menu
+  or game). `montage.py OUT.png IN.png...` puts many screenshots on one sheet,
+  which is cheaper to review than one image at a time.
+- `a` on the Recent tab launches the game at once; restart the emulator to
+  get back (the menu `!` can't reboot in gpsp).
+- For realistic tests, copy a full card image with `cp --reflink=always`
+  (instant on btrfs; `/tmp` is a small tmpfs, keep big images in
+  `$SUPERFW_DEV`).
 - Add files to an image with `udisksctl loop-setup -f DIR/sdcard.img`
   (mounts it); unmount and `udisksctl loop-delete` before running the
   emulator. The emulator writes to the image, so work on a copy.
