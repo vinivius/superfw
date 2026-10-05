@@ -523,8 +523,12 @@ static void loadrom_progress(unsigned done, unsigned total) {
 static bool loadrom_progress_abort(unsigned done, unsigned total) {
   loadrom_progress(done, total);
 
-  // Capture A/B buttons to abort the progress
-  return ((~REG_KEYINPUT) & KEY_BUTTSTA);
+  // START aborts the operation: held, or pressed since the last check (the
+  // check runs every now and then, a short press would be missed; this also
+  // catches keys sent over the serial link in UART debug builds).
+  bool pressed = keys_presses[3];      // Bit 3: START
+  keys_presses[3] = 0;
+  return ((~REG_KEYINPUT) & KEY_BUTTSTA) || pressed;
 }
 
 
