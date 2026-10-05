@@ -48,7 +48,10 @@ screenshots to `~/.cache/superfw-debug/shots/*.png`, and pauses while
 it runs with `pgrep -af gba-rawlog`.
 
 In the menu the firmware logs `[src/main.c:NNN] alive N` every second; N
-restarts from 1 after a reboot. To see what happened after an action, read
+restarts from 1 after a reboot. Builds from `superfw-next` on add
+`(renders R, avg A% max M% of a frame)`: how many frames were drawn in that
+second and their CPU cost (idle with nothing animating: 0 renders). Use it
+to benchmark menu changes, in the emulator and on hardware. To see what happened after an action, read
 the log from its size before the action (`tail -c +OFFSET`, as
 `gba-keys.sh` does), not its last lines: older lines are easy to misread as
 current.
@@ -60,7 +63,7 @@ current.
 | `a b u d l r L R s e` | A, B, Up, Down, Left, Right, L, R, Start, Select |
 | `[...]` | Combo held together, ie. `[dbs]`, `[LRu]` |
 | `!` | Reboot into SuperFW (also from GBA games, see below) |
-| `P` | Screenshot (~5 s; lost if sent while booting or flashing: retry) |
+| `P` | Screenshot (~5 s; lost if sent while booting or flashing: retry). Sent from the V-blank IRQ, so it stalls everything for 5 s: never take one while measuring timings |
 | `X` | File transfer mode (used by `gba-serial.py`) |
 
 - The UART receive FIFO is 4 bytes, read once per frame: always send through
@@ -96,6 +99,21 @@ current.
 
 ## Recipes
 
+### Try a build on hardware without flashing (brick-safe)
+
+A SuperFW image launched from the SD card like a game runs from SDRAM (the
+bootloader detects this, `rom_boot.S`), so a broken build can't brick
+anything: a power cycle boots the flashed firmware again. Always do this
+before flashing a build.
+
+1. `gba-serial.py put superfw.gba /superfw-next.gba` (`.gba`, not `.fw`), and
+   read it back with `get` + `cmp`.
+2. Browser (or Recent) -> `superfw-next.gba` -> A -> A (no patch prompt for
+   SuperFW images). Its heartbeat format tells it apart.
+3. `!` (menu or in-game) maps the flash and reboots: that's the flashed
+   firmware, not the test build.
+4. It adds itself to the Recent list; that is harmless.
+
 ### Flash a firmware over serial
 
 1. `gba-serial.py put superfw.gba /superfw-sd-uart.fw` (~50 s). Keep only one
@@ -111,7 +129,9 @@ current.
 4. `gba-shot.sh LLLL 3` (from Info): file browser. Move to the `.fw` with
    `d`/`u` (the header shows position/total) and check that it is
    highlighted. Entries starting with a dot are hidden when "Show hidden
-   files" is off, which shifts positions.
+   files" is off, which shifts positions. Builds from `superfw-next` sort
+   correctly (GB before GBA, older ones don't), show the path in the header,
+   and reopen the browser where the last game was launched from.
 5. `gba-shot.sh a 2`: "Firmware update ... Press L+R+Up to flash".
 6. `gba-serial.py send '[LRu]'`, then wait ~40 s without sending anything
    (heartbeats pause while flashing). Screenshot: "Flash update complete!".
@@ -163,6 +183,22 @@ expose the UART as a pty and to keep SD image writes.
   froze the GBA.
 - Don't rebuild or replace the core while an emulator uses it (SIGBUS).
 
+## Firmware memory budgets
+
+- Flash: 512 KiB for the SD board (`stat -c %s superfw.gba` < 524288); the
+  UART build is the tight one. `#pragma GCC optimize("Os")` on cold files
+  saved 5 KiB; `COMPRESSION_RATIO=9` saves ~1 KiB more but adds ~45 s per
+  build.
+- IWRAM: 32 KiB, of which the stack keeps 16 KiB (`ldscripts/gba_ewram.ld`
+  asserts "Not enough free IWRAM for stack"). Check the "IWRAM:" line of the
+  build. Put big buffers/state in EWRAM with `EWRAM_BSS` (compiler.h): that
+  section is NOT zeroed at boot, clear it yourself.
+- The in-game menu (`ingamemenu.payload`) shares files with the menu
+  (font_render.c, save.c, utf_util.c...). After touching them, compare its
+  payload with a build of the previous commit (`git worktree add` + `make
+  ingamemenu.payload`) to know whether the in-game menu changed and needs
+  testing (open it in the emulator with `keys.sh DIR '<LRs20>'`).
+
 ## Known hardware behaviour (Supercard SD)
 
 - SD write CRC status token arrives 2 or 3 clocks after the data at random:
@@ -193,5 +229,8 @@ expose the UART as a pty and to keep SD image writes.
   with `&&`.
 - Foreground `sleep` may be blocked by the harness:
   `python3 -c "import time; time.sleep(N)"`.
+- Kill emulator side processes with anchored patterns, ie.
+  `pkill -f "^$HOME/Work/superfw-dev/fe "`; a pattern that also appears in
+  your own command line kills your shell.
 - If `git diff` prints `i/` `w/` prefixes, pass
   `--src-prefix=a/ --dst-prefix=b/` when making patches.
