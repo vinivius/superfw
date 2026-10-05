@@ -436,6 +436,7 @@ _Static_assert (sizeof(t_centry) % 4 == 0, "t_centry must be word-friendly");
 // At the end of the SDRAM, ro-data can be loaded by the loader.
 #define scratch_mem_size (2*1024*1024)
 #define ART_MAX_DIM      80
+#define ART_CACHE_N       8     // Box art images kept decoded in SDRAM
 typedef struct {
   uint8_t scratch[scratch_mem_size];
   t_centry *fileorder[BROWSER_MAXFN_CNT];
@@ -443,7 +444,10 @@ typedef struct {
   t_centry fentries[BROWSER_MAXFN_CNT];
   t_rentry rentries[RECENT_MAXFN_CNT];
   t_reg_entry_max nordata;
-  uint16_t artpix[ART_MAX_DIM * ART_MAX_DIM / 2];  // Box art pixels (+96 offset)
+  struct {
+    uint16_t pix[ART_MAX_DIM * ART_MAX_DIM / 2];  // Box art pixels (+96 offset)
+    uint16_t pal[128];                            // Box art palette
+  } artc[ART_CACHE_N];                            // Box art cache
 } t_sdram_state;
 
 _Static_assert (sizeof(t_sdram_state) <= 14.5*1024*1024, "scratch SDRAM doesn't exceed 14.5MB");
@@ -1408,9 +1412,11 @@ static void browser_load_position() {
 
 #ifdef ENABLE_UART_LOGGING
 // Files may have changed over the serial link (uart_xfer.c), reload the lists.
+static void art_cache_clear();
 void browser_refresh_after_xfer() {
   browser_reload();
   recent_reload();
+  art_cache_clear();       // Art files may have changed too
 }
 #endif
 
@@ -1918,38 +1924,74 @@ static void render_search_wheel(volatile uint8_t *frame, unsigned x) {
   search_win_active = true;
 }
 
-// Box art side panel (ROM browser and recent list). Art is loaded lazily from
-// /.superfw/art/<filename>.img once the cursor rests on a file.
+// Box art side panel (ROM browser and recent list). Art is loaded from
+// /.superfw/art/XX/<filename>.img once the cursor rests on a file, and the
+// entries around the cursor are prefetched while idle. Decoded images are
+// kept in a small cache (SDRAM), so moving back and forth is instant.
 
 static struct {
+  uint32_t hash[ART_CACHE_N];      // Name hash (with the length, the key)
+  uint16_t len[ART_CACHE_N];       // Name length, 0: empty slot
+  uint8_t w[ART_CACHE_N], h[ART_CACHE_N];   // Dimensions (w == 0: no art)
+  uint8_t nc[ART_CACHE_N];         // Palette entries
+  uint32_t used[ART_CACHE_N];      // LRU stamp
+  uint32_t stamp;
+  int shown;                       // Slot whose palette is in palette RAM
+  int pal_slot;                    // Slot whose palette goes up at flip time
   unsigned want_since;             // Frame the cursor moved to the wanted entry
-  uint8_t w, h;                    // Loaded art dimensions (w == 0: no art)
-  uint8_t pal_cnt;                 // Palette entries pending upload (at flip)
-  uint16_t pal[128];               // Art palette
   char want[MAX_FN_LEN];           // Filename the panel wants art for ("": none)
-  char fn[MAX_FN_LEN];             // Filename the cached art belongs to
 } bart EWRAM_BSS;     // Cleared in menu_init
 
 // Art is spread over 64 subfolders, since FatFs searches directories
 // linearly and a single folder with thousands of files makes lookups slow.
 // The subfolder is FNV-1a (32 bit) of the ROM file name, modulo 64 (the
 // ROM manager tool computes the same, see tools/superfw_romlib.py).
-static unsigned boxart_bucket(const char *fn) {
+static uint32_t boxart_hash(const char *fn) {
   uint32_t h = 0x811C9DC5;
   for (; *fn; fn++)
     h = (h ^ (uint8_t)*fn) * 0x01000193;
-  return h % 64;
+  return h;
 }
 
-static void boxart_load(const char *fn) {
-  strcpy(bart.fn, fn);
-  bart.w = 0;
+static unsigned boxart_bucket(const char *fn) {
+  return boxart_hash(fn) % 64;
+}
+
+#ifdef ENABLE_UART_LOGGING
+static void art_cache_clear() {
+  memset(bart.len, 0, sizeof(bart.len));
+}
+#endif
+
+// Returns the cache slot holding the art for fn, or -1.
+static int art_find(const char *fn) {
+  uint32_t h = boxart_hash(fn);
+  unsigned l = strlen(fn);
+  for (unsigned i = 0; i < ART_CACHE_N; i++)
+    if (bart.len[i] == l && bart.hash[i] == h) {
+      bart.used[i] = ++bart.stamp;
+      return i;
+    }
+  return -1;
+}
+
+// Loads (decodes) the art for fn into the least recently used slot (never
+// the one being shown), returns the slot. Missing art is cached too (w = 0).
+static int art_load(const char *fn) {
+  int slot = 0;
+  for (unsigned i = 1; i < ART_CACHE_N; i++)
+    if ((int)i != bart.shown && (bart.used[i] < bart.used[slot] || slot == bart.shown))
+      slot = i;
+  bart.hash[slot] = boxart_hash(fn);
+  bart.len[slot] = strlen(fn);
+  bart.used[slot] = ++bart.stamp;
+  bart.w[slot] = 0;
 
   char path[MAX_FN_LEN + 24];
   npf_snprintf(path, sizeof(path), SUPERFW_DIR "/art/%02X/%s.img", boxart_bucket(fn), fn);
   FIL fd;
   if (FR_OK != f_open(&fd, path, FA_READ))
-    return;
+    return slot;
 
   uint32_t tmp[400];               // Header+palette, then pixel row chunks
   uint16_t *hdr = (uint16_t*)tmp;
@@ -1963,10 +2005,8 @@ static void boxart_load(const char *fn) {
   }
 
   if (h) {
-    // The palette is uploaded when the frame showing the art is flipped
-    // (menu_flip), pixels are offset and moved to SDRAM.
-    memcpy(bart.pal, tmp, nc * 2);
-    bart.pal_cnt = nc;
+    // Palette and pixels (offset to the art palette range) go to SDRAM.
+    dma_memcpy16(sdr_state->artc[slot].pal, tmp, nc);
     unsigned rpc = sizeof(tmp) / w;
     for (unsigned r = 0; r < h; r += rpc) {
       unsigned cnt = MIN(rpc, h - r) * w;
@@ -1975,20 +2015,23 @@ static void boxart_load(const char *fn) {
         goto out;
       for (unsigned i = 0; i < cnt; i++)
         p[i] = p[i] < nc ? p[i] + ART_PAL_BASE : ART_PAL_BASE;
-      dma_memcpy16(&sdr_state->artpix[r * w / 2], tmp, cnt / 2);
+      dma_memcpy16(&sdr_state->artc[slot].pix[r * w / 2], tmp, cnt / 2);
     }
-    bart.w = w;
-    bart.h = h;
+    bart.w[slot] = w;
+    bart.h[slot] = h;
+    bart.nc[slot] = nc;
   }
 out:
   f_close(&fd);
+  return slot;
 }
 
 // Draws the panel for the selected entry. The divider spans the list area
 // (16..bottom). The file size is drawn under the art unless szstr is NULL.
 static void render_boxart(volatile uint8_t *frame, const char *fname, bool isdir,
                           const char *szstr, unsigned iconidx, unsigned bottom) {
-  const bool cached = !isdir && !strcmp(fname, bart.fn);
+  const int slot = isdir ? -1 : art_find(fname);
+  const bool cached = slot >= 0;
   // Ask for the art, it is loaded between frames once the cursor rests.
   if (isdir || cached)
     bart.want[0] = 0;
@@ -2000,18 +2043,21 @@ static void render_boxart(volatile uint8_t *frame, const char *fname, bool isdir
   // Flat panel (no shadow, even edges), it is redrawn on every frame: only
   // the parts the art doesn't cover are filled.
   const unsigned pl = ART_PANEL_X + 4, pr = SCREEN_WIDTH - 2, pt = 19, pb = bottom - 3;
-  if (cached && bart.w) {
-    unsigned x = ART_CX - bart.w / 2, y = ART_CY - bart.h / 2;
+  if (cached && bart.w[slot]) {
+    const unsigned aw = bart.w[slot], ah = bart.h[slot];
+    unsigned x = ART_CX - aw / 2, y = ART_CY - ah / 2;
     for (unsigned yy = pt; yy < pb; yy++) {
       unsigned in = rr_in(MIN(yy - pt, pb - 1 - yy));
-      if (yy >= y && yy < y + bart.h) {
+      if (yy >= y && yy < y + ah) {
         fill_span(frame, pl + in, x, yy, SURF_COLOR);
-        fill_span(frame, x + bart.w, pr - in, yy, SURF_COLOR);
+        fill_span(frame, x + aw, pr - in, yy, SURF_COLOR);
       } else
         fill_span(frame, pl + in, pr - in, yy, SURF_COLOR);
     }
-    for (unsigned r = 0; r < bart.h; r++)
-      dma_memcpy16(&frame[(y + r) * SCREEN_WIDTH + x], &sdr_state->artpix[r * bart.w / 2], bart.w / 2);
+    for (unsigned r = 0; r < ah; r++)
+      dma_memcpy16(&frame[(y + r) * SCREEN_WIDTH + x], &sdr_state->artc[slot].pix[r * aw / 2], aw / 2);
+    // Its palette goes up when this frame is shown.
+    bart.pal_slot = slot;
   } else {
     fill_rrect(frame, pl, pr, pt, pb, SURF_COLOR);
     render_icon(ART_CX - 8, ART_CY - 16, iconidx);
@@ -2859,6 +2905,30 @@ static void settings_autosave() {
     spop.alert_msg = msgs[lang_id][MSG_ERR_SETSAVE];
 }
 
+// File name of the entry delta rows away from the cursor, if it can have
+// art (a file in the browser or the recent list), or NULL.
+#define ART_PREFETCH_IDLE  30      // Frames without input before prefetching
+static unsigned last_input_frame;
+
+static const char *art_neighbour(int delta) {
+  if (!boxart_enabled)
+    return NULL;
+  if (smenu.menu_tab == MENUTAB_ROMBROWSE && browser_loaded && !smenu.browser.qedit) {
+    int i = smenu.browser.selector + delta;
+    if (i < 0 || i >= smenu.browser.dispentries || sdr_state->fileorder[i]->isdir)
+      return NULL;
+    return sdr_state->fileorder[i]->fname;
+  }
+  if (smenu.menu_tab == MENUTAB_RECENT) {
+    int i = smenu.recent.selector + delta;
+    if (i < 0 || i >= (int)smenu.recent.maxentries)
+      return NULL;
+    t_rentry *e = &sdr_state->rentries[i];
+    return &e->fpath[e->fname_offset];
+  }
+  return NULL;
+}
+
 // Loads the wanted box art once the cursor has rested on the entry for a
 // while (and the D-pad is released), so scrolling never waits for the SD card.
 bool menu_tick() {
@@ -2873,18 +2943,36 @@ bool menu_tick() {
     settings_autosave();
     return true;
   }
-  if (!bart.want[0] || frame_count - bart.want_since < ART_SETTLE ||
-      (keys_held & (KEY_BUTTUP | KEY_BUTTDOWN | KEY_BUTTLEFT | KEY_BUTTRIGHT)))
-    return false;
-  boxart_load(bart.want);
-  bart.want[0] = 0;
-  return true;
+  if (bart.want[0]) {
+    if (frame_count - bart.want_since < ART_SETTLE ||
+        (keys_held & (KEY_BUTTUP | KEY_BUTTDOWN | KEY_BUTTLEFT | KEY_BUTTRIGHT)))
+      return false;
+    art_load(bart.want);
+    bart.want[0] = 0;
+    return true;
+  }
+  // Idle for a while: prefetch the art of the entries around the cursor,
+  // nearest first, one per frame.
+  if (frame_count - last_input_frame >= ART_PREFETCH_IDLE && !keys_held) {
+    static const int8_t order[] = {1, -1, 2, -2, 3, -3};
+    for (unsigned i = 0; i < sizeof(order); i++) {
+      const char *fn = art_neighbour(order[i]);
+      if (fn && art_find(fn) < 0) {
+        art_load(fn);
+        break;
+      }
+    }
+  }
+  return false;
 }
 
 void menu_flip() {
-  if (bart.pal_cnt) {
-    dma_memcpy16(&MEM_PALETTE[ART_PAL_BASE], bart.pal, bart.pal_cnt);
-    bart.pal_cnt = 0;
+  // The palette of the art shown in the frame about to be displayed.
+  if (bart.pal_slot >= 0) {
+    if (bart.pal_slot != bart.shown)
+      dma_memcpy16(&MEM_PALETTE[ART_PAL_BASE], sdr_state->artc[bart.pal_slot].pal, bart.nc[bart.pal_slot]);
+    bart.shown = bart.pal_slot;
+    bart.pal_slot = -1;
   }
   for (unsigned i = 0; i < objnum; i++) {
     MEM_OAM[i*4+0] = fobjs[i].y | 0x2000;  // Use 256 entries palette
@@ -2901,6 +2989,7 @@ void menu_init(int sram_testres) {
   memset(&smenu, 0, sizeof(smenu));
   memset(&spop, 0, sizeof(spop));
   memset(&bart, 0, sizeof(bart));
+  bart.shown = bart.pal_slot = -1;
   smenu.set.selector = SettTitle1 + 1;     // Titles can't be selected
 
   // The file browser reopens where the last game was launched from.
@@ -4115,6 +4204,7 @@ static void keypress_menu_info(unsigned newkeys) {
 
 
 void menu_keypress(unsigned newkeys) {
+  last_input_frame = frame_count;
   if (spop.alert_msg) {
     // Modal message pop up!
     if (newkeys & (KEY_BUTTA | KEY_BUTTB))
