@@ -12,7 +12,7 @@ index 19bb692..88d6a09 100644
  
  DEFINES := -DHAVE_STRINGS_H -DHAVE_STDINT_H -DHAVE_INTTYPES_H -D__LIBRETRO__ -DINLINE=inline -Wall
 diff --git a/gba_memory.c b/gba_memory.c
-index 4b58f8f..ba64db5 100644
+index 4b58f8f..e9153e0 100644
 --- a/gba_memory.c
 +++ b/gba_memory.c
 @@ -24,6 +24,72 @@
@@ -170,7 +170,24 @@ index 4b58f8f..ba64db5 100644
        return write_rcnt(value);
  
      // Interrupt flag, clears the bits it tries to write
-@@ -2655,7 +2734,7 @@ void init_gamepak_buffer(void)
+@@ -1429,6 +1508,16 @@ void function_cc write_backup(u32 address, u32 value)
+   if(backup_type == BACKUP_EEPROM)
+     return;
+ 
++  // The Supercard only has SRAM (two 64KiB banks, selected by the write
++  // enable bit): never switch to Flash emulation when a game probes for a
++  // Flash chip (ie. Pokemon with DirectSave, which keeps its state in SRAM).
++  if(backup_type == BACKUP_SRAM || backup_type == BACKUP_UNKN)
++  {
++    backup_type = BACKUP_SRAM;
++    gamepak_backup[address + (supercard_we ? 64*1024 : 0)] = value;
++    return;
++  }
++
+   if(backup_type == BACKUP_UNKN)
+     backup_type = BACKUP_SRAM;
+ 
+@@ -2655,7 +2744,7 @@ void init_gamepak_buffer(void)
    assert(sdfd >= 0);
    fstat(sdfd, &st);
    printf("Maping SD card file (size %d bytes)\n", st.st_size);
@@ -179,7 +196,16 @@ index 4b58f8f..ba64db5 100644
    assert(sdcardmap != NULL);
    sdcardsize = st.st_size;
  }
-@@ -3049,3 +3128,8 @@ s32 load_bios(char *name)
+@@ -3021,7 +3110,7 @@ u32 load_gamepak(const struct retro_game_info* info, const char *name,
+    flash_bank_cnt = FLASH_SIZE_64KB;
+    rtc_enabled = false;
+    rumble_enabled = false;
+-   backup_type_reset = BACKUP_UNKN;
++   backup_type_reset = BACKUP_SRAM;    // Supercard: SRAM only
+    serial_mode = force_serial;
+ 
+    load_game_config_over(&gpinfo);
+@@ -3049,3 +3138,8 @@ s32 load_bios(char *name)
  }
  
  
