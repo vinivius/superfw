@@ -63,8 +63,10 @@ enum {
 
 #define KEY_REPEAT_INITIAL    384    // Initial wait for key repeat
 #define KEY_REPEAT_MID        160    // Next key presses
-#define KEY_REPEAT_FAST        96    // End speed
+#define KEY_REPEAT_FAST        96    // Then faster
+#define KEY_REPEAT_TURBO       33    // End speed (long lists, ie. 2000+ ROMs)
 #define KEY_REPEAT_CNT1         5
+#define KEY_REPEAT_CNT2        20
 
 enum {
   POPUP_NONE,
@@ -1184,7 +1186,7 @@ static void browser_reload_filter() {
   // of memory, we use a list of pointers.
   unsigned fcount = 0;
   for (unsigned i = 0; i < smenu.browser.maxentries; i++) {
-    if ((sdr_state->fentries[i].attr & AM_HID) && hide_hidden)
+    if (((sdr_state->fentries[i].attr & AM_HID) || sdr_state->fentries[i].fname[0] == '.') && hide_hidden)
       continue;
 
     sdr_state->sortorder[fcount++] = &sdr_state->fentries[i];
@@ -1199,13 +1201,13 @@ static void browser_reload_filter() {
 
 // Loads a new directory list in the ROM browser.
 // TODO: Implement filtering (.gba/.rom/.bin... etc) using settings
-static void browser_reload() {
+static bool browser_reload() {
   smenu.anim_state = 0;
 
   unsigned fcount = 0;
   DIR d;
   if (FR_OK != f_opendir(&d, smenu.browser.cpath))
-    return;   // FIXME: Implement error reporting!
+    return false;
 
   while (1) {
     FILINFO info;
@@ -1226,6 +1228,7 @@ static void browser_reload() {
 
   // Filter and sort list of files/dirs
   browser_reload_filter();
+  return true;
 }
 
 #ifdef ENABLE_UART_LOGGING
@@ -3239,16 +3242,25 @@ static void keypress_menu_browse(unsigned newkeys) {
     // Move into a new dir and/or open a file
     if (newkeys & KEY_BUTTA) {
       t_centry *e = sdr_state->fileorder[smenu.browser.selector];
-      if (e->isdir) {
+      unsigned plen = strlen(smenu.browser.cpath);
+      if (plen + strlen(e->fname) + 2 > sizeof(smenu.browser.cpath))
+        spop.alert_msg = msgs[lang_id][MSG_ERR_READ];     // Path too long
+      else if (e->isdir) {
         strcat(smenu.browser.cpath, e->fname);
         strcat(smenu.browser.cpath, "/");
-        // Push selector history and reset it in the new dir
-        memmove(&smenu.browser.selhist[1], &smenu.browser.selhist[0],
-                sizeof(smenu.browser.selhist) - sizeof(smenu.browser.selhist[0]));
-        smenu.browser.selhist[0] = smenu.browser.selector;
-        smenu.browser.selector = 0;
         browser_clear_search();
-        browser_reload();
+        if (!browser_reload()) {
+          // Could not open it (ie. a name FatFs can't represent), stay here.
+          smenu.browser.cpath[plen] = 0;
+          browser_reload();
+          spop.alert_msg = msgs[lang_id][MSG_ERR_READ];
+        } else {
+          // Push selector history and reset it in the new dir
+          memmove(&smenu.browser.selhist[1], &smenu.browser.selhist[0],
+                  sizeof(smenu.browser.selhist) - sizeof(smenu.browser.selhist[0]));
+          smenu.browser.selhist[0] = smenu.browser.selector;
+          smenu.browser.selector = 0;
+        }
       } else {
         char path[MAX_FN_LEN];
         strcpy(path, smenu.browser.cpath);
@@ -3628,10 +3640,11 @@ void menu_keypress(unsigned newkeys) {
     int mintab = (recent_menu && smenu.recent.maxentries) ? MENUTAB_RECENT : MENUTAB_ROMBROWSE;
     if (smenu.menu_tab == MENUTAB_ROMBROWSE && smenu.browser.qedit)
       newkeys &= ~(KEY_BUTTL | KEY_BUTTR);
+    // Tabs wrap around, so every tab is reachable with either trigger.
     if (newkeys & KEY_BUTTL)
-      smenu.menu_tab = MAX((int)smenu.menu_tab - 1, mintab);
+      smenu.menu_tab = ((int)smenu.menu_tab <= mintab) ? MENUTAB_MAX - 1 : smenu.menu_tab - 1;
     else if (newkeys & KEY_BUTTR)
-      smenu.menu_tab = MIN(smenu.menu_tab + 1, MENUTAB_MAX - 1);
+      smenu.menu_tab = (smenu.menu_tab >= MENUTAB_MAX - 1) ? mintab : smenu.menu_tab + 1;
 
     if (newkeys & (KEY_BUTTL | KEY_BUTTR | KEY_BUTTUP | KEY_BUTTDOWN))
       smenu.anim_state = 0;
@@ -3651,8 +3664,9 @@ void menu_keypress(unsigned newkeys) {
   }
 }
 
-// Only repeat keys A/B and Dir
-const uint16_t keyrep = 0x0F3;
+// Only repeat the D-pad: a held A or B must not launch a game or climb up
+// several folders.
+const uint16_t keyrep = KEY_BUTTUP | KEY_BUTTDOWN | KEY_BUTTLEFT | KEY_BUTTRIGHT;
 static uint32_t keyreptmr[10] = {0};
 static uint8_t  keyrepcnt[10] = {0};
 static uint32_t prev_keys = 0;
@@ -3670,12 +3684,14 @@ uint16_t get_keypress() {
         keyrepcnt[i] = 0;
       }
       else if (((1 << i) & keyrep) && systime() > keyreptmr[i]) {
-        if (keyrepcnt[i] > KEY_REPEAT_CNT1)
-          keyreptmr[i] = systime() + KEY_REPEAT_FAST;
-        else {
-          keyreptmr[i] = systime() + KEY_REPEAT_MID;
+        if (keyrepcnt[i] < 255)
           keyrepcnt[i]++;
-        }
+        if (keyrepcnt[i] > KEY_REPEAT_CNT2)
+          keyreptmr[i] = systime() + KEY_REPEAT_TURBO;
+        else if (keyrepcnt[i] > KEY_REPEAT_CNT1)
+          keyreptmr[i] = systime() + KEY_REPEAT_FAST;
+        else
+          keyreptmr[i] = systime() + KEY_REPEAT_MID;
         mkeys |= (1 << i);
       }
     }

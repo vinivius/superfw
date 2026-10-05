@@ -6,7 +6,8 @@
 // SIGUSR1 saves the current frame to fe-shot.ppm (see shot.sh).
 // Keys can be injected through the fe.ctl FIFO (see keys.sh), using the same
 // characters as the UART debug builds: a b u d l r L R s e, [...] combos.
-// Each key is held for 4 frames, then released for 4 frames.
+// Each key is held for 4 frames, then released for 4 frames. <KEYS FRAMES>
+// holds KEYS for FRAMES frames, ie. <d120> (to test key repeat).
 // The core opens sdcard.img in the current directory.
 #include <dlfcn.h>
 #include <stdio.h>
@@ -48,18 +49,21 @@ static unsigned fifo_key(char c){
   case 'L': return 1<<RETRO_DEVICE_ID_JOYPAD_L;     case 'R': return 1<<RETRO_DEVICE_ID_JOYPAD_R;
   default: return 0; }
 }
-static int ctl_fd=-1; static unsigned kq[256], kqh, kqt, kstate, ktimer, kcombo; static int incombo;
+static int ctl_fd=-1; static unsigned kq[256], kqf[256], kqh, kqt, kstate, ktimer, kcombo, khold; static int incombo, inhold;
 static unsigned ctl_keys(void){      // Called once per frame, returns the injected keys
   char buf[64]; int n;
   while(ctl_fd>=0 && (n=read(ctl_fd,buf,sizeof(buf)))>0)
     for(int i=0;i<n;i++){
       if(buf[i]=='['){incombo=1;kcombo=0;}
-      else if(buf[i]==']'){incombo=0; if(kcombo){kq[kqt++&255]=kcombo;}}
-      else if(incombo) kcombo|=fifo_key(buf[i]);
-      else if(fifo_key(buf[i])) kq[kqt++&255]=fifo_key(buf[i]);
+      else if(buf[i]==']'){incombo=0; if(kcombo){kqf[kqt&255]=4; kq[kqt++&255]=kcombo;}}
+      else if(buf[i]=='<'){inhold=1;kcombo=0;khold=0;}
+      else if(buf[i]=='>'){inhold=0; if(kcombo){kqf[kqt&255]=khold?khold:4; kq[kqt++&255]=kcombo;}}
+      else if(inhold && buf[i]>='0' && buf[i]<='9') khold=khold*10+(buf[i]-'0');
+      else if(incombo||inhold) kcombo|=fifo_key(buf[i]);
+      else if(fifo_key(buf[i])){kqf[kqt&255]=4; kq[kqt++&255]=fifo_key(buf[i]);}
     }
   if(ktimer){ ktimer--; if(!ktimer && kstate==1){kstate=2;ktimer=4;} else if(!ktimer) kstate=0; }
-  if(!ktimer && kstate==0 && kqh!=kqt){ kstate=1; ktimer=4; kqh++; }
+  if(!ktimer && kstate==0 && kqh!=kqt){ kstate=1; ktimer=kqf[kqh&255]; kqh++; }
   return kstate==1 ? kq[(kqh-1)&255] : 0;
 }
 static volatile sig_atomic_t want_shot;
