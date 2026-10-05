@@ -90,6 +90,11 @@ enum {
 #define BG_COLOR         17
 #define FT_COLOR         18
 #define HI_COLOR         19
+#define SURF_COLOR       20     // Cards, popups, panels
+#define MUTED_COLOR      21     // Secondary text, outlines, inactive controls
+#define ACC_COLOR        22     // Accent color
+#define SHADOW_COLOR     23     // Card shadows
+#define ONACC_COLOR      24     // Content on the accent color
 #define IGM_PAL_FG      240
 #define IGM_PAL_BG      241
 #define IGM_PAL_HI      242
@@ -215,22 +220,44 @@ enum {
   FiMgrCNT
 };
 
+// Menu themes. Light ones work on every console (the original GBA has no
+// backlight), dark ones look better on backlit screens.
 const struct {
-  uint16_t fg_color;     // Foreground elements color
+  uint16_t fg_color;     // Header/footer bars
   uint16_t bg_color;     // Background color
   uint16_t ft_color;     // Font color
-  uint16_t hi_color;     // Item/Buttom highlight
-  uint16_t hi_blend;     // Menu highlight color (browser)
-  uint16_t sh_color;     // Menu shadow/disabled color
+  uint16_t hi_color;     // Selected button fill
+  uint16_t hi_blend;     // Selection pill (blended over the background)
+  uint16_t sh_color;     // In-game menu disabled entries
+  uint16_t surf_color;   // Cards, popups, panels
+  uint16_t muted_color;  // Secondary text, outlines, inactive controls
+  uint16_t acc_color;    // Accent (active tab, switches, progress)
+  uint16_t shadow_color; // Card shadows
+  uint16_t onacc_color;  // Content on the accent color
 } themes[] = {
-  { RGB2GBA(0xaaaaaa), RGB2GBA(0xffffff), RGB2GBA(0x000000), RGB2GBA(0xcccccc), RGB2GBA(0x9999bb), RGB2GBA(0xc08888) }, // White
-  { RGB2GBA(0xeca551), RGB2GBA(0xe7c092), RGB2GBA(0x000000), RGB2GBA(0xbda27b), RGB2GBA(0x90816e), RGB2GBA(0x615d58) }, // Orange
-  { RGB2GBA(0x26879c), RGB2GBA(0x8fb1b8), RGB2GBA(0x000000), RGB2GBA(0x5296a5), RGB2GBA(0x1d7f95), RGB2GBA(0x6f8185) }, // Blue
-  { RGB2GBA(0x308855), RGB2GBA(0x88aa99), RGB2GBA(0x000000), RGB2GBA(0x778888), RGB2GBA(0x777777), RGB2GBA(0x606060) }, // Green
-  { RGB2GBA(0xad11c8), RGB2GBA(0xe47af6), RGB2GBA(0x000000), RGB2GBA(0xad5dc6), RGB2GBA(0x724095), RGB2GBA(0x72667a) }, // Purple
-  { RGB2GBA(0x222222), RGB2GBA(0x444444), RGB2GBA(0xeeeeee), RGB2GBA(0x737573), RGB2GBA(0xaaaaaa), RGB2GBA(0x606060) }, // Dark
+  // Cloud (light, blue)
+  { RGB2GBA(0xffffff), RGB2GBA(0xeef1f6), RGB2GBA(0x1b1f27), RGB2GBA(0xbcd2ff), RGB2GBA(0x5b8def), RGB2GBA(0x9aa3b2),
+    RGB2GBA(0xffffff), RGB2GBA(0x8c95a6), RGB2GBA(0x2f6feb), RGB2GBA(0xd3d9e3), RGB2GBA(0xffffff) },
+  // Midnight (dark, blue)
+  { RGB2GBA(0x111318), RGB2GBA(0x1a1d24), RGB2GBA(0xe8eaf0), RGB2GBA(0x2d4473), RGB2GBA(0x4c82f7), RGB2GBA(0x687082),
+    RGB2GBA(0x252933), RGB2GBA(0x7e8798), RGB2GBA(0x5b94ff), RGB2GBA(0x0a0b0e), RGB2GBA(0xffffff) },
+  // Grape (dark, purple)
+  { RGB2GBA(0x131018), RGB2GBA(0x1c1824), RGB2GBA(0xece8f2), RGB2GBA(0x45306e), RGB2GBA(0x9a6bff), RGB2GBA(0x6e6880),
+    RGB2GBA(0x282233), RGB2GBA(0x8b8399), RGB2GBA(0xa77bff), RGB2GBA(0x0b090e), RGB2GBA(0xffffff) },
+  // Mint (dark, teal)
+  { RGB2GBA(0x0f1615), RGB2GBA(0x172120), RGB2GBA(0xe6f0ee), RGB2GBA(0x1e5148), RGB2GBA(0x2fbf9f), RGB2GBA(0x63787a),
+    RGB2GBA(0x202d2b), RGB2GBA(0x7d9592), RGB2GBA(0x34d1ae), RGB2GBA(0x090d0c), RGB2GBA(0x06231d) },
+  // Ember (dark, orange)
+  { RGB2GBA(0x17120f), RGB2GBA(0x211a16), RGB2GBA(0xf2eae4), RGB2GBA(0x6a3a1d), RGB2GBA(0xff8a3d), RGB2GBA(0x7d6e66),
+    RGB2GBA(0x2d241f), RGB2GBA(0x9a8a80), RGB2GBA(0xff8f45), RGB2GBA(0x0e0b09), RGB2GBA(0x2a1406) },
+  // Sakura (light, pink)
+  { RGB2GBA(0xffffff), RGB2GBA(0xf7eef2), RGB2GBA(0x2a1d24), RGB2GBA(0xf6bfd5), RGB2GBA(0xe86a9a), RGB2GBA(0xa8949e),
+    RGB2GBA(0xffffff), RGB2GBA(0xa08c96), RGB2GBA(0xd9467f), RGB2GBA(0xe6d3dc), RGB2GBA(0xffffff) },
 };
 #define THEME_COUNT (sizeof(themes) / sizeof(themes[0]))
+static const char * const theme_names[] = {
+  "Cloud", "Midnight", "Grape", "Mint", "Ember", "Sakura"
+};
 _Static_assert(THEME_COUNT == MENU_THEME_COUNT, "Update MENU_THEME_COUNT");
 
 typedef struct {
@@ -497,6 +524,8 @@ NOINLINE int romsort(const void *a, const void *b) {
 static void draw_box_outline(volatile uint8_t *frame, unsigned left, unsigned right, unsigned top, unsigned bottom, uint8_t color);
 static void draw_central_text(const char *t, volatile uint8_t *frame, unsigned x, unsigned y);
 
+static void fill_rrect(volatile uint8_t *frame, unsigned l, unsigned r, unsigned t, unsigned b, uint8_t c);
+
 static void loadrom_progress(unsigned done, unsigned total) {
   // Draws and flips the buffer, do not care about vsync here
   volatile uint8_t *frame = &MEM_VRAM_U8[0xA000*framen];
@@ -504,12 +533,10 @@ static void loadrom_progress(unsigned done, unsigned total) {
   // Render the full background to a solid color
   dma_memset16(&frame[0], dup8(BG_COLOR), SCREEN_WIDTH*SCREEN_HEIGHT/2);
 
-  // Render a progress bar (in a frame) with the percentage below
+  // Render a progress bar with the percentage below
   unsigned pct = MIN(100, done * 100 / (total ?: 1));
-  unsigned prog = pct * 2;
-  draw_box_outline(frame, 16, 224, 72, 88, FG_COLOR);
-  for (unsigned i = 76; i < 84; i++)
-    dma_memset16(&frame[SCREEN_WIDTH * i + 20], dup8(FG_COLOR), prog/2);
+  fill_rrect(frame, 20, 220, 74, 86, SURF_COLOR);
+  fill_rrect(frame, 20, 20 + MAX(10, pct * 2), 74, 86, ACC_COLOR);
   char tmp[8];
   npf_snprintf(tmp, sizeof(tmp), "%u%%", pct);
   draw_central_text(tmp, frame, SCREEN_WIDTH / 2, 92);
@@ -1420,6 +1447,18 @@ static inline void render_icon_trans(unsigned x, unsigned y, unsigned iconn) {
   fobjs[objnum++] = (t_oamobj){x, y | 0x0400, 8*iconn };
 }
 
+// Selection pill (blended OBJs): rounded ends (tiles 61, 62) and middle
+// pieces (63), spanning [x0, x1) on row y.
+#define SEL_TILE_L  61
+#define SEL_TILE_R  62
+#define SEL_TILE    63
+static void render_selbar(unsigned x0, unsigned x1, unsigned y) {
+  render_icon_trans(x0, y, SEL_TILE_L);
+  for (unsigned x = x0 + 16; x < x1 - 16; x += 16)
+    render_icon_trans(x, y, SEL_TILE);
+  render_icon_trans(x1 - 16, y, SEL_TILE_R);
+}
+
 // Guess the file type based on the file name.
 static unsigned guessicon(const char *path) {
   const char *ext = find_extension(path);
@@ -1457,19 +1496,22 @@ static const char *display_name(const char *fn, unsigned icon, char *buf) {
   return buf;
 }
 
+// Color used by the text helpers below (secondary text uses MUTED_COLOR).
+static uint8_t txt_color = FT_COLOR;
+
 // Draws text adding some support for overflow.
 #define THREEDOTS_WIDTH  9
 static void draw_text_ovf(const char *t, volatile uint8_t *frame, unsigned x, unsigned y, unsigned maxw) {
   uint8_t *basept = (uint8_t*)&frame[y * SCREEN_WIDTH + x];
   // Only measure up to the cut, names can be much longer than what fits.
   if (!t[font_width_cap(t, maxw)])
-    draw_text_idx8_bus16(t, basept, SCREEN_WIDTH, FT_COLOR);
+    draw_text_idx8_bus16(t, basept, SCREEN_WIDTH, txt_color);
   else {
     char tmpbuf[256];
     unsigned numchars = font_width_cap(t, maxw - THREEDOTS_WIDTH);
     memcpy(tmpbuf, t, numchars);
     memcpy(&tmpbuf[numchars], "...", 4);
-    draw_text_idx8_bus16(tmpbuf, basept, SCREEN_WIDTH, FT_COLOR);
+    draw_text_idx8_bus16(tmpbuf, basept, SCREEN_WIDTH, txt_color);
   }
 }
 
@@ -1477,10 +1519,10 @@ static void draw_text_leftovf(const char *t, volatile uint8_t *frame, unsigned x
   uint8_t *basept = (uint8_t*)&frame[y * SCREEN_WIDTH + x];
   unsigned numchars = font_width_lcap(t, maxw - THREEDOTS_WIDTH);
   if (numchars) {
-    draw_text_idx8_bus16("...", basept, SCREEN_WIDTH, FT_COLOR);
-    draw_text_idx8_bus16(&t[numchars], basept + THREEDOTS_WIDTH, SCREEN_WIDTH, FT_COLOR);
+    draw_text_idx8_bus16("...", basept, SCREEN_WIDTH, txt_color);
+    draw_text_idx8_bus16(&t[numchars], basept + THREEDOTS_WIDTH, SCREEN_WIDTH, txt_color);
   } else {
-    draw_text_idx8_bus16(t, basept, SCREEN_WIDTH, FT_COLOR);
+    draw_text_idx8_bus16(t, basept, SCREEN_WIDTH, txt_color);
   }
 }
 
@@ -1533,7 +1575,7 @@ static void draw_text_ovf_rotate(const char *t, volatile uint8_t *frame, unsigne
   }
   unsigned twidth = wc.width;
   if (twidth <= maxw)
-    draw_text_idx8_bus16(t, basept, SCREEN_WIDTH, FT_COLOR);
+    draw_text_idx8_bus16(t, basept, SCREEN_WIDTH, txt_color);
   else {
     anim_active = true;
     unsigned anim = *franim > ANIM_INITIAL_WAIT ? (*franim - ANIM_INITIAL_WAIT) >> 4 : 0;
@@ -1547,68 +1589,156 @@ static void draw_text_ovf_rotate(const char *t, volatile uint8_t *frame, unsigne
     }
 
     if (anim < twidth)
-      draw_text_idx8_bus16_range(t, basept, anim, maxw, SCREEN_WIDTH, FT_COLOR);
+      draw_text_idx8_bus16_range(t, basept, anim, maxw, SCREEN_WIDTH, txt_color);
     unsigned x2 = pixw - anim;
     if (x2 < maxw)
-      draw_text_idx8_bus16_range(t, basept + x2, 0, maxw - x2, SCREEN_WIDTH, FT_COLOR);
+      draw_text_idx8_bus16_range(t, basept + x2, 0, maxw - x2, SCREEN_WIDTH, txt_color);
   }
 }
 
-static void draw_box_outline(volatile uint8_t *frame, unsigned left, unsigned right, unsigned top, unsigned bottom, uint8_t color) {
-  dma_memset16(&frame[SCREEN_WIDTH * top + left], dup8(color), (right - left) / 2);
-  dma_memset16(&frame[SCREEN_WIDTH * (top + 1) + left], dup8(color), (right - left) / 2);
-  dma_memset16(&frame[SCREEN_WIDTH * (bottom - 1) + left], dup8(color), (right - left) / 2);
-  dma_memset16(&frame[SCREEN_WIDTH * (bottom - 2) + left], dup8(color), (right - left) / 2);
-  while (top < bottom) {
-    *((uint16_t*)&frame[SCREEN_WIDTH * top + left]) = dup8(color);
-    *((uint16_t*)&frame[SCREEN_WIDTH * top + right - 2]) = dup8(color);
-    top++;
+// Drawing primitives. VRAM only takes 16 bit writes: single pixels are
+// read-modify-write, spans are written two pixels at a time.
+static void put_px(volatile uint8_t *frame, unsigned x, unsigned y, uint8_t c) {
+  volatile uint16_t *p = (volatile uint16_t*)&frame[(y * SCREEN_WIDTH + x) & ~1U];
+  *p = (x & 1) ? ((*p & 0x00FF) | (c << 8)) : ((*p & 0xFF00) | c);
+}
+
+// Fills pixels [x0, x1) of row y.
+static void fill_span(volatile uint8_t *frame, unsigned x0, unsigned x1, unsigned y, uint8_t c) {
+  if (x0 >= x1)
+    return;
+  if (x0 & 1)
+    put_px(frame, x0++, y, c);
+  if (x1 & 1)
+    put_px(frame, --x1, y, c);
+  if (x1 > x0)
+    dma_memset16(&frame[y * SCREEN_WIDTH + x0], dup8(c), (x1 - x0) / 2);
+}
+
+// Rounded rectangles (corner radius 4), [l, r) x [t, b).
+static const uint8_t rr_inset[4] = {4, 2, 1, 1};
+static inline unsigned rr_in(unsigned d) {
+  return d < 4 ? rr_inset[d] : 0;
+}
+
+static void fill_rrect(volatile uint8_t *frame, unsigned l, unsigned r, unsigned t, unsigned b, uint8_t c) {
+  for (unsigned y = t; y < b; y++) {
+    unsigned in = rr_in(MIN(y - t, b - 1 - y));
+    fill_span(frame, l + in, r - in, y, c);
   }
+}
+
+static void outline_rrect(volatile uint8_t *frame, unsigned l, unsigned r, unsigned t, unsigned b, uint8_t c) {
+  for (unsigned y = t; y < b; y++) {
+    unsigned d = MIN(y - t, b - 1 - y);
+    if (!d)
+      fill_span(frame, l + rr_inset[0], r - rr_inset[0], y, c);
+    else {
+      unsigned in = rr_in(d), w = MAX(rr_in(d - 1), in + 1) - in;
+      fill_span(frame, l + in, l + in + w, y, c);
+      fill_span(frame, r - in - w, r - in, y, c);
+    }
+  }
+}
+
+// A card: surface colored rounded rectangle with a soft shadow.
+static void draw_card(volatile uint8_t *frame, unsigned l, unsigned r, unsigned t, unsigned b) {
+  fill_rrect(frame, l + 1, r + 1, t + 2, b + 2, SHADOW_COLOR);
+  fill_rrect(frame, l, r, t, b, SURF_COLOR);
+}
+
+static void draw_box_outline(volatile uint8_t *frame, unsigned left, unsigned right, unsigned top, unsigned bottom, uint8_t color) {
+  outline_rrect(frame, left, right, top, bottom, color == FG_COLOR ? MUTED_COLOR : color);
 }
 
 static void draw_box_full(
   volatile uint8_t *frame, unsigned left, unsigned right, unsigned top, unsigned bottom,
   uint8_t outlinecolor, uint8_t bgcolor
 ) {
-  draw_box_outline(frame, left, right, top, bottom, outlinecolor);
-  for (unsigned i = top + 2; i < bottom - 2; i++)
-    dma_memset16(&frame[SCREEN_WIDTH * i + left + 2], dup8(bgcolor), (right - left - 4) / 2);
+  (void)outlinecolor;
+  (void)bgcolor;
+  draw_card(frame, left, right, top, bottom);
 }
 
 static void draw_button_box(
   volatile uint8_t *frame, unsigned left, unsigned right, unsigned top, unsigned bottom, bool selected
 ) {
   if (selected)
-    draw_box_full(frame, left, right, top, bottom, FG_COLOR, HI_COLOR);
+    fill_rrect(frame, left, right, top, bottom, HI_COLOR);
   else
-    draw_box_outline(frame, left, right, top, bottom, FG_COLOR);
+    outline_rrect(frame, left, right, top, bottom, MUTED_COLOR);
+}
+
+// On/off switch centered at cx (row y is the text row).
+static void draw_toggle(volatile uint8_t *frame, unsigned cx, unsigned y, bool on) {
+  static const uint8_t track[10] = {3, 1, 0, 0, 0, 0, 0, 0, 1, 3};
+  static const uint8_t knob[6] = {1, 0, 0, 0, 0, 1};
+  for (unsigned i = 0; i < 10; i++)
+    fill_span(frame, cx - 11 + track[i], cx + 11 - track[i], y + 3 + i, on ? ACC_COLOR : MUTED_COLOR);
+  unsigned kx = on ? cx + 3 : cx - 9;
+  for (unsigned i = 0; i < 6; i++)
+    fill_span(frame, kx + knob[i], kx + 6 - knob[i], y + 5 + i, on ? ONACC_COLOR : SURF_COLOR);
 }
 
 
 static void draw_rightj_text(const char *t, volatile uint8_t *frame, unsigned x, unsigned y) {
   unsigned twidth = font_width(t);
   uint8_t *basept = (uint8_t*)&frame[y * SCREEN_WIDTH + x - twidth];
-  draw_text_idx8_bus16(t, basept, SCREEN_WIDTH, FT_COLOR);
+  draw_text_idx8_bus16(t, basept, SCREEN_WIDTH, txt_color);
 }
 
 static void draw_central_text(const char *t, volatile uint8_t *frame, unsigned x, unsigned y) {
   unsigned twidth = font_width(t);
   uint8_t *basept = (uint8_t*)&frame[y * SCREEN_WIDTH + x - twidth / 2];
-  draw_text_idx8_bus16(t, basept, SCREEN_WIDTH, FT_COLOR);
+  draw_text_idx8_bus16(t, basept, SCREEN_WIDTH, txt_color);
 }
 
 static void draw_central_text_ovf(const char *t, volatile uint8_t *frame, unsigned x, unsigned y, unsigned maxw) {
   unsigned twidth = font_width(t);
   if (twidth <= maxw) {
     uint8_t *basept = (uint8_t*)&frame[y * SCREEN_WIDTH + x - twidth / 2];
-    draw_text_idx8_bus16(t, basept, SCREEN_WIDTH, FT_COLOR);
+    draw_text_idx8_bus16(t, basept, SCREEN_WIDTH, txt_color);
   } else {
     char tmpbuf[256];
     unsigned numchars = font_width_cap(t, maxw - THREEDOTS_WIDTH);
     memcpy(tmpbuf, t, numchars);
     memcpy(&tmpbuf[numchars], "...", 4);
     uint8_t *basept = (uint8_t*)&frame[y * SCREEN_WIDTH + x - maxw / 2];
-    draw_text_idx8_bus16(tmpbuf, basept, SCREEN_WIDTH, FT_COLOR);
+    draw_text_idx8_bus16(tmpbuf, basept, SCREEN_WIDTH, txt_color);
+  }
+}
+
+// Button hints, ie. "START: Search    SELECT: Options": button names are
+// drawn as keycaps, followed by their action.
+static void draw_hints(volatile uint8_t *frame, const char *s, unsigned y) {
+  unsigned x = 6;
+  while (*s && x < SCREEN_WIDTH - 24) {
+    while (*s == ' ')
+      s++;
+    const char *colon = strchr(s, ':');
+    if (!colon)
+      break;
+    char key[16], act[64];
+    unsigned kl = MIN((unsigned)(colon - s), sizeof(key) - 1);
+    memcpy(key, s, kl);
+    while (kl && key[kl - 1] == ' ')
+      kl--;
+    key[kl] = 0;
+    s = colon + 1;
+    while (*s == ' ')
+      s++;
+    const char *end = strstr(s, "  ");
+    unsigned al = MIN(end ? (unsigned)(end - s) : strlen(s), sizeof(act) - 1);
+    memcpy(act, s, al);
+    act[al] = 0;
+    s += al;
+
+    unsigned kw = font_width(key);
+    fill_rrect(frame, x, x + kw + 8, y + 1, y + 16, MUTED_COLOR);
+    draw_text_idx8_bus16(key, (uint8_t*)&frame[y * SCREEN_WIDTH + x + 4], SCREEN_WIDTH, FG_COLOR);
+    x += kw + 12;
+    draw_text_ovf(act, frame, x, y, SCREEN_WIDTH - 4 - x);
+    x += font_width(act) + 14;
   }
 }
 
@@ -1647,7 +1777,7 @@ static void draw_central_text_wrapped(const char *t, volatile uint8_t *frame, un
     tmp[charcnt] = 0;
     unsigned outw = font_width(tmp);
     uint8_t *basept = (uint8_t*)&frame[y * SCREEN_WIDTH + x - outw / 2];
-    draw_text_idx8_bus16(tmp, basept, SCREEN_WIDTH, FT_COLOR);
+    draw_text_idx8_bus16(tmp, basept, SCREEN_WIDTH, txt_color);
 
     t += charcnt;      // Advance text
     if (*t == ' ')
@@ -1693,9 +1823,8 @@ void render_recent(volatile uint8_t *frame) {
     }
   }
 
-  // Selection bar, clipped to the list width (last OBJ may overlap).
-  for (unsigned i = 0; i < listw; i += 16)
-    render_icon_trans(MIN(i, listw - 16), (smenu.recent.selector - smenu.recent.seloff + 1)*16, 63);
+  // Selection pill, clipped to the list width.
+  render_selbar(1, listw - 2, (smenu.recent.selector - smenu.recent.seloff + 1)*16);
 }
 
 #ifdef SUPPORT_NORGAMES
@@ -1841,8 +1970,7 @@ out:
 // (16..bottom). The file size is drawn under the art unless szstr is NULL.
 static void render_boxart(volatile uint8_t *frame, const char *fname, bool isdir,
                           const char *szstr, unsigned iconidx, unsigned bottom) {
-  for (unsigned y = 16; y < bottom; y++)
-    *(volatile uint16_t*)&frame[y * SCREEN_WIDTH + ART_PANEL_X] = dup8(FG_COLOR);
+  draw_card(frame, ART_PANEL_X + 3, SCREEN_WIDTH - 2, 19, bottom - 4);
 
   const bool cached = !isdir && !strcmp(fname, bart.fn);
   // Ask for the art, it is loaded between frames once the cursor rests.
@@ -1858,14 +1986,17 @@ static void render_boxart(volatile uint8_t *frame, const char *fname, bool isdir
     for (unsigned r = 0; r < bart.h; r++)
       dma_memcpy16(&frame[(y + r) * SCREEN_WIDTH + x], &sdr_state->artpix[r * bart.w / 2], bart.w / 2);
   } else {
-    draw_box_outline(frame, ART_CX - 40, ART_CX + 40, ART_CY - 40, ART_CY + 40, FG_COLOR);
-    render_icon(ART_CX - 8, ART_CY - 8, iconidx);
+    render_icon(ART_CX - 8, ART_CY - 16, iconidx);
+    txt_color = MUTED_COLOR;
     if (cached)
-      draw_central_text(msgs[lang_id][MSG_ART_NONE], frame, ART_CX, ART_CY + 12);
+      draw_central_text(msgs[lang_id][MSG_ART_NONE], frame, ART_CX, ART_CY + 4);
+    txt_color = FT_COLOR;
   }
 
+  txt_color = MUTED_COLOR;
   if (szstr)
     draw_central_text(szstr, frame, ART_CX, ART_CY + 44);
+  txt_color = FT_COLOR;
 }
 
 void render_browser(volatile uint8_t *frame) {
@@ -1914,9 +2045,8 @@ void render_browser(volatile uint8_t *frame) {
       }
     }
 
-    // Selection bar, clipped to the list width (last OBJ may overlap).
-    for (unsigned i = 0; i < listw; i += 16)
-      render_icon_trans(MIN(i, listw - 16), (smenu.browser.selector - smenu.browser.seloff + 1)*16, 63);
+    // Selection pill, clipped to the list width.
+    render_selbar(1, listw - 2, (smenu.browser.selector - smenu.browser.seloff + 1)*16);
   }
 
   if (smenu.browser.qedit || smenu.browser.qlen) {
@@ -1935,13 +2065,13 @@ void render_browser(volatile uint8_t *frame) {
   }
   else {
     // The path is in the header, show the less obvious buttons here.
-    draw_text_ovf(msgs[lang_id][MSG_BROW_HINTS], frame, 8, 144, SCREEN_WIDTH - 16);
+    draw_hints(frame, msgs[lang_id][MSG_BROW_HINTS], 144);
   }
 }
 
 void render_fw_flash_popup(volatile uint8_t *frame) {
   // Render a box to give a pop-up feeling
-  draw_box_outline(frame, 2, 240-2, 18, 158, FG_COLOR);
+  draw_card(frame, 4, 236, 19, 156);
 
   draw_central_text(msgs[lang_id][MSG_FWUPD_MENU], frame, 120, 30);
 
@@ -1971,7 +2101,7 @@ void render_fw_flash_popup(volatile uint8_t *frame) {
 
 void render_sav_menu_popup(volatile uint8_t *frame) {
   // Render a box to give a pop-up feeling
-  draw_box_outline(frame, 2, 240-2, 18, 158, FG_COLOR);
+  draw_card(frame, 4, 236, 19, 156);
 
   for (unsigned i = 0; i < 3; i++) {
     draw_button_box(frame, 20, 220, 32 + 28 * i, 32 + 28 * i + 20, spop.selector == i);
@@ -2023,7 +2153,7 @@ static void render_gbarom_info(volatile uint8_t *frame, const char *dispname,
     draw_central_text_ovf(tmp, frame, SCREEN_WIDTH/2, 102, SCREEN_WIDTH - 20);
   }
 
-  draw_box_full(frame, 20, 220, 132, 152, FG_COLOR, HI_COLOR);
+  draw_button_box(frame, 20, 220, 132, 152, true);
 }
 
 static const char *render_gbarom_patching(volatile uint8_t *frame, const t_load_gba_info *info, int selector) {
@@ -2033,9 +2163,9 @@ static const char *render_gbarom_patching(volatile uint8_t *frame, const t_load_
   draw_text_ovf(msgs[lang_id][MSG_LOADER_SAVET], frame, 12, 62, 224);
   draw_central_text(msgs[lang_id][MSG_LOADER_ST0 + (info->use_dsaving ? 0 : 1)], frame, 170, 62);
   draw_text_ovf(msgs[lang_id][MSG_LOADER_MENU], frame, 12, 80, 224);
-  draw_central_text(msgs[lang_id][info->ingame_menu_enabled ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, 170, 80);
+  draw_toggle(frame, 170, 80, info->ingame_menu_enabled);
   draw_text_ovf(msgs[lang_id][MSG_LOADER_RTCE], frame, 12, 98, 224);
-  draw_central_text(msgs[lang_id][info->rtc_patch_enabled ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, 170, 98);
+  draw_toggle(frame, 170, 98, info->rtc_patch_enabled);
 
   draw_text_ovf(msgs[lang_id][MSG_LOADER_PTCH], frame, 12, 116, 224);
   draw_box_outline(frame, 170 - 20, 170 + 20, 115, 133, FG_COLOR);
@@ -2066,7 +2196,7 @@ static const char *render_gbarom_loading(volatile uint8_t *frame, const t_load_g
   else
     draw_central_text("-", frame, 170, 80);
   draw_text_ovf(msgs[lang_id][MSG_SETT_LDCHT], frame, 12, 98, 224);
-  draw_central_text(msgs[lang_id][data->use_cheats ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, 170, 98);
+  draw_toggle(frame, 170, 98, data->use_cheats);
 
   draw_box_outline(frame, 170 - 20, 170 + 20, 115, 133, FG_COLOR);
   draw_text_ovf(msgs[lang_id][MSG_SETT_REMEMB], frame, 12, 116, 224);
@@ -2080,7 +2210,7 @@ static const char *render_gbarom_loading(volatile uint8_t *frame, const t_load_g
 }
 
 void render_gba_load_popup(volatile uint8_t *frame) {
-  draw_box_outline(frame, 2, 240-2, 18, 158, FG_COLOR);
+  draw_card(frame, 4, 236, 19, 156);
   draw_page_arrows(frame);
 
   const t_load_gba_info *info = &spop.p.load.i;
@@ -2111,16 +2241,14 @@ void render_gba_load_popup(volatile uint8_t *frame) {
 
   if (spop.submenu != GbaLoadPopInfo) {
     const unsigned offy = 43;
-    for (unsigned i = 8; i < 232; i += 16) {
-      render_icon_trans(i, offy + 0 + spop.selector * 18, 63);
-      render_icon_trans(i, offy + 2 + spop.selector * 18, 63);
-    }
+    render_selbar(8, 232, offy + 0 + spop.selector * 18);
+    render_selbar(8, 232, offy + 2 + spop.selector * 18);
   }
 }
 
 void render_filemgr(volatile uint8_t *frame) {
   // Draw the file name and the options available
-  draw_box_outline(frame, 2, 240-2, 18, 158, FG_COLOR);
+  draw_card(frame, 4, 236, 19, 156);
 
   t_centry *e = sdr_state->fileorder[smenu.browser.selector];
   const char *bn = file_basename(e->fname);
@@ -2145,7 +2273,7 @@ void render_filemgr(volatile uint8_t *frame) {
 
 #ifdef SUPPORT_NORGAMES
 void render_gba_norwrite(volatile uint8_t *frame) {
-  draw_box_outline(frame, 2, 240-2, 18, 158, FG_COLOR);
+  draw_card(frame, 4, 236, 19, 156);
 
   draw_page_arrows(frame);
 
@@ -2165,15 +2293,13 @@ void render_gba_norwrite(volatile uint8_t *frame) {
         draw_central_text_ovf(ht, frame, SCREEN_WIDTH/2, 137, SCREEN_WIDTH - 20);
     }
     const unsigned offy = 43;
-    for (unsigned i = 8; i < 232; i += 16) {
-      render_icon_trans(i, offy + 0 + spop.selector * 18, 63);
-      render_icon_trans(i, offy + 2 + spop.selector * 18, 63);
-    }
+    render_selbar(8, 232, offy + 0 + spop.selector * 18);
+    render_selbar(8, 232, offy + 2 + spop.selector * 18);
   }
 }
 
 void render_gba_norload(volatile uint8_t *frame) {
-  draw_box_outline(frame, 2, 240-2, 18, 158, FG_COLOR);
+  draw_card(frame, 4, 236, 19, 156);
 
   draw_page_arrows(frame);
 
@@ -2196,34 +2322,27 @@ void render_gba_norload(volatile uint8_t *frame) {
         draw_central_text_ovf(ht, frame, SCREEN_WIDTH/2, 137, SCREEN_WIDTH - 20);
     }
     const unsigned offy = 43;
-    for (unsigned i = 8; i < 232; i += 16) {
-      render_icon_trans(i, offy + 0 + spop.selector * 18, 63);
-      render_icon_trans(i, offy + 2 + spop.selector * 18, 63);
-    }
+    render_selbar(8, 232, offy + 0 + spop.selector * 18);
+    render_selbar(8, 232, offy + 2 + spop.selector * 18);
   }
 }
 #endif
 
 void render_popupq(volatile uint8_t *frame, unsigned fcnt) {
-  draw_box_outline(frame, 2, 240-2, 18, 158, FG_COLOR);
+  draw_card(frame, 4, 236, 19, 156);
 
   // Draw question and two buttons
   draw_central_text_wrapped(spop.qpop.message, frame, SCREEN_WIDTH/2, 32, SCREEN_WIDTH - 20);
 
-  if (spop.qpop.option == 0) {
-    draw_box_full(frame, 20, 220, 90, 90 + 20, FG_COLOR, HI_COLOR);
-    draw_box_outline(frame, 20, 220, 120, 120 + 20, FG_COLOR);
-  } else {
-    draw_box_full(frame, 20, 220, 120, 120 + 20, FG_COLOR, HI_COLOR);
-    draw_box_outline(frame, 20, 220, 90, 90 + 20, FG_COLOR);
-  }
+  draw_button_box(frame, 20, 220, 90, 90 + 20, spop.qpop.option == 0);
+  draw_button_box(frame, 20, 220, 120, 120 + 20, spop.qpop.option != 0);
 
   draw_central_text(spop.qpop.default_button, frame, 120, 92);
   draw_central_text(spop.qpop.confirm_button, frame, 120, 122);
 }
 
 void render_rtcpop(volatile uint8_t *frame) {
-  draw_box_outline(frame, 2, 240-2, 18, 158, FG_COLOR);
+  draw_card(frame, 4, 236, 19, 156);
 
   draw_central_text(msgs[lang_id][MSG_DEF_RTCVAL], frame, SCREEN_WIDTH/2, 32);
 
@@ -2283,24 +2402,24 @@ void render_settings(volatile uint8_t *frame) {
 
   if (optnum++ >= baseopt && optcnt < maxrows) {
     draw_text_ovf(msgs[lang_id][MSG_SETT_FASTSD], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][use_slowld ? MSG_KNOB_DISABLED : MSG_KNOB_ENABLED], frame, colx, offy + rowh*optcnt++);
+    draw_toggle(frame, colx, offy + rowh*optcnt++, !(use_slowld));
   }
 
   if (optnum++ >= baseopt && optcnt < maxrows) {
     draw_text_ovf(msgs[lang_id][MSG_SETT_VERROM], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][use_verify_rom ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, offy + rowh*optcnt++);
+    draw_toggle(frame, colx, offy + rowh*optcnt++, use_verify_rom);
   }
 
   #ifdef SUPPORT_NORGAMES
   if (optnum++ >= baseopt && optcnt < maxrows) {
     draw_text_ovf(msgs[lang_id][MSG_SETT_VERNOR], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][use_verify_nor ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, offy + rowh*optcnt++);
+    draw_toggle(frame, colx, offy + rowh*optcnt++, use_verify_nor);
   }
   #endif
 
   if (optnum++ >= baseopt && optcnt < maxrows) {
     draw_text_ovf(msgs[lang_id][MSG_SETT_FASTEW], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][use_fastew ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, offy + rowh*optcnt++);
+    draw_toggle(frame, colx, offy + rowh*optcnt++, use_fastew);
   }
 
   if (optnum++ >= baseopt && optcnt < maxrows) {
@@ -2336,7 +2455,7 @@ void render_settings(volatile uint8_t *frame) {
 
   if (optnum++ >= baseopt && optcnt < maxrows) {
     draw_text_ovf(msgs[lang_id][MSG_SETT_CHTEN], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][enable_cheats ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, offy + rowh*optcnt++);
+    draw_toggle(frame, colx, offy + rowh*optcnt++, enable_cheats);
   }
 
   if (optnum++ >= baseopt && optcnt < maxrows)
@@ -2349,12 +2468,12 @@ void render_settings(volatile uint8_t *frame) {
 
   if (optnum++ >= baseopt && optcnt < maxrows) {
     draw_text_ovf(msgs[lang_id][MSG_LOADER_MENU], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][MSG_KNOB_DISABLED + ingamemenu_default], frame, colx, offy + rowh*optcnt++);
+    draw_toggle(frame, colx, offy + rowh*optcnt++, ingamemenu_default);
   }
 
   if (optnum++ >= baseopt && optcnt < maxrows) {
     draw_text_ovf(msgs[lang_id][MSG_LOADER_RTCE], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][MSG_KNOB_DISABLED + rtcpatch_default], frame, colx, offy + rowh*optcnt++);
+    draw_toggle(frame, colx, offy + rowh*optcnt++, rtcpatch_default);
   }
 
   if (optnum++ >= baseopt && optcnt < maxrows) {
@@ -2386,7 +2505,7 @@ void render_settings(volatile uint8_t *frame) {
 
   if (optnum++ >= baseopt && optcnt < maxrows) {
     draw_text_ovf(msgs[lang_id][MSG_LOADER_PREFDS], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][autosave_prefer_ds ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, offy + rowh*optcnt++);
+    draw_toggle(frame, colx, offy + rowh*optcnt++, autosave_prefer_ds);
   }
 
   if (optnum++ >= baseopt && optcnt < maxrows) {
@@ -2433,14 +2552,13 @@ void render_settings(volatile uint8_t *frame) {
   }
 
   if (smenu.set.selector != SettSave)
-    for (unsigned i = 0; i < 240; i += 16)
-      render_icon_trans(i, offy + (smenu.set.selector - baseopt) * 20, 63);
+    render_selbar(4, 236, offy + (smenu.set.selector - baseopt) * 20);
 }
 
 void render_ui_settings(volatile uint8_t *frame) {
   const unsigned colx = 170;
   char tmpbuf[64];
-  npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %u >", menu_theme + 1U);
+  npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %s >", theme_names[menu_theme]);
   draw_text_ovf(msgs[lang_id][MSG_UIS_THEME], frame, 8, 22, 224);
   draw_central_text(tmpbuf, frame, colx, 22 );
 
@@ -2449,24 +2567,23 @@ void render_ui_settings(volatile uint8_t *frame) {
   draw_central_text(tmpbuf, frame, colx, 22 + 18 );
 
   draw_text_ovf(msgs[lang_id][MSG_UIS_RECNT], frame, 8, 22 + 36, 224);
-  draw_central_text(msgs[lang_id][recent_menu ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, 22 + 36 );
+  draw_toggle(frame, colx, 22 + 36 , recent_menu);
 
   npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %s >", msgs[lang_id][MSG_UIS_SPD0 + anim_speed]);
   draw_text_ovf(msgs[lang_id][MSG_UIS_ANSPD], frame, 8, 22 + 54, 224);
   draw_central_text(tmpbuf, frame, colx, 22 + 54 );
 
   draw_text_ovf(msgs[lang_id][MSG_UIS_BHID], frame, 8, 22 + 72, 224);
-  draw_central_text(msgs[lang_id][hide_hidden ? MSG_KNOB_DISABLED : MSG_KNOB_ENABLED], frame, colx, 22 + 72 );
+  draw_toggle(frame, colx, 22 + 72 , !(hide_hidden));
 
   draw_text_ovf(msgs[lang_id][MSG_UIS_BOXART], frame, 8, 22 + 90, 224);
-  draw_central_text(msgs[lang_id][boxart_enabled ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, 22 + 90 );
+  draw_toggle(frame, colx, 22 + 90 , boxart_enabled);
 
   draw_text_ovf(msgs[lang_id][MSG_UIS_EXT], frame, 8, 22 + 108, 224);
-  draw_central_text(msgs[lang_id][hide_ext ? MSG_KNOB_DISABLED : MSG_KNOB_ENABLED], frame, colx, 22 + 108 );
+  draw_toggle(frame, colx, 22 + 108 , !(hide_ext));
 
   // Changes are saved automatically (see settings_autosave).
-  for (unsigned i = 0; i < 240; i += 16)
-    render_icon_trans(i, 22 + smenu.uiset.selector * 18, 63);
+  render_selbar(4, 236, 22 + smenu.uiset.selector * 18);
 }
 
 void render_info(volatile uint8_t *frame) {
@@ -2539,8 +2656,7 @@ void render_tools(volatile uint8_t *frame) {
   anim_active = true;
   draw_central_text("▸", frame, 11 + (smenu.anim_state >> 6), 26 + 22 * smenu.tools.selector);
 
-  for (unsigned i = 0; i < 240; i += 16)
-    render_icon_trans(i, 26 + smenu.tools.selector * 22, 63);
+  render_selbar(4, 236, 26 + smenu.tools.selector * 22);
 }
 
 void reload_theme(unsigned thnum) {
@@ -2549,6 +2665,11 @@ void reload_theme(unsigned thnum) {
   MEM_PALETTE[BG_COLOR] = themes[thnum].bg_color;
   MEM_PALETTE[FT_COLOR] = themes[thnum].ft_color;
   MEM_PALETTE[HI_COLOR] = themes[thnum].hi_color;
+  MEM_PALETTE[SURF_COLOR] = themes[thnum].surf_color;
+  MEM_PALETTE[MUTED_COLOR] = themes[thnum].muted_color;
+  MEM_PALETTE[ACC_COLOR] = themes[thnum].acc_color;
+  MEM_PALETTE[SHADOW_COLOR] = themes[thnum].shadow_color;
+  MEM_PALETTE[ONACC_COLOR] = themes[thnum].onacc_color;
   // In-game menu palette
   MEM_PALETTE[IGM_PAL_FG] = themes[thnum].fg_color;
   MEM_PALETTE[IGM_PAL_BG] = themes[thnum].bg_color;
@@ -2586,8 +2707,9 @@ void menu_render(unsigned fcnt) {
   // Render the tab menu on top (rows 0..15), highlighting the selected option
   dma_memset16(&frame[0], dup8(FG_COLOR), SCREEN_WIDTH*16/2);
 
-  // Render icon bar
+  // Render icon bar, the active tab sits on a chip.
   int mintab = (recent_menu && smenu.recent.maxentries) ? MENUTAB_RECENT : MENUTAB_ROMBROWSE;
+  fill_rrect(frame, (smenu.menu_tab - mintab) * 16, (smenu.menu_tab - mintab) * 16 + 16, 0, 16, HI_COLOR);
   for (unsigned i = mintab; i < MENUTAB_MAX; i++)
     if (i == smenu.menu_tab)
       render_icon((i - mintab)*16, 0, i + ICON_RECENT);
@@ -2751,6 +2873,7 @@ void menu_init(int sram_testres) {
   memset(&smenu, 0, sizeof(smenu));
   memset(&spop, 0, sizeof(spop));
   memset(&bart, 0, sizeof(bart));
+  smenu.set.selector = SettTitle1 + 1;     // Titles can't be selected
 
   // The file browser reopens where the last game was launched from.
   browser_loaded = false;
@@ -2769,8 +2892,21 @@ void menu_init(int sram_testres) {
   // Load icons into VRAM
   dma_memcpy16(MEM_VRAM_OBJS, icons_img, sizeof(icons_img) / 2);
   dma_memcpy16(&MEM_PALETTE[256], icons_pal, sizeof(icons_pal) / 2);
-  // Generate some icons (selector)
-  dma_memset16(&MEM_VRAM_OBJS[63 * 256], dup8(SEL_COLOR), 256 / 2);
+  // Generate the selection pill tiles: middle and rounded ends.
+  dma_memset16(&MEM_VRAM_OBJS[SEL_TILE * 256], dup8(SEL_COLOR), 256 / 2);
+  {
+    uint8_t caps[2][256];
+    for (unsigned y = 0; y < 16; y++) {
+      unsigned in = rr_in(MIN(y, 15 - y));
+      for (unsigned x = 0; x < 16; x++) {
+        unsigned off = ((y >> 3) * 2 + (x >> 3)) * 64 + (y & 7) * 8 + (x & 7);
+        caps[0][off] = x < in ? 0 : SEL_COLOR;
+        caps[1][off] = x >= 16 - in ? 0 : SEL_COLOR;
+      }
+    }
+    dma_memcpy16(&MEM_VRAM_OBJS[SEL_TILE_L * 256], caps[0], 128);
+    dma_memcpy16(&MEM_VRAM_OBJS[SEL_TILE_R * 256], caps[1], 128);
+  }
 
   // Further setup initial video regs. BG2 is setup in the bootloader already!
   REG_WININ  = 0x0004;     // Only BG2 is enabled in Win0
@@ -3733,6 +3869,11 @@ static void keypress_menu_settings(unsigned newkeys) {
     smenu.set.selector = MAX(0, smenu.set.selector - 1);
   if (newkeys & KEY_BUTTDOWN)
     smenu.set.selector = MIN(SettMAX - 1, smenu.set.selector + 1);
+  // Section titles can't be selected (upstream PR #79).
+  if (smenu.set.selector == SettTitle1)
+    smenu.set.selector = SettTitle1 + 1;
+  if (smenu.set.selector == SettTitle2)
+    smenu.set.selector += (newkeys & KEY_BUTTUP) ? -1 : 1;
   if (newkeys & KEY_BUTTLEFT) {
     if (smenu.set.selector == SettHotkey)
       hotkey_combo = (hotkey_combo + hotkey_listcnt - 1) % hotkey_listcnt;
@@ -3805,7 +3946,7 @@ static void keypress_menu_settings(unsigned newkeys) {
     spop.rtcpop.callback = accept_rtc;
   }
   if (newkeys & KEY_BUTTA && smenu.set.selector == SettSave) {
-    smenu.set.selector = 0;
+    smenu.set.selector = SettTitle1 + 1;
     sett_dirty &= ~SETT_GLOBAL;
     if (save_settings())
       spop.alert_msg = msgs[lang_id][MSG_OK_SETSAVE];
