@@ -1189,7 +1189,12 @@ static void browser_reload_filter() {
     sdr_state->sortorder[fcount++] = &sdr_state->fentries[i];
   }
 
-  heapsort4(sdr_state->sortorder, fcount, sizeof(t_centry*) / sizeof(uint32_t), filesort);
+  // Folders written in order (ie. by a ROM manager) need no sorting.
+  bool sorted = true;
+  for (unsigned i = 1; i < fcount && sorted; i++)
+    sorted = filesort(&sdr_state->sortorder[i - 1], &sdr_state->sortorder[i]) <= 0;
+  if (!sorted)
+    heapsort4(sdr_state->sortorder, fcount, sizeof(t_centry*) / sizeof(uint32_t), filesort);
   smenu.browser.sortentries = fcount;
 
   // Searching only filters the sorted list, no need to re-sort.
@@ -1198,6 +1203,24 @@ static void browser_reload_filter() {
 
 // Loads a new directory list in the ROM browser.
 // TODO: Implement filtering (.gba/.rom/.bin... etc) using settings
+static void draw_box_full(volatile uint8_t *frame, unsigned left, unsigned right, unsigned top,
+                          unsigned bottom, uint8_t outlinecolor, uint8_t bgcolor);
+static void draw_central_text(const char *t, volatile uint8_t *frame, unsigned x, unsigned y);
+
+// Shows a "busy" box with a counter on the visible frame (big folders take
+// seconds to load).
+static void draw_busy_counter(const char *msg, unsigned count) {
+  volatile uint8_t *frame = &MEM_VRAM_U8[0xA000 * (framen ^ 1)];
+  char tmp[16];
+  npf_snprintf(tmp, sizeof(tmp), "%u", count);
+  draw_box_full(frame, 40, 200, 52, 108, FG_COLOR, HI_COLOR);
+  draw_central_text(msg, frame, SCREEN_WIDTH / 2, 62);
+  draw_central_text(tmp, frame, SCREEN_WIDTH / 2, 82);
+  // Hide the OBJs (icons, selection bar) under the box, like alerts do.
+  REG_WIN0H = 200 | (40 << 8);
+  REG_WIN0V = 108 | (52 << 8);
+}
+
 static bool browser_reload() {
   smenu.anim_state = 0;
 
@@ -1206,6 +1229,7 @@ static bool browser_reload() {
   if (FR_OK != f_opendir(&d, smenu.browser.cpath))
     return false;
 
+  unsigned start = frame_count, shown = frame_count;
   while (1) {
     FILINFO info;
     if (f_readdir(&d, &info) != FR_OK || !info.fname[0])
@@ -1214,12 +1238,25 @@ static bool browser_reload() {
     if (fcount >= BROWSER_MAXFN_CNT)
       break;
 
+    // Names are built in RAM and copied in one go, SDRAM is slow.
+    uint16_t sortkey[MAX_FN_LEN];
+    sortable_utf8_u16(info.fname, sortkey);
+    unsigned keylen = 0;
+    while (sortkey[keylen])
+      keylen++;
+
     t_centry *e = &sdr_state->fentries[fcount++];
     e->filesize = (uint32_t) info.fsize;  // TODO: Support 4GB+ files?
     e->isdir = (info.fattrib & AM_DIR) ? 1 : 0;
     e->attr = info.fattrib;
-    dma_memcpy16(e->fname, info.fname, MAX_FN_LEN/2);
-    sortable_utf8_u16(info.fname, e->sortname);
+    dma_memcpy16(e->fname, info.fname, (strlen(info.fname) + 2) / 2);
+    dma_memcpy16(e->sortname, sortkey, keylen + 1);
+
+    // Show progress (a few times per second) if this takes a while.
+    if ((fcount & 15) == 0 && frame_count - start > 15 && frame_count - shown >= 20) {
+      shown = frame_count;
+      draw_busy_counter(msgs[lang_id][MSG_BROW_LOADING], fcount);
+    }
   }
   smenu.browser.maxentries = fcount;
 

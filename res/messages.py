@@ -199,6 +199,7 @@ en_strings = [
   "MSG_FWUPD_UNK":  "Unknown firmware type",
   "MSG_FWUPD_GO":   "Press L+R+Up to flash",
   "MSG_FWUPD_LOADING":  "Loading firmware image ...",
+  "MSG_BROW_LOADING":   "Loading folder...",
   "MSG_FWUPD_CHECKING": "Checking image ...",
   "MSG_FWUPD_ERASING":  "Erasing flash ...",
   "MSG_FWUPD_PROGRAM":  "Programming firmware ...",
