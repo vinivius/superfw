@@ -106,12 +106,13 @@ bool wipe_sav_file(const char *fn) {
   for (unsigned i = 0; i < SRAM_CHIP_SIZE; i += sizeof(tmpbuf)) {
     UINT wrbytes = 0;
     res = f_write(&fd, tmpbuf, sizeof(tmpbuf), &wrbytes);
-    if (res != FR_OK) {
+    if (res != FR_OK || wrbytes != sizeof(tmpbuf)) {   // ie. card full
       f_close(&fd);
       return false;
     }
   }
-  f_close(&fd);
+  if (FR_OK != f_close(&fd))
+    return false;
 
   WRITE_LOG("Wiped save file: %s", fn);
 
@@ -136,14 +137,13 @@ bool write_save_sram(const char *fn) {
     set_supercard_mode(MAPPED_SDRAM, true, true);
 
     res = f_write(&fd, tmpbuf, sizeof(tmpbuf), &wrbytes);
-    if (res != FR_OK) {
+    if (res != FR_OK || wrbytes != sizeof(tmpbuf)) {   // ie. card full
       f_close(&fd);
       return false;
     }
   }
-  f_close(&fd);
 
-  return true;
+  return FR_OK == f_close(&fd);
 }
 
 bool compare_save_sram(const char *fn) {
@@ -181,11 +181,12 @@ bool compare_save_sram(const char *fn) {
 // Performs file rotation. Assumes that a ".tmp.sav" file exists.
 // - Unlink (N_backup+1) if present
 // - Rename i to i+1
-// - Rename .sav to .1.sav
-// - Rename .tmp.sav to .sav
-// - Unlink i-(N+1) if present
+// - Rename .sav to .1.sav (or to .old.sav when no backups are kept, so
+//   existing backups are left alone)
+// - Rename .tmp.sav to .sav (on failure, the old one goes back to .sav)
+// - Unlink (N_backup+1) (or .old.sav) if present
 bool rotate_savefile(const char *templ_fn, unsigned max_backups) {
-  char tmpfn[MAX_FN_LEN], dstfn[MAX_FN_LEN];
+  char tmpfn[MAX_FN_LEN], dstfn[MAX_FN_LEN], curfn[MAX_FN_LEN];
 
   WRITE_LOG("Rotating save file '%s' (#backups: %d)", templ_fn, max_backups);
 
@@ -198,21 +199,29 @@ bool rotate_savefile(const char *templ_fn, unsigned max_backups) {
       npf_snprintf(tmpfn, sizeof(tmpfn), "%s.%u.sav", templ_fn, i);
       f_rename(tmpfn, dstfn);
     }
+    npf_snprintf(dstfn, sizeof(dstfn), "%s.1.sav", templ_fn);
+  } else {
+    npf_snprintf(dstfn, sizeof(dstfn), "%s.old.sav", templ_fn);
+    f_unlink(dstfn);
   }
 
-  // Rename the .sav to .1.sav
-  npf_snprintf(dstfn, sizeof(dstfn), "%s.1.sav", templ_fn);
-  npf_snprintf(tmpfn, sizeof(tmpfn), "%s.sav", templ_fn);
-  f_rename(tmpfn, dstfn);
+  // Move the current .sav aside
+  npf_snprintf(curfn, sizeof(curfn), "%s.sav", templ_fn);
+  bool had_save = (FR_OK == f_rename(curfn, dstfn));
 
-  // Rename the .tmp.sav file to .sav
-  npf_snprintf(dstfn, sizeof(dstfn), "%s.sav", templ_fn);
+  // Rename the .tmp.sav file to .sav, put the old one back if that fails.
   npf_snprintf(tmpfn, sizeof(tmpfn), "%s.tmp.sav", templ_fn);
-  f_rename(tmpfn, dstfn);
+  if (FR_OK != f_rename(tmpfn, curfn)) {
+    if (had_save)
+      f_rename(dstfn, curfn);
+    WRITE_LOG("Could not put the new save file in place");
+    return false;
+  }
 
   // Attempt to remove any overflowing backup file.
-  npf_snprintf(tmpfn, sizeof(tmpfn), "%s.%u.sav", templ_fn, max_backups+1);
-  f_unlink(tmpfn);
+  if (max_backups)
+    npf_snprintf(dstfn, sizeof(dstfn), "%s.%u.sav", templ_fn, max_backups+1);
+  f_unlink(dstfn);
 
   return true;
 }
@@ -222,8 +231,11 @@ bool write_save_sram_rotate(const char *templ_fn, unsigned max_backups) {
   char tmpfn[MAX_FN_LEN];
   strcpy(tmpfn, templ_fn);
   strcat(tmpfn, ".tmp.sav");
-  if (!write_save_sram(tmpfn))
+  // Read the new file back before it replaces the current save.
+  if (!write_save_sram(tmpfn) || !compare_save_sram(tmpfn)) {
+    f_unlink(tmpfn);
     return false;
+  }
 
   return rotate_savefile(templ_fn, max_backups);
 }

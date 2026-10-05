@@ -849,16 +849,17 @@ void create_paths(const char *fn) {
   f_mkdir(dirp);
 }
 
+// Overwrites the .sav file with our data. The data is written to a temporary
+// file and checked first, so a failed write never destroys the current save.
+static bool save_overwrite() {
+  create_paths(savefile_pattern);     // Just in case it doesn't exist.
+  bool ok = write_save_sram_rotate(savefile_pattern, 0);
+  popup.msg = msgs[ingame_menu_lang][ok ? IMENU_MSG_SAVEC : IMENU_MSG_SAVEERR];
+  return ok;
+}
+
 bool action_save_overw() {
-  // Just overwrites the .sav file with our data.
-  char finalfn[256];
-  strcpy(finalfn, savefile_pattern);
-  strcat(finalfn, ".sav");
-  create_paths(finalfn);     // Just in case it doesn't exist.
-  if (write_save_sram(finalfn))
-    popup.msg = msgs[ingame_menu_lang][IMENU_MSG_SAVEC];
-  else
-    popup.msg = msgs[ingame_menu_lang][IMENU_MSG_SAVEERR];
+  save_overwrite();
   submenu = MenuMain;
   return false;
 }
@@ -877,8 +878,12 @@ bool action_save_backup() {
 }
 
 bool action_save_reset() {
-  // Write the .sav file
-  action_save_overw();
+  // Write the .sav file. If that fails, stay here and show the error: the
+  // game data is still in SRAM (and is written on reboot if pending).
+  if (!save_overwrite()) {
+    submenu = MenuMain;
+    return false;
+  }
   // Do not write any file on reboot (it's done already!)
   program_sram_dump(NULL, 0);
   // Go ahead and reboot to flash.
