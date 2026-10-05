@@ -85,6 +85,7 @@ en_strings = [
   "MSG_UIS_ANSPD": "Text speed",
   "MSG_UIS_BHID":  "Show hidden files",
   "MSG_UIS_BOXART": "Box art",
+  "MSG_UIS_EXT":    "File extensions",
   "MSG_ART_NONE":  "No art",
   "MSG_UIS_SAVE":  "Save to SD card",
 

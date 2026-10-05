@@ -76,6 +76,7 @@ uint8_t recent_menu = 1;
 uint8_t hide_hidden = 0;
 uint8_t anim_speed = animspd_cnt / 2;
 uint8_t boxart_enabled = 1;
+uint8_t hide_ext = 1;          // Hide the extension of ROM files
 
 // Default settings
 t_patch_policy patcher_default = PatchAuto;
@@ -125,8 +126,9 @@ bool save_ui_settings() {
     "recent_menu=%u\n"
     "anim_speed=%u\n"
     "hide_hidden=%u\n"
-    "boxart=%u\n",
-    menu_theme, (lc & 0xFF), (lc >> 8), recent_menu, anim_speed, hide_hidden, boxart_enabled);
+    "boxart=%u\n"
+    "hide_ext=%u\n",
+    menu_theme, (lc & 0xFF), (lc >> 8), recent_menu, anim_speed, hide_hidden, boxart_enabled, hide_ext);
 
   UINT wrbytes;
   FRESULT res = f_write(&fd, buf, strlen(buf), &wrbytes);
@@ -245,6 +247,7 @@ static void parse_ui_settings(void *usr, const char *var, const char *value) {
       { "hide_hidden", &hide_hidden,    2 },
       { "anim_speed",  &anim_speed,     animspd_cnt },
       { "boxart",      &boxart_enabled, 2 },
+      { "hide_ext",    &hide_ext,       2 },
     };
     unsigned valu = parseuint(value);
     for (unsigned i = 0; i < sizeof(uintset)/sizeof(uintset[0]); i++)

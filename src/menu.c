@@ -107,7 +107,7 @@ enum {
   UiSetASpd  = 3,
   UiSetHid   = 4,
   UiSetArt   = 5,
-  UiSetSave  = 6,
+  UiSetExt   = 6,
   UiSetMAX   = 6,
 };
 
@@ -1439,6 +1439,21 @@ static unsigned guessicon(const char *path) {
   return ICON_BINFILE;
 }
 
+// Name to show for a file: ROMs (shown with a cartridge icon) can hide
+// their extension. Returns fn itself or buf.
+static const char *display_name(const char *fn, bool isdir, char *buf) {
+  if (!hide_ext || isdir)
+    return fn;
+  unsigned icon = guessicon(fn);
+  if (icon == ICON_BINFILE || icon == ICON_UPDFILE)
+    return fn;
+  strcpy(buf, fn);
+  char *ext = strrchr(buf, '.');
+  if (ext && ext != buf)
+    *ext = 0;
+  return buf;
+}
+
 // Draws text adding some support for overflow.
 #define THREEDOTS_WIDTH  9
 static void draw_text_ovf(const char *t, volatile uint8_t *frame, unsigned x, unsigned y, unsigned maxw) {
@@ -1483,6 +1498,7 @@ static struct {
   unsigned *franim;
 } marq;
 static bool marq_record = false;      // Record the next rotate call
+static char selname[MAX_FN_LEN];      // Display name of the selected row
 static bool marq_ok = false;          // The last full render can be replayed
 static unsigned menu_gen = 1;         // Bumped on every state change
 static unsigned bufgen[2];            // State each buffer was fully rendered at
@@ -1493,7 +1509,7 @@ static void draw_text_ovf_rotate(const char *t, volatile uint8_t *frame, unsigne
 // cached, since the same (selected) text is drawn on every frame.
 #define ROTATE_GAP_WIDTH  24
 static void draw_text_ovf_rotate(const char *t, volatile uint8_t *frame, unsigned x, unsigned y, unsigned maxw, unsigned *franim) {
-  static struct { const char *t; unsigned len, width; } wc;
+  static struct { const char *t; unsigned len, width, gen; } wc;
   uint8_t *basept = (uint8_t*)&frame[y * SCREEN_WIDTH + x];
   if (marq_record) {
     marq.t = t;
@@ -1505,9 +1521,11 @@ static void draw_text_ovf_rotate(const char *t, volatile uint8_t *frame, unsigne
     marq_record = false;
   }
   unsigned len = strlen(t);
-  if (wc.t != t || wc.len != len) {
+  // The same buffer can hold different names, the state changes with them.
+  if (wc.t != t || wc.len != len || wc.gen != menu_gen) {
     wc.t = t;
     wc.len = len;
+    wc.gen = menu_gen;
     wc.width = font_width(t);
   }
   unsigned twidth = wc.width;
@@ -1662,12 +1680,14 @@ void render_recent(volatile uint8_t *frame) {
     // Animate the row entries if they are too long!
     if (i == smenu.recent.selector - smenu.recent.seloff) {
       marq_record = true;
-      draw_text_ovf_rotate(fn, frame, 20, (1 + i) * 16,
+      draw_text_ovf_rotate(display_name(fn, false, selname), frame, 20, (1 + i) * 16,
                            listw - 24, &smenu.anim_state);
       if (artp)
         render_boxart(frame, fn, false, NULL, iconidx, SCREEN_HEIGHT);
-    } else
-      draw_text_ovf(fn, frame, 20, (1 + i) * 16, listw - 24);
+    } else {
+      char nm[MAX_FN_LEN];
+      draw_text_ovf(display_name(fn, false, nm), frame, 20, (1 + i) * 16, listw - 24);
+    }
   }
 
   // Selection bar, clipped to the list width (last OBJ may overlap).
@@ -1876,7 +1896,7 @@ void render_browser(volatile uint8_t *frame) {
       // Animate the row entries if they are too long!
       if (i == smenu.browser.selector - smenu.browser.seloff) {
         marq_record = true;
-        draw_text_ovf_rotate(e->fname, frame, 20, (1 + i) * 16,
+        draw_text_ovf_rotate(display_name(e->fname, e->isdir, selname), frame, 20, (1 + i) * 16,
                              listw - 26 - font_width(szstr), &smenu.anim_state);
         if (artp) {
           const bool isdir = e->attr & AM_DIR;
@@ -1885,8 +1905,10 @@ void render_browser(volatile uint8_t *frame) {
             human_size(fsz, sizeof(fsz), e->filesize);
           render_boxart(frame, e->fname, isdir, isdir ? NULL : fsz, iconidx, 144);
         }
-      } else
-        draw_text_ovf(e->fname, frame, 20, (1 + i) * 16, listw - 26 - font_width(szstr));
+      } else {
+        char nm[MAX_FN_LEN];
+        draw_text_ovf(display_name(e->fname, e->isdir, nm), frame, 20, (1 + i) * 16, listw - 26 - font_width(szstr));
+      }
     }
 
     // Selection bar, clipped to the list width (last OBJ may overlap).
@@ -2436,12 +2458,12 @@ void render_ui_settings(volatile uint8_t *frame) {
   draw_text_ovf(msgs[lang_id][MSG_UIS_BOXART], frame, 8, 22 + 90, 224);
   draw_central_text(msgs[lang_id][boxart_enabled ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, 22 + 90 );
 
-  if (smenu.uiset.selector != UiSetSave)
-    for (unsigned i = 0; i < 240; i += 16)
-      render_icon_trans(i, 22 + smenu.uiset.selector * 18, 63);
+  draw_text_ovf(msgs[lang_id][MSG_UIS_EXT], frame, 8, 22 + 108, 224);
+  draw_central_text(msgs[lang_id][hide_ext ? MSG_KNOB_DISABLED : MSG_KNOB_ENABLED], frame, colx, 22 + 108 );
 
-  draw_button_box(frame, 20, 220, 132, 152, smenu.uiset.selector == UiSetSave);
-  draw_central_text(msgs[lang_id][MSG_UIS_SAVE], frame, 120, 134);
+  // Changes are saved automatically (see settings_autosave).
+  for (unsigned i = 0; i < 240; i += 16)
+    render_icon_trans(i, 22 + smenu.uiset.selector * 18, 63);
 }
 
 void render_info(volatile uint8_t *frame) {
@@ -3805,6 +3827,8 @@ static void keypress_menu_uisettings(unsigned newkeys) {
       hide_hidden ^= 1;
     else if (smenu.uiset.selector == UiSetArt)
       boxart_enabled = !boxart_enabled;
+    else if (smenu.uiset.selector == UiSetExt)
+      hide_ext ^= 1;
     else if (smenu.uiset.selector == UiSetRect)
       recent_menu ^= 1;
     else if (smenu.uiset.selector == UiSetLang)
@@ -3819,20 +3843,14 @@ static void keypress_menu_uisettings(unsigned newkeys) {
       hide_hidden ^= 1;
     else if (smenu.uiset.selector == UiSetArt)
       boxart_enabled = !boxart_enabled;
+    else if (smenu.uiset.selector == UiSetExt)
+      hide_ext ^= 1;
     else if (smenu.uiset.selector == UiSetRect)
       recent_menu ^= 1;
     else if (smenu.uiset.selector == UiSetLang)
       lang_id = (lang_id + 1) % LANG_COUNT;
   }
 
-  if (newkeys & KEY_BUTTA && smenu.uiset.selector == UiSetSave) {
-    smenu.uiset.selector = 0;
-    sett_dirty &= ~SETT_UI;
-    if (save_ui_settings())
-      spop.alert_msg = msgs[lang_id][MSG_OK_SETSAVE];
-    else
-      spop.alert_msg = msgs[lang_id][MSG_ERR_SETSAVE];
-  }
 
   reload_theme(menu_theme);
 }
