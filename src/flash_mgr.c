@@ -16,6 +16,7 @@
  * <http://www.gnu.org/licenses/>.
  */
 
+#pragma GCC optimize("Os")
 #include <stdlib.h>
 #include <string.h>
 

@@ -33,6 +33,7 @@
 
 #ifdef ENABLE_UART_LOGGING
 
+#pragma GCC optimize("Os")
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
