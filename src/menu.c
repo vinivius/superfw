@@ -988,7 +988,12 @@ unsigned guess_file_type(const uint8_t *header) {
   return FileTypeUnknown;
 }
 
+static void browser_save_position();
+static void browser_ensure_loaded();
+
 static bool insert_recent_flush(const char *fn, unsigned flags) {
+  // Remember where the browser was, it reopens there next time.
+  browser_save_position();
   // Insert element.
   smenu.recent.maxentries = insert_recent_fn(sdr_state->rentries, smenu.recent.maxentries, fn, flags);
   return recent_flush(sdr_state->rentries, smenu.recent.maxentries);
@@ -998,8 +1003,10 @@ static bool delete_recent_flush(unsigned entry_num) {
   smenu.recent.maxentries = delete_recent(sdr_state->rentries, smenu.recent.maxentries, entry_num);
 
   smenu.recent.selector = MIN(smenu.recent.maxentries - 1, smenu.recent.selector);
-  if (!smenu.recent.maxentries)
+  if (!smenu.recent.maxentries) {
     smenu.menu_tab = MENUTAB_ROMBROWSE;
+    browser_ensure_loaded();
+  }
 
   return recent_flush(sdr_state->rentries, smenu.recent.maxentries);
 }
@@ -1231,6 +1238,8 @@ static void draw_busy_counter(const char *msg, unsigned count) {
   REG_WIN0V = 108 | (52 << 8);
 }
 
+static bool browser_loaded = false;       // The current folder has been read
+
 static bool browser_reload() {
   smenu.anim_state = 0;
 
@@ -1272,7 +1281,77 @@ static bool browser_reload() {
 
   // Filter and sort list of files/dirs
   browser_reload_filter();
+  browser_loaded = true;
   return true;
+}
+
+// Selects an entry by name (if present), scrolling so it's visible.
+static void browser_select_name(const char *name) {
+  for (unsigned i = 0; i < (unsigned)smenu.browser.dispentries; i++) {
+    if (!strcmp(sdr_state->fileorder[i]->fname, name)) {
+      smenu.browser.selector = i;
+      int off = (int)i - BROWSER_ROWS / 2;
+      off = MIN(off, smenu.browser.dispentries - BROWSER_ROWS);
+      smenu.browser.seloff = MAX(0, off);
+      return;
+    }
+  }
+}
+
+// The browser reopens where the last game was launched from. The folder is
+// only read when the browser is first shown (big folders take seconds).
+static char browser_reselect[MAX_FN_LEN];
+
+static void browser_ensure_loaded() {
+  if (browser_loaded)
+    return;
+  if (!browser_reload()) {
+    strcpy(smenu.browser.cpath, "/");
+    browser_reload();
+  }
+  if (browser_reselect[0])
+    browser_select_name(browser_reselect);
+  browser_reselect[0] = 0;
+}
+
+static void browser_save_position() {
+  if (!browser_loaded)
+    return;      // Never opened since boot: keep the saved position.
+  FIL fd;
+  if (FR_OK != f_open(&fd, BROWSER_POS_FILEPATH, FA_WRITE | FA_CREATE_ALWAYS))
+    return;
+  const char *sel = smenu.browser.dispentries ?
+                    sdr_state->fileorder[smenu.browser.selector]->fname : "";
+  UINT wr;
+  f_write(&fd, smenu.browser.cpath, strlen(smenu.browser.cpath), &wr);
+  f_write(&fd, "\n", 1, &wr);
+  f_write(&fd, sel, strlen(sel), &wr);
+  f_close(&fd);
+}
+
+static void browser_load_position() {
+  strcpy(smenu.browser.cpath, "/");
+  browser_reselect[0] = 0;
+  FIL fd;
+  if (FR_OK != f_open(&fd, BROWSER_POS_FILEPATH, FA_READ))
+    return;
+  char buf[MAX_FN_LEN * 2 + 2];
+  UINT rd = 0;
+  FRESULT res = f_read(&fd, buf, sizeof(buf) - 1, &rd);
+  f_close(&fd);
+  if (res != FR_OK)
+    return;
+  buf[rd] = 0;
+  char *sel = strchr(buf, '\n');
+  if (!sel)
+    return;
+  *sel++ = 0;
+  // Must be a folder path ("/.../"), and fit.
+  unsigned plen = strlen(buf);
+  if (buf[0] != '/' || buf[plen - 1] != '/' || plen >= MAX_FN_LEN || strlen(sel) >= MAX_FN_LEN)
+    return;
+  strcpy(smenu.browser.cpath, buf);
+  strcpy(browser_reselect, sel);
 }
 
 #ifdef ENABLE_UART_LOGGING
@@ -2572,9 +2651,9 @@ void menu_init(int sram_testres) {
   memset(&spop, 0, sizeof(spop));
   memset(&bart, 0, sizeof(bart));
 
-  // Reset the file browser as well.
-  strcpy(smenu.browser.cpath, "/");
-  browser_reload();
+  // The file browser reopens where the last game was launched from.
+  browser_loaded = false;
+  browser_load_position();
   flashbrowser_reload();
 
   // Load recent ROMs (we could disable this for speed)
@@ -2583,6 +2662,8 @@ void menu_init(int sram_testres) {
   reload_theme(menu_theme);
 
   smenu.menu_tab = (recent_menu && smenu.recent.maxentries) ? MENUTAB_RECENT : MENUTAB_ROMBROWSE;
+  if (smenu.menu_tab == MENUTAB_ROMBROWSE)
+    browser_ensure_loaded();
 
   // Load icons into VRAM
   dma_memcpy16(MEM_VRAM_OBJS, icons_img, sizeof(icons_img) / 2);
@@ -3464,12 +3545,20 @@ static void keypress_menu_browse(unsigned newkeys) {
     browser_apply_search();
   }
   else if (newkeys & KEY_BUTTB) {
-    // Try to go up in the dir structure
+    // Try to go up in the dir structure, selecting the folder we left.
+    char child[MAX_FN_LEN];
+    unsigned plen = strlen(smenu.browser.cpath);
+    if (plen > 1) {
+      smenu.browser.cpath[plen - 1] = 0;
+      strcpy(child, file_basename(smenu.browser.cpath));
+      smenu.browser.cpath[plen - 1] = '/';
+    }
     if (movedir_up()) {
       smenu.browser.selector = smenu.browser.selhist[0];
       memmove(&smenu.browser.selhist[0], &smenu.browser.selhist[1],
               sizeof(smenu.browser.selhist) - sizeof(smenu.browser.selhist[0]));
       browser_reload();
+      browser_select_name(child);
     }
   }
 
@@ -3841,6 +3930,11 @@ void menu_keypress(unsigned newkeys) {
 
     if (newkeys & (KEY_BUTTL | KEY_BUTTR | KEY_BUTTUP | KEY_BUTTDOWN))
       smenu.anim_state = 0;
+
+    if (smenu.menu_tab == MENUTAB_ROMBROWSE && (newkeys & (KEY_BUTTL | KEY_BUTTR))) {
+      browser_ensure_loaded();
+      newkeys &= ~(KEY_BUTTL | KEY_BUTTR);
+    }
 
     const t_mkeyupd_fn keyfns[] = {
       keypress_menu_recent,
