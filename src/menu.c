@@ -2513,9 +2513,36 @@ void menu_render_idle(unsigned fcnt) {
   draw_text_ovf_rotate(marq.t, frame, marq.x, marq.y, marq.maxw, marq.franim);
 }
 
+// Settings are saved automatically: when leaving the tab, or shortly after
+// the last change (so they survive switching the console off).
+#define SETT_GLOBAL      1
+#define SETT_UI          2
+#define SETT_SAVE_DELAY 90        // Frames after the last change
+static unsigned sett_dirty = 0, sett_dirty_since = 0;
+
+static void settings_changed(unsigned which) {
+  sett_dirty |= which;
+  sett_dirty_since = frame_count;
+}
+
+static void settings_autosave() {
+  bool ok = true;
+  if (sett_dirty & SETT_GLOBAL)
+    ok = save_settings() && ok;
+  if (sett_dirty & SETT_UI)
+    ok = save_ui_settings() && ok;
+  sett_dirty = 0;
+  if (!ok)
+    spop.alert_msg = msgs[lang_id][MSG_ERR_SETSAVE];
+}
+
 // Loads the wanted box art once the cursor has rested on the entry for a
 // while (and the D-pad is released), so scrolling never waits for the SD card.
 bool menu_tick() {
+  if (sett_dirty && frame_count - sett_dirty_since > SETT_SAVE_DELAY) {
+    settings_autosave();
+    return true;
+  }
   if (!bart.want[0] || frame_count - bart.want_since < ART_SETTLE ||
       (keys_held & (KEY_BUTTUP | KEY_BUTTDOWN | KEY_BUTTLEFT | KEY_BUTTRIGHT)))
     return false;
@@ -3506,6 +3533,8 @@ static void keypress_menu_norbrowse(unsigned newkeys) {
 #endif
 
 static void keypress_menu_settings(unsigned newkeys) {
+  if (newkeys & (KEY_BUTTLEFT | KEY_BUTTRIGHT))
+    settings_changed(SETT_GLOBAL);
   if (newkeys & KEY_BUTTUP)
     smenu.set.selector = MAX(0, smenu.set.selector - 1);
   if (newkeys & KEY_BUTTDOWN)
@@ -3576,12 +3605,14 @@ static void keypress_menu_settings(unsigned newkeys) {
   if (newkeys & KEY_BUTTA && smenu.set.selector == DefsRTCVal) {
     void accept_rtc() {
       rtcvalue_default = date2timestamp(&spop.rtcpop.val);
+      settings_changed(SETT_GLOBAL);
     }
     timestamp2date(rtcvalue_default, &spop.rtcpop.val);
     spop.rtcpop.callback = accept_rtc;
   }
   if (newkeys & KEY_BUTTA && smenu.set.selector == SettSave) {
     smenu.set.selector = 0;
+    sett_dirty &= ~SETT_GLOBAL;
     if (save_settings())
       spop.alert_msg = msgs[lang_id][MSG_OK_SETSAVE];
     else
@@ -3590,6 +3621,8 @@ static void keypress_menu_settings(unsigned newkeys) {
 }
 
 static void keypress_menu_uisettings(unsigned newkeys) {
+  if (newkeys & (KEY_BUTTLEFT | KEY_BUTTRIGHT))
+    settings_changed(SETT_UI);
   if (newkeys & KEY_BUTTUP)
     smenu.uiset.selector = MAX(0, smenu.uiset.selector - 1);
   if (newkeys & KEY_BUTTDOWN)
@@ -3625,6 +3658,7 @@ static void keypress_menu_uisettings(unsigned newkeys) {
 
   if (newkeys & KEY_BUTTA && smenu.uiset.selector == UiSetSave) {
     smenu.uiset.selector = 0;
+    sett_dirty &= ~SETT_UI;
     if (save_ui_settings())
       spop.alert_msg = msgs[lang_id][MSG_OK_SETSAVE];
     else
@@ -3795,6 +3829,10 @@ void menu_keypress(unsigned newkeys) {
     int mintab = (recent_menu && smenu.recent.maxentries) ? MENUTAB_RECENT : MENUTAB_ROMBROWSE;
     if (smenu.menu_tab == MENUTAB_ROMBROWSE && smenu.browser.qedit)
       newkeys &= ~(KEY_BUTTL | KEY_BUTTR);
+    // Leaving a settings tab saves any changes.
+    if ((newkeys & (KEY_BUTTL | KEY_BUTTR)) && sett_dirty)
+      settings_autosave();
+
     // Tabs wrap around, so every tab is reachable with either trigger.
     if (newkeys & KEY_BUTTL)
       smenu.menu_tab = ((int)smenu.menu_tab <= mintab) ? MENUTAB_MAX - 1 : smenu.menu_tab - 1;
