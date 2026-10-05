@@ -1862,13 +1862,9 @@ void render_browser(volatile uint8_t *frame) {
       render_search_wheel(frame, (qx + 3) & ~1);
   }
   else {
-    // Draw path, cut left part if necessary.
-    draw_text_leftovf(smenu.browser.cpath, frame, 8, 144, SCREEN_WIDTH - 8);
+    // The path is in the header, show the less obvious buttons here.
+    draw_text_ovf(msgs[lang_id][MSG_BROW_HINTS], frame, 8, 144, SCREEN_WIDTH - 16);
   }
-
-  char selinfo[16];
-  npf_snprintf(selinfo, sizeof(selinfo), "%u/%d", smenu.browser.selector + 1, smenu.browser.dispentries);
-  draw_rightj_text(selinfo, frame, SCREEN_WIDTH - 1, 1);
 }
 
 void render_fw_flash_popup(volatile uint8_t *frame) {
@@ -2528,6 +2524,32 @@ void menu_render(unsigned fcnt) {
       render_icon((i - mintab)*16, 0, i + ICON_RECENT);
     else
       render_icon_trans((i - mintab)*16, 0, i + ICON_RECENT);
+
+  // Title next to the icons: the tab name, or the path in the browser (with
+  // the position on the right).
+  unsigned titlex = (MENUTAB_MAX - mintab) * 16 + 6;
+  if (smenu.menu_tab == MENUTAB_ROMBROWSE) {
+    char selinfo[24];
+    npf_snprintf(selinfo, sizeof(selinfo), "%u/%d", smenu.browser.dispentries ? smenu.browser.selector + 1 : 0,
+                 smenu.browser.dispentries);
+    unsigned infow = font_width(selinfo);
+    draw_rightj_text(selinfo, frame, SCREEN_WIDTH - 1, 0);
+    draw_text_leftovf(smenu.browser.cpath, frame, titlex, 0, SCREEN_WIDTH - 8 - infow - titlex);
+  } else {
+    static const uint16_t tabnames[] = {
+      MSG_TAB_RECENT,
+      0,
+      #ifdef SUPPORT_NORGAMES
+      0,                // Draws its own header info
+      #endif
+      MSG_TAB_SETTINGS,
+      MSG_TAB_UI,
+      MSG_TAB_TOOLS,
+      MSG_TAB_INFO,
+    };
+    if (tabnames[smenu.menu_tab])
+      draw_text_ovf(msgs[lang_id][tabnames[smenu.menu_tab]], frame, titlex, 0, SCREEN_WIDTH - 4 - titlex);
+  }
 
   // Render the main area
   dma_memset16(&frame[16*SCREEN_WIDTH], dup8(BG_COLOR), SCREEN_WIDTH*(SCREEN_HEIGHT-16) / 2);
