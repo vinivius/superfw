@@ -1603,16 +1603,34 @@ static void put_px(volatile uint8_t *frame, unsigned x, unsigned y, uint8_t c) {
   *p = (x & 1) ? ((*p & 0x00FF) | (c << 8)) : ((*p & 0xFF00) | c);
 }
 
-// Fills pixels [x0, x1) of row y.
+// Fills pixels [x0, x1) of row y. Called for every row of panels and
+// controls on every frame, so it runs from IWRAM and writes words.
+ARM_CODE IWRAM_CODE NOINLINE
 static void fill_span(volatile uint8_t *frame, unsigned x0, unsigned x1, unsigned y, uint8_t c) {
   if (x0 >= x1)
     return;
-  if (x0 & 1)
-    put_px(frame, x0++, y, c);
-  if (x1 & 1)
-    put_px(frame, --x1, y, c);
-  if (x1 > x0)
-    dma_memset16(&frame[y * SCREEN_WIDTH + x0], dup8(c), (x1 - x0) / 2);
+  volatile uint8_t *row = &frame[y * SCREEN_WIDTH];
+  if (x0 & 1) {
+    volatile uint16_t *p = (volatile uint16_t*)&row[x0 - 1];
+    *p = (*p & 0x00FF) | (c << 8);
+    x0++;
+  }
+  if (x1 & 1) {
+    x1--;
+    volatile uint16_t *p = (volatile uint16_t*)&row[x1];
+    *p = (*p & 0xFF00) | c;
+  }
+  uint32_t c32 = c * 0x01010101U;
+  if (x0 < x1 && (x0 & 2)) {
+    *(volatile uint16_t*)&row[x0] = c32;
+    x0 += 2;
+  }
+  while (x0 + 4 <= x1) {
+    *(volatile uint32_t*)&row[x0] = c32;
+    x0 += 4;
+  }
+  if (x0 < x1)
+    *(volatile uint16_t*)&row[x0] = c32;
 }
 
 // Rounded rectangles (corner radius 4), [l, r) x [t, b).
@@ -1970,8 +1988,6 @@ out:
 // (16..bottom). The file size is drawn under the art unless szstr is NULL.
 static void render_boxart(volatile uint8_t *frame, const char *fname, bool isdir,
                           const char *szstr, unsigned iconidx, unsigned bottom) {
-  draw_card(frame, ART_PANEL_X + 3, SCREEN_WIDTH - 2, 19, bottom - 4);
-
   const bool cached = !isdir && !strcmp(fname, bart.fn);
   // Ask for the art, it is loaded between frames once the cursor rests.
   if (isdir || cached)
@@ -1981,11 +1997,23 @@ static void render_boxart(volatile uint8_t *frame, const char *fname, bool isdir
     bart.want_since = frame_count;
   }
 
+  // Flat panel (no shadow, even edges), it is redrawn on every frame: only
+  // the parts the art doesn't cover are filled.
+  const unsigned pl = ART_PANEL_X + 4, pr = SCREEN_WIDTH - 2, pt = 19, pb = bottom - 3;
   if (cached && bart.w) {
     unsigned x = ART_CX - bart.w / 2, y = ART_CY - bart.h / 2;
+    for (unsigned yy = pt; yy < pb; yy++) {
+      unsigned in = rr_in(MIN(yy - pt, pb - 1 - yy));
+      if (yy >= y && yy < y + bart.h) {
+        fill_span(frame, pl + in, x, yy, SURF_COLOR);
+        fill_span(frame, x + bart.w, pr - in, yy, SURF_COLOR);
+      } else
+        fill_span(frame, pl + in, pr - in, yy, SURF_COLOR);
+    }
     for (unsigned r = 0; r < bart.h; r++)
       dma_memcpy16(&frame[(y + r) * SCREEN_WIDTH + x], &sdr_state->artpix[r * bart.w / 2], bart.w / 2);
   } else {
+    fill_rrect(frame, pl, pr, pt, pb, SURF_COLOR);
     render_icon(ART_CX - 8, ART_CY - 16, iconidx);
     txt_color = MUTED_COLOR;
     if (cached)
