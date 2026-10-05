@@ -234,20 +234,22 @@ static void parse_ui_settings(void *usr, const char *var, const char *value) {
     uint16_t code = ((uint8_t)value[0]) | (((uint8_t)value[1]) << 8);
     lang_id = lang_lookup(code);
   } else {
+    // Values index tables, keep them in range (the file could be edited).
     static const struct {
       const char *s;
       uint8_t * const var;
+      const unsigned modval;
     } uintset[] = {
-      { "theme",       &menu_theme },
-      { "recent_menu", &recent_menu },
-      { "hide_hidden", &hide_hidden },
-      { "anim_speed",  &anim_speed },
-      { "boxart",      &boxart_enabled },
+      { "theme",       &menu_theme,     MENU_THEME_COUNT },
+      { "recent_menu", &recent_menu,    2 },
+      { "hide_hidden", &hide_hidden,    2 },
+      { "anim_speed",  &anim_speed,     animspd_cnt },
+      { "boxart",      &boxart_enabled, 2 },
     };
     unsigned valu = parseuint(value);
     for (unsigned i = 0; i < sizeof(uintset)/sizeof(uintset[0]); i++)
       if (!strcmp(var, uintset[i].s)) {
-        *uintset[i].var = valu;
+        *uintset[i].var = valu % uintset[i].modval;
         break;
       }
   }
@@ -367,7 +369,7 @@ bool save_rom_settings(const char *fn, const t_rom_load_settings *rld, const t_r
   // Make it hidden
   f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
 
-  char buf[256];
+  char buf[MAX_FN_LEN + 32];
   strcpy(buf, ROMCONFIG_PATH);
   strcat(buf, file_basename(fn));
   replace_extension(buf, ".config");

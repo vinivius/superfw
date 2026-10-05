@@ -231,6 +231,7 @@ const struct {
   { RGB2GBA(0x222222), RGB2GBA(0x444444), RGB2GBA(0xeeeeee), RGB2GBA(0x737573), RGB2GBA(0xaaaaaa), RGB2GBA(0x606060) }, // Dark
 };
 #define THEME_COUNT (sizeof(themes) / sizeof(themes[0]))
+_Static_assert(THEME_COUNT == MENU_THEME_COUNT, "Update MENU_THEME_COUNT");
 
 typedef struct {
   // ROM information
@@ -937,6 +938,11 @@ void patch_gen_callback(bool confirm) {
 
 static void load_patchdb_action(bool confirm) {
   if (confirm) {
+    // The database area is 1MiB, the emulator assets follow it.
+    if (spop.p.pdb_ld.fs > ROM_OFF_ASSETS_BASE - ROM_OFF_PATCH_DB) {
+      spop.alert_msg = msgs[lang_id][MSG_ERR_TOOBIG];
+      return;
+    }
     FIL fd;
     FRESULT res = f_open(&fd, spop.p.pdb_ld.fn, FA_READ);
     if (res != FR_OK) {
@@ -946,7 +952,10 @@ static void load_patchdb_action(bool confirm) {
       for (unsigned off = 0; off < spop.p.pdb_ld.fs; off += 1024) {
         UINT rdbytes;
         uint32_t tmp[1024/4];
-        if (FR_OK != f_read(&fd, tmp, sizeof(tmp), &rdbytes)) {
+        unsigned toread = MIN(sizeof(tmp), spop.p.pdb_ld.fs - off);
+        if (FR_OK != f_read(&fd, tmp, toread, &rdbytes) || rdbytes != toread) {
+          // A partial database is unusable, the built-in one comes back on reboot.
+          f_close(&fd);
           spop.alert_msg = msgs[lang_id][MSG_ERR_GENERIC];
           return;
         }
@@ -955,6 +964,7 @@ static void load_patchdb_action(bool confirm) {
         dma_memcpy32(ROM_PATCHDB_U8 + off, tmp, sizeof(tmp)/4);
         set_supercard_mode(MAPPED_SDRAM, true, true);
       }
+      f_close(&fd);
     }
     spop.alert_msg = msgs[lang_id][MSG_OK_GENERIC];
   }
