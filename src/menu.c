@@ -1442,11 +1442,9 @@ static unsigned guessicon(const char *path) {
 
 // Name to show for a file: ROMs (shown with a cartridge icon) can hide
 // their extension. Returns fn itself or buf.
-static const char *display_name(const char *fn, bool isdir, char *buf) {
-  if (!hide_ext || isdir)
-    return fn;
-  unsigned icon = guessicon(fn);
-  if (icon == ICON_BINFILE || icon == ICON_UPDFILE)
+static const char *display_name(const char *fn, unsigned icon, char *buf) {
+  if (!hide_ext || (icon != ICON_GBACART && icon != ICON_GBCART && icon != ICON_GBCCART &&
+                    icon != ICON_NESCART && icon != ICON_SMSCART))
     return fn;
   strcpy(buf, fn);
   char *ext = strrchr(buf, '.');
@@ -1681,13 +1679,13 @@ void render_recent(volatile uint8_t *frame) {
     // Animate the row entries if they are too long!
     if (i == smenu.recent.selector - smenu.recent.seloff) {
       marq_record = true;
-      draw_text_ovf_rotate(display_name(fn, false, selname), frame, 20, (1 + i) * 16,
+      draw_text_ovf_rotate(display_name(fn, iconidx, selname), frame, 20, (1 + i) * 16,
                            listw - 24, &smenu.anim_state);
       if (artp)
         render_boxart(frame, fn, false, NULL, iconidx, SCREEN_HEIGHT);
     } else {
       char nm[MAX_FN_LEN];
-      draw_text_ovf(display_name(fn, false, nm), frame, 20, (1 + i) * 16, listw - 24);
+      draw_text_ovf(display_name(fn, iconidx, nm), frame, 20, (1 + i) * 16, listw - 24);
     }
   }
 
@@ -1897,7 +1895,7 @@ void render_browser(volatile uint8_t *frame) {
       // Animate the row entries if they are too long!
       if (i == smenu.browser.selector - smenu.browser.seloff) {
         marq_record = true;
-        draw_text_ovf_rotate(display_name(e->fname, e->isdir, selname), frame, 20, (1 + i) * 16,
+        draw_text_ovf_rotate(display_name(e->fname, iconidx, selname), frame, 20, (1 + i) * 16,
                              listw - 26 - font_width(szstr), &smenu.anim_state);
         if (artp) {
           const bool isdir = e->attr & AM_DIR;
@@ -1908,7 +1906,7 @@ void render_browser(volatile uint8_t *frame) {
         }
       } else {
         char nm[MAX_FN_LEN];
-        draw_text_ovf(display_name(e->fname, e->isdir, nm), frame, 20, (1 + i) * 16, listw - 26 - font_width(szstr));
+        draw_text_ovf(display_name(e->fname, iconidx, nm), frame, 20, (1 + i) * 16, listw - 26 - font_width(szstr));
       }
     }
 
