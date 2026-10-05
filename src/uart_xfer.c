@@ -50,7 +50,7 @@ extern volatile unsigned frame_count;
 void uart_write(const void *data, unsigned size);
 
 volatile bool uart_xfer_active = false;    // Mutes UART logging, IRQ polling
-static uint32_t xbuf[XFER_BLK / 4 + 1];
+static uint32_t xbuf[XFER_BLK / 4 + 1] __attribute__((section(".sbss")));   // EWRAM: IWRAM is tight
 
 // Receives one byte, or -1 after the timeout (in frames).
 static int ugetc(unsigned frames) {
