@@ -236,10 +236,12 @@ static void uart_poll() {
 }
 #endif
 
-// Keys held during the last V-blank, and keys pressed since the menu last
-// read them (see get_keypress). Sampling here means no press is lost, even
-// when the menu takes several frames to do something.
-volatile uint16_t keys_held = 0, keys_pressed = 0;
+// Keys held during the last V-blank, and how many times each key was pressed
+// since the menu last read it (see get_keypress). Sampling here means no
+// press is lost, even when the menu takes several frames to do something
+// (and quick double presses are not merged into one).
+volatile uint16_t keys_held = 0;
+volatile uint8_t keys_presses[10];
 
 void irq_handler_fn() {
   // Clear all IRQs just in case
@@ -255,7 +257,10 @@ void irq_handler_fn() {
     k |= uart_keys;
     uart_keys_seen = true;
   #endif
-  keys_pressed |= k & ~keys_held;
+  unsigned newk = k & ~keys_held;
+  for (unsigned i = 0; newk; i++, newk >>= 1)
+    if ((newk & 1) && keys_presses[i] < 4)
+      keys_presses[i]++;
   keys_held = k;
 }
 

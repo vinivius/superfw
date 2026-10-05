@@ -444,7 +444,8 @@ unsigned lang_lookup(uint16_t code) {
 
 // Keys are sampled on every V-blank (main.c), so presses shorter than a
 // (slow) menu iteration are not lost.
-extern volatile uint16_t keys_held, keys_pressed;
+extern volatile uint16_t keys_held;
+extern volatile uint8_t keys_presses[10];
 extern volatile unsigned frame_count;
 static uint16_t menu_keys = 0;         // Held keys, as of the last get_keypress()
 
@@ -4060,10 +4061,15 @@ static uint8_t  keyrepcnt[10] = {0};
 // Handle button input. Supports key re-press whenever a button is held for a while.
 // This key repeat pattern can be tuned for speed and what not.
 uint16_t get_keypress() {
+  // One press per key and call: further presses are kept for the next calls.
   REG_IME = 0;
-  uint32_t newkeys = keys_pressed;
+  uint32_t newkeys = 0;
+  for (unsigned i = 0; i < 10; i++)
+    if (keys_presses[i]) {
+      keys_presses[i]--;
+      newkeys |= 1 << i;
+    }
   uint32_t ckeys = keys_held;
-  keys_pressed = 0;
   REG_IME = 1;
   menu_keys = ckeys | newkeys;
 
