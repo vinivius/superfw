@@ -103,12 +103,15 @@ current.
    Read it back with `get` and `cmp` it before flashing (another ~50 s).
    Builds can't be compared with each other: the firmware is compressed and
    embeds the git hash, so a new commit changes almost every byte.
-2. `gba-shot.sh RRRRRR 3`: Info tab. Tabs: Recent (if enabled and not
-   empty), Browser, Settings, UI/Language, Tools, Info; L/R stop at the ends
-   (no wrap), so extra presses are harmless.
+2. Info tab: tabs are Recent (if enabled and not empty), Browser, Settings,
+   UI/Language, Tools, Info. Builds from `superfw-next` on wrap around (L on
+   Recent goes to Info; older builds stop at the ends), so count presses from
+   a known tab and check the screenshot.
 3. `gba-shot.sh '[dbs]'`: bottom bar must read "Update flashing is enabled".
-4. `gba-shot.sh LLLL 3`: file browser. Move to the `.fw` with `d`/`u` (the
-   header shows position/total) and check that it is highlighted.
+4. `gba-shot.sh LLLL 3` (from Info): file browser. Move to the `.fw` with
+   `d`/`u` (the header shows position/total) and check that it is
+   highlighted. Entries starting with a dot are hidden when "Show hidden
+   files" is off, which shifts positions.
 5. `gba-shot.sh a 2`: "Firmware update ... Press L+R+Up to flash".
 6. `gba-serial.py send '[LRu]'`, then wait ~40 s without sending anything
    (heartbeats pause while flashing). Screenshot: "Flash update complete!".
