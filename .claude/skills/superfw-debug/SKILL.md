@@ -191,9 +191,14 @@ expose the UART as a pty and to keep SD image writes.
 ## Firmware memory budgets
 
 - Flash: 512 KiB for the SD board (`stat -c %s superfw.gba` < 524288); the
-  UART build is the tight one. `#pragma GCC optimize("Os")` on cold files
-  saved 5 KiB; `COMPRESSION_RATIO=9` saves ~1 KiB more but adds ~45 s per
-  build.
+  UART build is the tight one, so it is compressed at level 9 by default
+  (~65 s per build instead of ~12; pass `COMPRESSION_RATIO=4` for quick
+  emulator iterations, but check the final size at 9). Cold files use
+  `#pragma GCC optimize("Os")`. Check sizes after every visual change: the
+  modern look left ~2 KiB in the UART build.
+- Render cost on hardware can be ~15-20% higher than the emulator says
+  (gpsp timings are approximate): measure scrolling on the GBA (heartbeat)
+  before flashing anything that draws more per frame.
 - IWRAM: 32 KiB, of which the stack keeps 16 KiB (`ldscripts/gba_ewram.ld`
   asserts "Not enough free IWRAM for stack"). Check the "IWRAM:" line of the
   build. Put big buffers/state in EWRAM with `EWRAM_BSS` (compiler.h): that
