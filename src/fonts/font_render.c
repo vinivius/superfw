@@ -57,7 +57,23 @@ typedef struct {
 #define MISSING_CHAR    26   // "?" char, should find a better one though
 #define CHAR_SPACING     1
 
+// The menu (which draws a lot of text every frame) runs the text code from
+// IWRAM as ARM code, and keeps a copy of the font block index in IWRAM: the
+// font database lives in (slow) cartridge memory. The in-game menu has little
+// IWRAM to spare and uses the plain versions.
+#ifdef FW_MAX_SIZE_KB
+  #define FONT_HOT   ARM_CODE IWRAM_CODE NOINLINE
+  #define FONT_BLKCACHE_MAX  16
+  static const void *blkcache_src = 0;
+  static unsigned blkcache_cnt;
+  static const uint8_t *blkcache_data;
+  static t_charblock_info blkcache[FONT_BLKCACHE_MAX];
+#else
+  #define FONT_HOT
+#endif
+
 // Looks up block info for a character code.
+FONT_HOT
 static bool lookup_chptr(uint32_t code, t_char_render_info *chinfo) {
   // Add here any font database pointers as you wish, they are looked up in order.
   void *font_dblist[] = {
@@ -71,23 +87,45 @@ static bool lookup_chptr(uint32_t code, t_char_render_info *chinfo) {
     // Points to the data area (after all the indices)
     const uint8_t *baseptr = (uint8_t*)&chdat->charblks[chdat->block_count];
 
-    for (unsigned i = 0; i < chdat->block_count; i++) {
-      if (code >= chdat->charblks[i].start_char &&
-          code <= chdat->charblks[i].end_char) {
+    #ifdef FW_MAX_SIZE_KB
+    const t_charblock_info *blks = chdat->charblks;
+    unsigned blkcnt = chdat->block_count;
+    if (j == 1) {
+      if (blkcache_src != chdat && chdat->block_count <= FONT_BLKCACHE_MAX) {
+        for (unsigned i = 0; i < chdat->block_count; i++)
+          blkcache[i] = chdat->charblks[i];
+        blkcache_cnt = chdat->block_count;
+        blkcache_data = baseptr;
+        blkcache_src = chdat;
+      }
+      if (blkcache_src == chdat) {
+        blks = blkcache;
+        blkcnt = blkcache_cnt;
+        baseptr = blkcache_data;
+      }
+    }
+    #else
+      #define blks    chdat->charblks
+      #define blkcnt  chdat->block_count
+    #endif
+
+    for (unsigned i = 0; i < blkcnt; i++) {
+      if (code >= blks[i].start_char &&
+          code <= blks[i].end_char) {
 
         // Get code offset, and pointer to the data region for the block.
-        uint32_t code_offset = code - chdat->charblks[i].start_char;
-        const uint16_t *chptr = (uint16_t*)&baseptr[chdat->charblks[i].block_off];
+        uint32_t code_offset = code - blks[i].start_char;
+        const uint16_t *chptr = (uint16_t*)&baseptr[blks[i].block_off];
 
         // Fill the render info struct
-        if (chdat->charblks[i].flags & FLAG_COMP) {
+        if (blks[i].flags & FLAG_COMP) {
           unsigned glyphs[3];
           chinfo->char_width = 16;
           chinfo->spacing_cols = 0;
           chinfo->nchars = hangul_glyphs(code_offset, &glyphs[0], &glyphs[1], &glyphs[2]);
           for (unsigned j = 0; j < chinfo->nchars; j++)
             chinfo->data[j] = &chptr[16 * glyphs[j]];
-        } else if (chdat->charblks[i].flags & FLAG_FW16) {
+        } else if (blks[i].flags & FLAG_FW16) {
           chinfo->char_width = 16;
           chinfo->spacing_cols = 0;   // No spacing for fixed width chars.
           chinfo->nchars = 1;
@@ -95,7 +133,7 @@ static bool lookup_chptr(uint32_t code, t_char_render_info *chinfo) {
         } else {
           // Lookup the second index (contains widths and offsets)
           uint16_t ientry = chptr[code_offset];
-          const uint16_t *chdata = &chptr[chdat->charblks[i].end_char - chdat->charblks[i].start_char + 1];
+          const uint16_t *chdata = &chptr[blks[i].end_char - blks[i].start_char + 1];
 
           chinfo->char_width = (ientry >> 13) + 1;
           chinfo->spacing_cols = CHAR_SPACING;
@@ -108,12 +146,15 @@ static bool lookup_chptr(uint32_t code, t_char_render_info *chinfo) {
   }
   return false;
 }
+#undef blks
+#undef blkcnt
 
 unsigned font_block_size() {
   const t_charblock_header *chdat = (const t_charblock_header*)(font_base_addr);
   return chdat->data_size;
 }
 
+FONT_HOT
 unsigned font_width(const char *s) {
   unsigned pxcnt = 0;
   while (*s) {
@@ -129,6 +170,7 @@ unsigned font_width(const char *s) {
   return pxcnt;
 }
 
+FONT_HOT
 unsigned font_width_lcap(const char *s, unsigned max_width) {
   int pxcnt = font_width(s);
   unsigned bcnt = 0;
@@ -148,6 +190,7 @@ unsigned font_width_lcap(const char *s, unsigned max_width) {
   return bcnt;
 }
 
+FONT_HOT
 unsigned font_width_cap(const char *s, unsigned max_width) {
   unsigned pxcnt = 0, bcnt = 0;
   while (s[bcnt]) {
@@ -166,6 +209,7 @@ unsigned font_width_cap(const char *s, unsigned max_width) {
   return bcnt;
 }
 
+FONT_HOT
 unsigned font_width_cap_space(const char *s, unsigned max_width, unsigned *outwidth) {
   unsigned pxcnt = 0, bcnt = 0, max_cnt = 0, max_w = 0;
   while (s[bcnt]) {
@@ -205,6 +249,7 @@ static inline void vram_write(uint8_t *buffer, uint8_t value) {
 
 // Special GBA routine: handles VRAM byte writes correctly
 // Renders some text in a framebuffer (8bit indexed color)
+FONT_HOT
 void draw_text_idx8_bus16_range(const char *s, uint8_t *buffer, unsigned skip, unsigned maxcols, unsigned pitch, uint8_t color) {
   uint8_t *buf_max = &buffer[maxcols];
   while (*s) {

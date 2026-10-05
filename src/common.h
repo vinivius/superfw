@@ -212,6 +212,8 @@ void menu_render(unsigned fcnt);     // Renders the menu to the backframe
 void menu_keypress(unsigned newkeys);   // Notifies key press
 void menu_flip();       // Swaps front and back buffer to show the last rendered frame.
 uint16_t get_keypress();
+bool menu_tick();       // Deferred work between frames, true if the menu changed.
+bool menu_animating();  // True if the last rendered frame had animations.
 
 // Patching system
 typedef enum {

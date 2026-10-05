@@ -27,4 +27,6 @@
 #endif
 
 #define NOINLINE __attribute__((noinline))
+// Uninitialized data in EWRAM (IWRAM is tight). Not cleared at boot!
+#define EWRAM_BSS __attribute__((section(".sbss")))
 #define EXTERNAL __attribute__((used, externally_visible))

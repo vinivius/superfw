@@ -137,7 +137,7 @@ volatile unsigned frame_count = 0;
 // Each key stays pressed until the menu has read it, then released until the
 // menu has read that too, so no press is lost while the menu is busy.
 volatile uint16_t uart_keys = 0;      // Currently injected (pressed) keys
-volatile bool uart_keys_seen = false; // Set by curr_pressed_keys()
+volatile bool uart_keys_seen = false; // Set once the V-blank key sampling saw them
 static uint16_t uart_q[32];
 static unsigned uart_qh = 0, uart_qt = 0, uart_state = 0;
 static uint16_t uart_combo = 0;
@@ -236,6 +236,11 @@ static void uart_poll() {
 }
 #endif
 
+// Keys held during the last V-blank, and keys pressed since the menu last
+// read them (see get_keypress). Sampling here means no press is lost, even
+// when the menu takes several frames to do something.
+volatile uint16_t keys_held = 0, keys_pressed = 0;
+
 void irq_handler_fn() {
   // Clear all IRQs just in case
   REG_IF = 0xFFFF;
@@ -244,6 +249,21 @@ void irq_handler_fn() {
   #ifdef ENABLE_UART_LOGGING
     uart_poll();
   #endif
+
+  uint16_t k = REG_KEYINPUT ^ 0x3FF;
+  #ifdef ENABLE_UART_LOGGING
+    k |= uart_keys;
+    uart_keys_seen = true;
+  #endif
+  keys_pressed |= k & ~keys_held;
+  keys_held = k;
+}
+
+// Sleeps (CPU halted) until the next V-blank.
+static void wait_next_frame() {
+  unsigned f = frame_count;
+  while (frame_count == f)
+    __asm__ volatile ("swi 0x02" ::: "r0", "r1", "r2", "r3", "memory");
 }
 
 uint32_t systime() {
@@ -303,8 +323,13 @@ static int main_gba() {
   menu_flip();
 
   unsigned prev_frame = frame_count;
+  bool redraw = true;
   #ifdef ENABLE_UART_LOGGING
     unsigned last_beat = frame_count;
+    // Render cost, reported with the heartbeat (timer 2: 64 cycle ticks,
+    // 4389 ticks per frame).
+    *(volatile uint16_t*)0x0400010A = 0x81;
+    unsigned rnd_cnt = 0, rnd_sum = 0, rnd_max = 0;
   #endif
   while (1) {
     #ifdef ENABLE_UART_LOGGING
@@ -312,22 +337,43 @@ static int main_gba() {
         uart_xfer_req = false;
         uart_xfer_mode();
         browser_refresh_after_xfer();
+        redraw = true;
       }
       // Heartbeat, so the serial link can be checked (RX LED blinks every second).
       if (frame_count - last_beat >= 60) {
         last_beat = frame_count;
-        WRITE_LOG("alive %u", frame_count / 60);
+        WRITE_LOG("alive %u (renders %u, avg %u%% max %u%% of a frame)", frame_count / 60,
+                  rnd_cnt, rnd_cnt ? rnd_sum * 100 / 4389 / rnd_cnt : 0, rnd_max * 100 / 4389);
+        rnd_cnt = rnd_sum = rnd_max = 0;
       }
     #endif
     uint16_t mkeys = get_keypress();
-    if (mkeys)
+    if (mkeys) {
       menu_keypress(mkeys);
+      redraw = true;
+    }
+    // Deferred work (ie. loading box art once the cursor rests).
+    if (menu_tick())
+      redraw = true;
 
+    // Only draw a new frame when something changed or is animating.
     unsigned cframe = frame_count;
-    menu_render(frame_count - prev_frame);
-
-    wait_for_vblank();    // Avoid tearing.
-    menu_flip();
+    if (redraw || menu_animating()) {
+      #ifdef ENABLE_UART_LOGGING
+        uint16_t t0 = *(volatile uint16_t*)0x04000108;
+      #endif
+      menu_render(cframe - prev_frame);
+      #ifdef ENABLE_UART_LOGGING
+        unsigned dt = (uint16_t)(*(volatile uint16_t*)0x04000108 - t0);
+        rnd_cnt++;
+        rnd_sum += dt;
+        rnd_max = MAX(rnd_max, dt);
+      #endif
+      wait_next_frame();    // Flip during V-blank, avoids tearing.
+      menu_flip();
+      redraw = false;
+    } else
+      wait_next_frame();
     prev_frame = cframe;
   }
 

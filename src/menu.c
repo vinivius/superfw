@@ -388,7 +388,7 @@ static struct {
       unsigned fs;
     } pdb_ld;
   } p;
-} spop;
+} spop EWRAM_BSS;     // Cleared in menu_init
 
 typedef struct {
   uint32_t filesize;
@@ -441,19 +441,15 @@ unsigned lang_lookup(uint16_t code) {
   return 0;  // Fallback to default (english)
 }
 
-#ifdef ENABLE_UART_LOGGING
-  extern volatile uint16_t uart_keys;   // Keys injected over the serial link
-  extern volatile bool uart_keys_seen;  // Set once the menu has read them
-#endif
+// Keys are sampled on every V-blank (main.c), so presses shorter than a
+// (slow) menu iteration are not lost.
+extern volatile uint16_t keys_held, keys_pressed;
+extern volatile unsigned frame_count;
+static uint16_t menu_keys = 0;         // Held keys, as of the last get_keypress()
 
+// Keys held (or pressed since the previous menu iteration), for key combos.
 static inline uint16_t curr_pressed_keys() {
-  #ifdef ENABLE_UART_LOGGING
-    uint16_t k = (REG_KEYINPUT ^ 0x3FF) | uart_keys;
-    uart_keys_seen = true;
-    return k;
-  #else
-    return REG_KEYINPUT ^ 0x3FF;
-  #endif
+  return menu_keys;
 }
 
 uint16_t lang_getcode() {
@@ -1301,8 +1297,8 @@ static unsigned guessicon(const char *path) {
 #define THREEDOTS_WIDTH  9
 static void draw_text_ovf(const char *t, volatile uint8_t *frame, unsigned x, unsigned y, unsigned maxw) {
   uint8_t *basept = (uint8_t*)&frame[y * SCREEN_WIDTH + x];
-  unsigned twidth = font_width(t);
-  if (twidth <= maxw)
+  // Only measure up to the cut, names can be much longer than what fits.
+  if (!t[font_width_cap(t, maxw)])
     draw_text_idx8_bus16(t, basept, SCREEN_WIDTH, FT_COLOR);
   else {
     char tmpbuf[256];
@@ -1324,24 +1320,46 @@ static void draw_text_leftovf(const char *t, volatile uint8_t *frame, unsigned x
   }
 }
 
+// Whether the frame being rendered has animated parts (text scrolling and
+// similar), so it must be rendered again on the next frame.
+static bool anim_active = false;
+
+bool menu_animating() {
+  return anim_active;
+}
+
+// Draws text that scrolls (marquee) when it does not fit. The text width is
+// cached, since the same (selected) text is drawn on every frame.
+#define ROTATE_GAP_WIDTH  24
 static void draw_text_ovf_rotate(const char *t, volatile uint8_t *frame, unsigned x, unsigned y, unsigned maxw, unsigned *franim) {
+  static struct { const char *t; unsigned len, width; } wc;
   uint8_t *basept = (uint8_t*)&frame[y * SCREEN_WIDTH + x];
-  unsigned twidth = font_width(t);
+  unsigned len = strlen(t);
+  if (wc.t != t || wc.len != len) {
+    wc.t = t;
+    wc.len = len;
+    wc.width = font_width(t);
+  }
+  unsigned twidth = wc.width;
   if (twidth <= maxw)
     draw_text_idx8_bus16(t, basept, SCREEN_WIDTH, FT_COLOR);
   else {
+    anim_active = true;
     unsigned anim = *franim > ANIM_INITIAL_WAIT ? (*franim - ANIM_INITIAL_WAIT) >> 4 : 0;
 
-    // Wrap around once the text end reaches the mid point aprox.
-    char tmpbuf[540];
-    strcpy(tmpbuf, t);
-    strcat(tmpbuf, "      ");
-    unsigned pixw = font_width(tmpbuf);
-    if (anim > pixw)
+    // The text is followed by a gap and the text again, wrap around once the
+    // second copy reaches the start.
+    unsigned pixw = twidth + ROTATE_GAP_WIDTH;
+    if (anim > pixw) {
       *franim = ANIM_INITIAL_WAIT + ((anim - pixw) << 4);
-    strcat(tmpbuf, t);
+      anim -= pixw;
+    }
 
-    draw_text_idx8_bus16_range(tmpbuf, basept, anim, maxw, SCREEN_WIDTH, FT_COLOR);
+    if (anim < twidth)
+      draw_text_idx8_bus16_range(t, basept, anim, maxw, SCREEN_WIDTH, FT_COLOR);
+    unsigned x2 = pixw - anim;
+    if (x2 < maxw)
+      draw_text_idx8_bus16_range(t, basept + x2, 0, maxw - x2, SCREEN_WIDTH, FT_COLOR);
   }
 }
 
@@ -1424,7 +1442,7 @@ static void draw_central_text_wrapped(const char *t, volatile uint8_t *frame, un
 #define ART_PANEL_X      154       // Divider column, panel spans 156..239
 #define ART_CX           198       // Panel horizontal center
 #define ART_CY            80       // Panel vertical center (list area 16..143)
-#define ART_SETTLE        8        // Frames to wait before loading
+#define ART_SETTLE       12        // Frames the cursor must rest before loading
 #define ART_PAL_BASE      96       // BG palette entries 96..223
 
 static void render_boxart(volatile uint8_t *frame, const char *fname, bool isdir,
@@ -1536,11 +1554,13 @@ static void render_search_wheel(volatile uint8_t *frame, unsigned x) {
 // /.superfw/art/<filename>.img once the cursor rests on a file.
 
 static struct {
-  const void *pend;                // Entry pending load (cursor resting on it)
-  uint8_t wait;                    // Frames the cursor has rested on it
+  unsigned want_since;             // Frame the cursor moved to the wanted entry
   uint8_t w, h;                    // Loaded art dimensions (w == 0: no art)
+  uint8_t pal_cnt;                 // Palette entries pending upload (at flip)
+  uint16_t pal[128];               // Art palette
+  char want[MAX_FN_LEN];           // Filename the panel wants art for ("": none)
   char fn[MAX_FN_LEN];             // Filename the cached art belongs to
-} bart;
+} bart EWRAM_BSS;     // Cleared in menu_init
 
 // Art is spread over 64 subfolders, since FatFs searches directories
 // linearly and a single folder with thousands of files makes lookups slow.
@@ -1575,8 +1595,10 @@ static void boxart_load(const char *fn) {
   }
 
   if (h) {
-    // Palette goes straight to VRAM, pixels are offset and moved to SDRAM.
-    dma_memcpy16(&MEM_PALETTE[ART_PAL_BASE], tmp, nc);
+    // The palette is uploaded when the frame showing the art is flipped
+    // (menu_flip), pixels are offset and moved to SDRAM.
+    memcpy(bart.pal, tmp, nc * 2);
+    bart.pal_cnt = nc;
     unsigned rpc = sizeof(tmp) / w;
     for (unsigned r = 0; r < h; r += rpc) {
       unsigned cnt = MIN(rpc, h - r) * w;
@@ -1602,13 +1624,12 @@ static void render_boxart(volatile uint8_t *frame, const char *fname, bool isdir
     *(volatile uint16_t*)&frame[y * SCREEN_WIDTH + ART_PANEL_X] = dup8(FG_COLOR);
 
   const bool cached = !isdir && !strcmp(fname, bart.fn);
-  if (!isdir && !cached) {
-    // Wait for the cursor to settle before hitting the SD card.
-    if (bart.pend != fname) {
-      bart.pend = fname;
-      bart.wait = 0;
-    } else if (++bart.wait >= ART_SETTLE)
-      boxart_load(fname);
+  // Ask for the art, it is loaded between frames once the cursor rests.
+  if (isdir || cached)
+    bart.want[0] = 0;
+  else if (strcmp(fname, bart.want)) {
+    strcpy(bart.want, fname);
+    bart.want_since = frame_count;
   }
 
   if (cached && bart.w) {
@@ -2296,6 +2317,7 @@ void render_tools(volatile uint8_t *frame) {
     draw_text_ovf(msgs[lang_id][MSG_TOOLS0_SDRAM + i], frame, 22, 26 + 22 * i, 144);
 
   smenu.anim_state = (smenu.anim_state + 1) & 255;
+  anim_active = true;
   draw_central_text("▸", frame, 11 + (smenu.anim_state >> 6), 26 + 22 * smenu.tools.selector);
 
   for (unsigned i = 0; i < 240; i += 16)
@@ -2337,6 +2359,7 @@ static const struct {
 // previous rendered frame (for animations and similar stuff).
 void menu_render(unsigned fcnt) {
   objnum = 0;
+  anim_active = false;
   volatile uint8_t *frame = &MEM_VRAM_U8[0xA000*framen];
 
   // Render the tab menu on top (rows 0..15), highlighting the selected option
@@ -2391,7 +2414,22 @@ void menu_render(unsigned fcnt) {
   search_win_active = false;
 }
 
+// Loads the wanted box art once the cursor has rested on the entry for a
+// while (and the D-pad is released), so scrolling never waits for the SD card.
+bool menu_tick() {
+  if (!bart.want[0] || frame_count - bart.want_since < ART_SETTLE ||
+      (keys_held & (KEY_BUTTUP | KEY_BUTTDOWN | KEY_BUTTLEFT | KEY_BUTTRIGHT)))
+    return false;
+  boxart_load(bart.want);
+  bart.want[0] = 0;
+  return true;
+}
+
 void menu_flip() {
+  if (bart.pal_cnt) {
+    dma_memcpy16(&MEM_PALETTE[ART_PAL_BASE], bart.pal, bart.pal_cnt);
+    bart.pal_cnt = 0;
+  }
   for (unsigned i = 0; i < objnum; i++) {
     MEM_OAM[i*4+0] = fobjs[i].y | 0x2000;  // Use 256 entries palette
     MEM_OAM[i*4+1] = fobjs[i].x | 0x4000;  // Size 16x16
@@ -2406,6 +2444,7 @@ void menu_init(int sram_testres) {
   // Reset to ROM browser and SD card root.
   memset(&smenu, 0, sizeof(smenu));
   memset(&spop, 0, sizeof(spop));
+  memset(&bart, 0, sizeof(bart));
 
   // Reset the file browser as well.
   strcpy(smenu.browser.cpath, "/");
@@ -3670,21 +3709,26 @@ void menu_keypress(unsigned newkeys) {
 const uint16_t keyrep = KEY_BUTTUP | KEY_BUTTDOWN | KEY_BUTTLEFT | KEY_BUTTRIGHT;
 static uint32_t keyreptmr[10] = {0};
 static uint8_t  keyrepcnt[10] = {0};
-static uint32_t prev_keys = 0;
 
 // Handle button input. Supports key re-press whenever a button is held for a while.
 // This key repeat pattern can be tuned for speed and what not.
 uint16_t get_keypress() {
-  uint32_t ckeys = curr_pressed_keys();
+  REG_IME = 0;
+  uint32_t newkeys = keys_pressed;
+  uint32_t ckeys = keys_held;
+  keys_pressed = 0;
+  REG_IME = 1;
+  menu_keys = ckeys | newkeys;
+
   uint32_t mkeys = 0;
   for (unsigned i = 0; i < 10; i++) {
-    if (ckeys & (1 << i)) {
-      if (!(prev_keys & (1 << i))) {
-        keyreptmr[i] = systime() + KEY_REPEAT_INITIAL;
-        mkeys |= (1 << i);
-        keyrepcnt[i] = 0;
-      }
-      else if (((1 << i) & keyrep) && systime() > keyreptmr[i]) {
+    if (newkeys & (1 << i)) {
+      keyreptmr[i] = systime() + KEY_REPEAT_INITIAL;
+      mkeys |= (1 << i);
+      keyrepcnt[i] = 0;
+    }
+    else if (ckeys & (1 << i)) {
+      if (((1 << i) & keyrep) && keyreptmr[i] && systime() > keyreptmr[i]) {
         if (keyrepcnt[i] < 255)
           keyrepcnt[i]++;
         if (keyrepcnt[i] > KEY_REPEAT_CNT2)
@@ -3700,7 +3744,6 @@ uint16_t get_keypress() {
       keyreptmr[i] = 0;
   }
 
-  prev_keys = ckeys;
   return mkeys;
 }
 
