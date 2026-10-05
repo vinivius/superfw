@@ -8,6 +8,11 @@ CXX		:= $(PREFIX)g++
 OBJDUMP		:= $(PREFIX)objdump
 OBJCOPY		:= $(PREFIX)objcopy
 
+# UART debug builds are the tightest fit in the flash, compress them harder
+# (slower build).
+ifeq ($(ENABLE_UART_LOGGING),1)
+  COMPRESSION_RATIO ?= 9
+endif
 COMPRESSION_RATIO ?= 4
 
 GLOBAL_DEFINES = -D__GBA__
