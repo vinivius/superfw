@@ -16,6 +16,7 @@
  * <http://www.gnu.org/licenses/>.
  */
 
+#pragma GCC optimize("Os")
 #include <string.h>
 
 #include "compiler.h"
@@ -445,7 +446,7 @@ unsigned lang_lookup(uint16_t code) {
   extern volatile bool uart_keys_seen;  // Set once the menu has read them
 #endif
 
-inline uint16_t curr_pressed_keys() {
+static inline uint16_t curr_pressed_keys() {
   #ifdef ENABLE_UART_LOGGING
     uint16_t k = (REG_KEYINPUT ^ 0x3FF) | uart_keys;
     uart_keys_seen = true;
