@@ -28,8 +28,12 @@ and commit it as its own commit. Push only when the user asks.
 
 - Always `make clean` when changing build flags.
 - The SD board firmware must fit 512 KiB (enforced at link time). UART builds
-  are within ~1 KiB of the limit: check `stat -c %s superfw.gba` (< 524288)
-  and keep debug features small.
+  are within a few hundred bytes of the limit, keep debug features small.
+  `superfw.gba` is padded to 1 KiB, so `stat` doesn't show the free space;
+  measure where the content ends:
+
+      python3 -c "d=open('superfw.gba','rb').read(); e=min(len(d.rstrip(b'\xff')),len(d.rstrip(b'\x00'))); print(524288-e, 'bytes free')"
+
 - `ENABLE_DISK_LOGGING=1` writes `/superfwlog.txt` on the SD card instead;
   it is slow and changes SD timing, prefer UART logging.
 - The version hash on the Info tab is git HEAD at build time; uncommitted
@@ -194,8 +198,14 @@ expose the UART as a pty and to keep SD image writes.
   UART build is the tight one, so it is compressed at level 9 by default
   (~65 s per build instead of ~12; pass `COMPRESSION_RATIO=4` for quick
   emulator iterations, but check the final size at 9). Cold files use
-  `#pragma GCC optimize("Os")`. Check sizes after every visual change: the
-  modern look left ~2 KiB in the UART build.
+  `#pragma GCC optimize("Os")`. Check sizes after every visual change: with
+  the NEXT logo the UART build has ~250 bytes free, the release ~2.3 KiB.
+- Bootloader (`rom_boot.S`, draws the boot screen and unpacks the firmware):
+  3 KiB, asserted at link time; check `arm-none-eabi-nm -n firmware.elf |
+  grep _end_bootloader` (< 0x08000c00, it was 0x08000bb0). Bigger data it
+  needs (the NEXT boot art) goes after `assets_end` and is read from the
+  ROM. In gpsp the boot screen stays ~2 s (the interpreter unpacks slowly):
+  grab it with `shot.sh` ~0.3 s after starting the emulator.
 - Render cost on hardware can be ~15-20% higher than the emulator says
   (gpsp timings are approximate): measure scrolling on the GBA (heartbeat)
   before flashing anything that draws more per frame.
