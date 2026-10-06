@@ -194,6 +194,12 @@ expose the UART as a pty and to keep SD image writes.
 - Don't write off an emulator crash or hang as an emulator limitation
   without checking: the in-game `!` crashed gpsp for the same reason it
   froze the GBA.
+- Screenshots for the README or docs: use a card made with
+  `tools/debug/emu/demo-card.py` (made-up games, original covers), never
+  real ROM names or downloaded box art (publishers' copyright). The emulator
+  writes to the card image (patch answers, settings): keep a pristine copy
+  and restore it before each capture run. Take list shots right after moving
+  the cursor, before long names start scrolling.
 - Don't rebuild or replace the core while an emulator uses it (SIGBUS).
 
 ## Firmware memory budgets

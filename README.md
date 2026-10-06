@@ -24,7 +24,8 @@ SuperFW, it is free software under the GNU GPL version 3 or later.
 
 ## Download
 
-Get `superfw-sd.fw` from the [latest release](https://github.com/vinivius/superfw_next/releases/latest),
+Get the `.fw` file (ie. `superfw-next-v0.1-sd.fw`) from the
+[latest release](https://github.com/vinivius/superfw_next/releases/latest),
 then follow [Installing or updating](#installing-or-updating). Only the
 Supercard SD build is published: it is the one tested on real hardware. The
 Lite and CHIS variants build from the same sources (`make BOARD=lite` /
@@ -32,7 +33,8 @@ Lite and CHIS variants build from the same sources (`make BOARD=lite` /
 
 ## What's new
 
-The full list is in [docs/superfw-next.md](docs/superfw-next.md).
+The full list is in [docs/superfw-next.md](docs/superfw-next.md). The
+screenshots show made-up demo games with original covers.
 
 ### A new look
 
@@ -70,7 +72,7 @@ files.
 
 <p align="center">
   <img src="docs/screenshots/search-open.png" width="45%" alt="Search opens at A">
-  <img src="docs/screenshots/search.png" width="45%" alt="Searching POK">
+  <img src="docs/screenshots/search.png" width="45%" alt="Searching POC">
 </p>
 
 ### Responsive
@@ -159,13 +161,14 @@ Use fresh batteries or a power adapter: an update interrupted by a power
 loss can leave the cart unbootable (see the NDS flasher in
 [Installation](#installation) below to recover it).
 
-1. **Try it first.** Copy `superfw-sd.fw` to the SD card renamed to
-   `superfw-next.gba`, and launch it from the browser like a game. It runs
+1. **Try it first.** Copy the `.fw` file (ie. `superfw-next-v0.1-sd.fw`) to
+   the SD card renamed to `superfw-next.gba`, and launch it from the browser
+   like a game. It runs
    from memory without touching the cart's flash: turning the console off
    brings back your current firmware.
-2. **Flash it.** Copy `superfw-sd.fw` to the SD card (keep only one `.fw`
-   file there). On the About tab press **Down + B + START** ("Update flashing
-   is enabled"), pick `superfw-sd.fw` in the browser, press A, then
+2. **Flash it.** Copy the `.fw` file to the SD card (keep only one `.fw` file
+   there). On the About tab press **Down + B + START** ("Update flashing is
+   enabled"), pick the `.fw` file in the browser, press A, then
    **L + R + Up**. Wait for "Flash update complete!" and restart the console.
 
 The firmware header is unchanged, so SuperFW and SuperFW Next can install each

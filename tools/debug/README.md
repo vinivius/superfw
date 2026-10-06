@@ -20,3 +20,5 @@ GBA SO (pin 2) to adapter RXD, GBA SI (pin 3) to adapter TXD, and GND (pin
                       headless frontend (`emu/fe.c`); `emu/run.sh` runs it,
                       `emu/keys.sh` injects keys, `emu/shot.sh` saves the
                       exact frame, `emu/montage.py` makes contact sheets.
+- `emu/demo-card.py`  Made-up games with original covers for screenshots
+                      (README, docs): never show real game names or box art.
