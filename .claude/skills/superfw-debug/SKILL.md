@@ -78,14 +78,18 @@ current.
 - Be careful with `a` on a ROM: it launches it. In GB/GBC/NES games (run
   through bundled emulators) nothing listens to the UART, so only a power
   cycle by the user gets back to the menu.
-- `!` also works while a GBA game runs (verified on hardware with Pokemon
-  FireRed: back in the menu ~8 s later). It goes through the in-game menu
-  IRQ hook (`uart_dbg_poll` in `src/ingame.S`), so it needs the in-game menu
-  to be loaded for the game (`igm` in the "Load sizes" log line). Games
-  reset or reconfigure the link port (Pokemon games probe for the Wireless
-  Adapter at boot), so the hook sets the UART up again whenever it is not in
-  UART mode and sends a `~` each time: a burst of `~` after a game starts
-  means the hook runs. Link play doesn't work in debug builds.
+- In-game `!` (reboot from a running GBA game) needs a build with
+  `UART_INGAME_CONTROL=1`; plain debug builds leave the link port to the
+  game, so they are safe to play with. It goes through the in-game menu IRQ
+  hook (`uart_dbg_poll` in `src/ingame.S`), so it also needs the in-game
+  menu loaded for the game (`igm` in the "Load sizes" log line), and it only
+  works in games that don't touch the link port (the hook sets the UART up
+  while the port is untouched, and gives it up for good once the game uses
+  it). Never make the hook take the port back from a game: a game waiting
+  for a transfer polls SIOCNT bit 7, which never clears in UART mode, so it
+  freezes at random (Pokemon, Mario Kart at boot: link cable / Wireless
+  Adapter probes). The emulator completes transfers at once, so it can't
+  show this; a burst of `~` in old logs was this fight.
 - After `!`, wait for `Loaded recently played games` and `alive 1` in the
   log (~8 s); a quick look at the last heartbeat can still show the old
   count.
@@ -114,8 +118,8 @@ before flashing a build.
    read it back with `get` + `cmp`.
 2. Browser (or Recent) -> `superfw-next.gba` -> A -> A (no patch prompt for
    SuperFW images). Its heartbeat format tells it apart.
-3. `!` (menu or in-game) maps the flash and reboots: that's the flashed
-   firmware, not the test build.
+3. `!` (menu, or in-game with `UART_INGAME_CONTROL=1`) maps the flash and
+   reboots: that's the flashed firmware, not the test build.
 4. It adds itself to the Recent list. When done, `gba-serial.py rm
    /superfw-next.gba` and remove the entry (Recent tab: SELECT, Yes), so the
    card only keeps the real firmware file.
