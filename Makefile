@@ -52,7 +52,11 @@ ifeq ($(ENABLE_EMU_LOGGING),1)
 endif
 ifeq ($(ENABLE_UART_LOGGING),1)
   PAYLOADFLAGS += -DENABLE_UART_LOGGING
-  INGAMEFLAGS += -DUART_DEBUG_CONTROL
+  # In-game serial control ('!' reboots into SuperFW). Only for remote test
+  # sessions: it takes the link port, see uart_dbg_poll in src/ingame.S.
+  ifeq ($(UART_INGAME_CONTROL),1)
+    INGAMEFLAGS += -DUART_DEBUG_CONTROL
+  endif
 endif
 
 ifeq ($(COMPRESS_FIRMWARE),1)

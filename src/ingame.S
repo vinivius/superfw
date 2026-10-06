@@ -678,12 +678,16 @@ def_function(get_undef_sp):
   bx lr
 
 #ifdef UART_DEBUG_CONTROL
-// Serial debug control (UART debug builds), called on every V-blank with
-// r0 = 0x04000000. A '!' received on the link port reboots into SuperFW.
-// Games reset the SIO setup, and many probe or set up the link port (ie.
-// Pokemon games looking for the Wireless Adapter), so the UART is set up
-// again whenever it is not in UART mode: link play does not work in these
-// builds. A '~' is sent every time, to show this in the log. Clobbers r1-r3.
+// Serial debug control (UART debug builds with UART_INGAME_CONTROL=1), called
+// on every V-blank with r0 = 0x04000000. A '!' received on the link port
+// reboots into SuperFW.
+// The game reset leaves the link port in its power-on state: the UART is set
+// up only while the port is still untouched, and the port is never taken back
+// once the game uses it. Taking it back can freeze the game: a game waiting
+// for its transfer to finish polls SIOCNT bit 7, which never clears in UART
+// mode (ie. Pokemon or Mario Kart probing for a link cable or the Wireless
+// Adapter at boot). Even so, a game that changes SIOCNT with a read-modify-
+// write after the UART was set up could misbehave. Clobbers r1-r3.
 uart_dbg_poll:
   add r3, r0, $0x100
   ldrh r1, [r3, #0x34]       // REG_RCNT
@@ -692,7 +696,7 @@ uart_dbg_poll:
   ldrh r1, [r3, #0x28]       // REG_SIOCNT
   and r2, r1, $0x3000
   cmp r2, $0x3000            // UART mode?
-  bne 1f
+  bxne lr                    // No: the game uses the port, leave it alone
   tst r1, $0x20              // Receive FIFO empty?
   bxne lr
   ldrh r1, [r3, #0x2A]       // REG_SIODATA8
@@ -701,14 +705,16 @@ uart_dbg_poll:
   beq reset_fw
   bx lr
 1:
-  mov r1, $0
-  strh r1, [r3, #0x34]       // REG_RCNT = 0 (serial mode)
-  strh r1, [r3, #0x28]       // REG_SIOCNT = 0, then UART mode:
+  bic r1, $0xF               // Bits 0-3 read the pin levels
+  cmp r1, $0x8000            // Untouched (power-on state)? Set up the UART
+  bxne lr
+  ldrh r2, [r3, #0x28]       // REG_SIOCNT, also untouched?
+  cmp r2, $0
+  bxne lr
+  strh r2, [r3, #0x34]       // REG_RCNT = 0 (serial mode)
   mov r2, $0x3D00
   orr r2, $0x83
   strh r2, [r3, #0x28]       // 115200 8N1, FIFO, TX+RX
-  mov r1, $0x7E              // '~'
-  strh r1, [r3, #0x2A]       // REG_SIODATA8
   bx lr
 #endif
 
