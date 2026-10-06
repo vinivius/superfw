@@ -318,9 +318,8 @@ static struct {
     int dispentries;              // Maximum number of visible entries (filtered)
     int sortentries;              // Number of entries in the sorted (unsearched) list
     uint16_t selhist[16];         // History of directory offsets
-    char query[24];               // Search query (committed chars, uppercase)
-    uint8_t qlen;                 // Length of the search query
-    uint8_t qcand;                // Candidate char being picked (1-based, 0 = none)
+    char query[24];               // Search query (uppercase), the last char is
+    uint8_t qlen;                 // the one on the wheel while editing
     bool qedit;                   // Search field is open and being edited
   } browser;
 
@@ -1192,6 +1191,13 @@ NOINLINE static void browser_open(const char *fn, uint32_t fs) {
 static const char search_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ";
 #define SEARCH_NCHARS  (sizeof(search_chars) - 1)
 
+static unsigned search_char_idx(char c) {
+  for (unsigned i = 0; i < SEARCH_NCHARS; i++)
+    if (search_chars[i] == c)
+      return i;
+  return 0;
+}
+
 // Spinning the wheel only filters the list once it rests for a moment
 // (filtering thousands of names takes a few frames), see menu_tick.
 #define SEARCH_SETTLE   8
@@ -1218,19 +1224,11 @@ static bool search_match(const char *fname, const char *q) {
   return false;
 }
 
-// Builds the current query: committed chars plus the candidate being picked.
-static void browser_search_query(char *q) {
-  memcpy(q, smenu.browser.query, smenu.browser.qlen);
-  unsigned l = smenu.browser.qlen;
-  if (smenu.browser.qcand)
-    q[l++] = search_chars[smenu.browser.qcand - 1];
-  q[l] = 0;
-}
-
 // Fills the visible list (fileorder) with the sorted entries matching the search.
 static void browser_apply_search() {
-  char q[sizeof(smenu.browser.query) + 1];
-  browser_search_query(q);
+  char q[sizeof(smenu.browser.query)];
+  memcpy(q, smenu.browser.query, smenu.browser.qlen);
+  q[smenu.browser.qlen] = 0;
 
   unsigned fcount = 0;
   for (unsigned i = 0; i < smenu.browser.sortentries; i++)
@@ -1247,7 +1245,6 @@ static void browser_apply_search() {
 
 static void browser_clear_search() {
   smenu.browser.qlen = 0;
-  smenu.browser.qcand = 0;
   smenu.browser.qedit = false;
 }
 
@@ -1896,8 +1893,9 @@ void render_flashbrowser(volatile uint8_t *frame) {
 }
 #endif
 
-// Draws the vertical char picker for the search field: the candidate char sits
-// on the search bar (at x) and the previous/next chars are shown above it.
+// Draws the vertical char picker for the search field: the char being picked
+// (the last one of the query) sits on the search bar (at x) and the next ones
+// are shown above it. Space is drawn as '_'.
 static bool search_win_active = false;
 #define WHEEL_W   16
 static void render_search_wheel(volatile uint8_t *frame, unsigned x) {
@@ -1907,12 +1905,11 @@ static void render_search_wheel(volatile uint8_t *frame, unsigned x) {
   // Separate the picked char (on the bar) from the upcoming ones.
   dma_memset16(&frame[143 * SCREEN_WIDTH + x], dup8(FG_COLOR), WHEEL_W / 2);
 
-  int c = smenu.browser.qcand;   // 1-based, 0 means no char picked yet
+  unsigned c = search_char_idx(smenu.browser.query[smenu.browser.qlen - 1]);
   for (int i = 0; i < 3; i++) {
     // Rows: next-next (top), next, current (on the bar). Up moves forward.
-    int idx = c ? (c - 1 + 2 - i) % (int)SEARCH_NCHARS : -1;
-    char ch[2] = { idx >= 0 ? search_chars[idx] : (i == 2 ? '_' : ' '), 0 };
-    if (ch[0] == ' ' && idx >= 0)
+    char ch[2] = { search_chars[(c + 2 - i) % SEARCH_NCHARS], 0 };
+    if (ch[0] == ' ')
       ch[0] = '_';
     unsigned cx = x + (WHEEL_W - font_width(ch)) / 2;
     draw_text_idx8_bus16(ch, (uint8_t*)&frame[(112 + i * 16) * SCREEN_WIDTH + cx], SCREEN_WIDTH, FT_COLOR);
@@ -2124,10 +2121,12 @@ void render_browser(volatile uint8_t *frame) {
   }
 
   if (smenu.browser.qedit || smenu.browser.qlen) {
-    // Search bar replaces the path: "Search: ABC" plus the char being picked.
-    char q[sizeof(smenu.browser.query) + 1];
-    memcpy(q, smenu.browser.query, smenu.browser.qlen);
-    q[smenu.browser.qlen] = 0;
+    // Search bar replaces the path: "Search: ABC", while editing the last char
+    // is drawn by the wheel.
+    char q[sizeof(smenu.browser.query)];
+    unsigned ql = smenu.browser.qlen - (smenu.browser.qedit ? 1 : 0);
+    memcpy(q, smenu.browser.query, ql);
+    q[ql] = 0;
     const char *label = msgs[lang_id][MSG_BROW_SEARCH];
     unsigned qx = 8 + font_width(label) + 4;
     draw_text_idx8_bus16(label, (uint8_t*)&frame[144 * SCREEN_WIDTH + 8], SCREEN_WIDTH, FT_COLOR);
@@ -3803,21 +3802,26 @@ static void keypress_menu_recent(unsigned newkeys) {
     smenu.recent.seloff = smenu.recent.selector - RECENT_ROWS + 1;
 }
 
-// Search field editor: Up/Down pick a char (L/R jump 5), Right/A accept it,
-// Left deletes, A/Start close the field (keeping the filter) and B cancels
-// the search.
-// The picker shows the upcoming chars above the current one, so Up moves
-// forward (A -> B) and Down moves back. Both start at 'A'.
+// Search field editor. The last char of the query sits on the wheel, and the
+// list always shows what the search bar shows:
+// Up/Down change that char (L/R jump 5), Right moves on to the next char
+// (starting at 'A'), Left goes back to the previous one (dropping the current
+// one, or cancelling the search on the first char), A/Start close the field
+// (keeping the filter) and B cancels the search.
+// The wheel shows the upcoming chars above the current one, so Up moves
+// forward (A -> B) and Down moves back.
 static void keypress_browse_search(unsigned newkeys) {
+  if (!smenu.browser.qlen) {       // Never edited without a char on the wheel
+    browser_clear_search();
+    return;
+  }
   bool changed = false;
   // Up/Down move one char, L/R jump 5.
   int step = (newkeys & KEY_BUTTUP) ? 1 : (newkeys & KEY_BUTTDOWN) ? -1 :
              (newkeys & KEY_BUTTR) ? 5 : (newkeys & KEY_BUTTL) ? -5 : 0;
   if (step) {
-    if (!smenu.browser.qcand)
-      smenu.browser.qcand = step > 0 ? step : SEARCH_NCHARS + 1 + step;
-    else
-      smenu.browser.qcand = (smenu.browser.qcand - 1 + SEARCH_NCHARS + step) % SEARCH_NCHARS + 1;
+    char *c = &smenu.browser.query[smenu.browser.qlen - 1];
+    *c = search_chars[(search_char_idx(*c) + SEARCH_NCHARS + step) % SEARCH_NCHARS];
     search_pending = true;
     search_since = frame_count;
   }
@@ -3826,19 +3830,19 @@ static void keypress_browse_search(unsigned newkeys) {
     browser_clear_search();
     changed = true;
   }
-  else if (newkeys & (KEY_BUTTRIGHT | KEY_BUTTA | KEY_BUTTSTA)) {
-    // Commit the candidate char, the filter does not change.
-    if (smenu.browser.qcand && smenu.browser.qlen < sizeof(smenu.browser.query) - 1)
-      smenu.browser.query[smenu.browser.qlen++] = search_chars[smenu.browser.qcand - 1];
-    smenu.browser.qcand = 0;
-    if (newkeys & (KEY_BUTTA | KEY_BUTTSTA))
-      smenu.browser.qedit = false;
+  else if (newkeys & KEY_BUTTRIGHT) {
+    if (smenu.browser.qlen < sizeof(smenu.browser.query) - 1) {
+      smenu.browser.query[smenu.browser.qlen++] = 'A';
+      changed = true;
+    }
   }
+  else if (newkeys & (KEY_BUTTA | KEY_BUTTSTA))
+    smenu.browser.qedit = false;
   else if (newkeys & KEY_BUTTLEFT) {
-    if (smenu.browser.qcand)
-      smenu.browser.qcand = 0;
-    else if (smenu.browser.qlen)
+    if (smenu.browser.qlen > 1)
       smenu.browser.qlen--;
+    else
+      browser_clear_search();
     changed = true;
   }
 
@@ -3856,8 +3860,14 @@ static void keypress_menu_browse(unsigned newkeys) {
     return;
   }
   if (newkeys & KEY_BUTTSTA) {
+    // Edit the search (back on its last char), or start one at 'A'.
     smenu.browser.qedit = true;
-    smenu.browser.qcand = 0;
+    if (!smenu.browser.qlen) {
+      smenu.browser.query[smenu.browser.qlen++] = 'A';
+      smenu.browser.selector = 0;
+      smenu.anim_state = 0;
+      browser_apply_search();
+    }
     return;
   }
 

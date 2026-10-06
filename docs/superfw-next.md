@@ -29,8 +29,12 @@ SuperFW and SuperFW Next can install each other.
   images stay in memory and the ones around the cursor are preloaded, so
   going back and forth through a list shows them instantly.
 - Big folders show a "Loading folder... N" counter while they load.
-- The search wheel stays responsive in big folders (the list filters once
-  the wheel rests), L/R jump 5 letters.
+- Search (START in the browser): the wheel always shows a letter, starting
+  at A, and the list always matches what the search bar shows. Up/Down pick
+  the letter (L/R jump 5), Right moves on to the next one, Left goes back to
+  edit the previous one, A/START close the field and B cancels it. Space is
+  a real character (shown as `_` on the wheel). The wheel stays responsive
+  in big folders (the list filters once it rests).
 
 ## Design
 
