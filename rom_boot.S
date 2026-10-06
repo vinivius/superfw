@@ -57,6 +57,13 @@
 #define PATCH_DB_ADDR    0x09D00000     @ Where patch db lives
 #define ASSETS_ADDR      0x09E00000     @ Where assets (emu/menu) live
 
+#include "src/res/next_boot.h"
+
+// "NEXT" art position on the boot screen: under the "FW" of the (centered)
+// logo, the same place as on the About tab (see render_info in menu.c).
+#define BOOT_NEXT_X      ((GBA_SWIDTH-31*4)/2 + 78)
+#define BOOT_NEXT_Y      ((GBA_SHEIGHT-7*4)/2 + 22)
+
 #define REG_DISPCNT      0x04000000
 #define REG_BG2CNT       0x0400000C
 #define REG_BG2PA        0x04000020
@@ -302,6 +309,34 @@ _main_end:
       subs r2, $1
       bne 2b
     add r1, $(GBA_SWIDTH-32*4 + GBA_SWIDTH*3)
+    subs r3, $1
+    bne 1b
+
+  @ "NEXT" under the "FW" of the logo: 4 bits per pixel, 0 is transparent.
+  @ It is read from the ROM (it lives after the assets, not in the bootloader).
+  ldr r0, =boot_next_pal
+  mov r1, $0x05000000
+  orr r1, $(4 * 2)            @ Colors 1..7 go to palette entries 4..10
+  ldm r0!, {r2-r5}            @ r0 now points to boot_next_art
+  stm r1, {r2-r5}
+  ldr r1, =(0x06000000 + BOOT_NEXT_X + BOOT_NEXT_Y * GBA_SWIDTH)
+  mov r3, $BOOT_NEXT_H
+  1:
+    mov r2, $(BOOT_NEXT_W / 2)
+    2:
+      ldrb r4, [r0], #1
+      ldrh r7, [r1]               @ Keep the logo behind transparent pixels
+      movs r5, r4, lsr #4         @ Left pixel (low byte)
+      addne r5, $3
+      andeq r5, r7, $0xFF
+      ands r6, r4, $0xF           @ Right pixel (high byte)
+      addne r6, $3
+      moveq r6, r7, lsr #8
+      orr r5, r5, r6, lsl #8
+      strh r5, [r1], #2
+      subs r2, $1
+      bne 2b
+    add r1, $(GBA_SWIDTH - BOOT_NEXT_W)
     subs r3, $1
     bne 1b
 
@@ -764,6 +799,10 @@ assets_start:
   .word 0               @ End of asset list
   .word 0
 assets_end:
+
+  @ Boot screen "NEXT" art (res/next), read by the bootloader from the ROM.
+  .balign 4
+#include "src/res/next_boot.inc"
 
 #if defined(SUPPORT_NORGAMES)
   // We place a mirror copy of the DirSave payload so it can be used by NOR games.

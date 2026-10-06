@@ -1,4 +1,19 @@
 
+SuperFW Next
+============
+
+An unofficial fork of [SuperFW](https://github.com/davidgfnet/superfw), the
+firmware for Supercard GBA flash carts written by David Guillen Fandos
+(davidgf). All the credit for SuperFW goes to him: this fork only adds a
+redesigned menu, responsiveness and reliability fixes, box art caching and
+debugging tools on top of it (see [docs/superfw-next.md](docs/superfw-next.md)).
+It is not endorsed by the SuperFW author, so please report problems with this
+fork here and not upstream. Like SuperFW, it is free software under the GNU
+GPL version 3 or later.
+
+The original SuperFW README follows.
+
+
 SuperFW
 =======
 

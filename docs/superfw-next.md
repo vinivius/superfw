@@ -5,6 +5,14 @@ bb97fe5) and the `search-boxart` branch (ROM search, box art, SD write and
 ROM loading fixes). Everything was tested in the gpsp emulator and on a
 Supercard SD with a 2245/1237/653 ROM card.
 
+## Name
+
+SuperFW Next, version 0.1: an unofficial fork, SuperFW is by davidgf. The
+boot screen and the About tab show the unchanged SUPERFW logo with "NEXT"
+under it (original 80s arcade style lettering, `res/next/make_next.py`,
+converted by `res/next/next2c.py`). The firmware header is unchanged, so
+SuperFW and SuperFW Next can install each other.
+
 ## Responsiveness
 
 - No lost key presses: keys are sampled on every V-blank and each press is
@@ -17,7 +25,9 @@ Supercard SD with a 2245/1237/653 ROM card.
 - Text rendering is about twice as fast (rows are only measured up to the
   cut, the font code runs from IWRAM).
 - Box art loads between frames once the cursor rests, never while
-  scrolling, and no longer flashes with the wrong colors.
+  scrolling, and no longer flashes with the wrong colors. The last 8
+  images stay in memory and the ones around the cursor are preloaded, so
+  going back and forth through a list shows them instantly.
 - Big folders show a "Loading folder... N" counter while they load.
 - The search wheel stays responsive in big folders (the list filters once
   the wheel rests), L/R jump 5 letters.

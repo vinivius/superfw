@@ -2660,59 +2660,74 @@ void render_ui_settings(volatile uint8_t *frame) {
   render_selbar(4, 236, 22 + smenu.uiset.selector * 18);
 }
 
+// "Next" logo art (res/next), drawn diagonally under the "FW" of the logo.
+#include "res/next_art.h"
+#define NEXT_PAL_BASE 32
+
+static void render_next_art(volatile uint8_t *frame, unsigned x, unsigned y) {
+  dma_memcpy16(&MEM_PALETTE[NEXT_PAL_BASE], next_art0_pal, sizeof(next_art0_pal) / 2);
+  for (unsigned r = 0; r < sizeof(next_art0) / sizeof(next_art0[0]); r++)
+    for (unsigned c = 0; c < sizeof(next_art0[0]); c++)
+      if (next_art0[r][c])
+        put_px(frame, x + c, y + r, NEXT_PAL_BASE - 1 + next_art0[r][c]);
+}
+
 void render_info(volatile uint8_t *frame) {
   uint32_t vmaj = VERSION_WORD >> 16;
   uint32_t vmin = VERSION_WORD & 0xFFFF;
   uint32_t gitver = VERSION_SLUG_WORD;
   char tmp[64], tmp2[32];
 
+  // "SUPERFW" (unchanged, 124x28, centered) with "NEXT" rising diagonally
+  // under its "FW" (same layout as the boot screen, see rom_boot.S).
   init_logo_palette(&MEM_PALETTE[1]);
-  render_logo((uint16_t*)frame, SCREEN_WIDTH/2, 40, 4);
+  render_logo((uint16_t*)frame, SCREEN_WIDTH / 2, 32, 4);
+  render_next_art(frame, (SCREEN_WIDTH - 124) / 2 + 78, 32 - 14 + 22);
 
   switch (smenu.info.selector) {
   case 0:
-    draw_central_text("by davidgf", frame, 120, 70);
+    draw_central_text("by davidgf", frame, 120, 78);
     npf_snprintf(tmp, sizeof(tmp), "Version %lu.%lu (%08lx)", vmaj, vmin, gitver);
-    draw_central_text(tmp, frame, 120, 95);
+    draw_central_text(tmp, frame, 120, 103);
     #ifdef ENABLE_UART_LOGGING
-      draw_central_text(FW_FLAVOUR " variant - UART debug", frame, 120, 114);
+      draw_central_text(FW_FLAVOUR " variant - UART debug", frame, 120, 122);
     #else
-      draw_central_text(FW_FLAVOUR " variant", frame, 120, 114);
+      draw_central_text(FW_FLAVOUR " variant", frame, 120, 122);
     #endif
     break;
   case 1:
-    draw_central_text("Flash info", frame, 120, 70);
+    draw_central_text("Flash info", frame, 120, 78);
     npf_snprintf(tmp, sizeof(tmp), "Dev ID: %08lx", flashinfo.deviceid);
-    draw_central_text(tmp, frame, 120, 95);
+    draw_central_text(tmp, frame, 120, 103);
     if (flashinfo.size && flashinfo.blksize && flashinfo.blkcount) {
       human_size_kb(tmp2, sizeof(tmp2), flashinfo.size >> 10);
       npf_snprintf(tmp, sizeof(tmp), "%s [%lu * %lu]", tmp2, flashinfo.blksize, flashinfo.blkcount);
       if (flashinfo.regioncnt != 1)
         strcat(tmp, " !");
-      draw_central_text(tmp, frame, 120, 115);
+      draw_central_text(tmp, frame, 120, 123);
     } else {
       npf_snprintf(tmp, sizeof(tmp), "No CFI! (hardwired %dKiB)", FW_MAX_SIZE_KB);
-      draw_central_text(tmp, frame, 120, 115);
+      draw_central_text(tmp, frame, 120, 123);
     }
     break;
   case 2:
-    draw_central_text(msgs[lang_id][MSG_DBPINFO], frame, 120, 70);
+    draw_central_text(msgs[lang_id][MSG_DBPINFO], frame, 120, 78);
     npf_snprintf(tmp, sizeof(tmp), "%s - %s", pdbinfo.version, pdbinfo.date);
-    draw_central_text(tmp, frame, 120, 90);
+    draw_central_text(tmp, frame, 120, 98);
     npf_snprintf(tmp, sizeof(tmp), "Game count: %lu", pdbinfo.patch_count);
-    draw_central_text(tmp, frame, 120, 110);
+    draw_central_text(tmp, frame, 120, 118);
     break;
   case 3:
     npf_snprintf(tmp, sizeof(tmp), "SD Card ID: %02x | %04x", sd_info.manufacturer, sd_info.oemid);
-    draw_central_text(tmp, frame, 120, 70);
+    draw_central_text(tmp, frame, 120, 78);
     human_size_kb(tmp2, sizeof(tmp2), sd_info.block_cnt / 2);
     npf_snprintf(tmp, sizeof(tmp), "Type: %s  Size: %s", sd_info.sdhc ? "SDHC" : "SDSC", tmp2);
-    draw_central_text(tmp, frame, 120, 90);
+    draw_central_text(tmp, frame, 120, 98);
     npf_snprintf(tmp, sizeof(tmp), "Info: %c%c%c%c%c (%d/%d)",
       sd_info.prodname[0] ?: '#', sd_info.prodname[1] ?: '#',
       sd_info.prodname[2] ?: '#', sd_info.prodname[3] ?: '#',
       sd_info.prodname[4] ?: '#', 2000 + sd_info.year, sd_info.month);
-    draw_central_text(tmp, frame, 120, 110);
+    draw_central_text(tmp, frame, 120, 118);
     break;
   }
 
