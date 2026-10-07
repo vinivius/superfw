@@ -1,7 +1,7 @@
-diff --git a/Makefile b/Makefile
+diff --git i/Makefile w/Makefile
 index 19bb692..88d6a09 100644
---- a/Makefile
-+++ b/Makefile
+--- i/Makefile
++++ w/Makefile
 @@ -516,7 +516,7 @@ endif
  ifeq ($(DEBUG), 1)
  	OPTIMIZE      := -O0 -g    #   -DTRACE_INSTRUCTIONS -DTRACE_REGISTERS
@@ -11,10 +11,10 @@ index 19bb692..88d6a09 100644
  endif
  
  DEFINES := -DHAVE_STRINGS_H -DHAVE_STDINT_H -DHAVE_INTTYPES_H -D__LIBRETRO__ -DINLINE=inline -Wall
-diff --git a/gba_memory.c b/gba_memory.c
-index 4b58f8f..e9153e0 100644
---- a/gba_memory.c
-+++ b/gba_memory.c
+diff --git i/gba_memory.c w/gba_memory.c
+index 4b58f8f..db46a6c 100644
+--- i/gba_memory.c
++++ w/gba_memory.c
 @@ -24,6 +24,72 @@
  #include <fcntl.h>
  #include "common.h"
@@ -97,7 +97,42 @@ index 4b58f8f..e9153e0 100644
  u32 clkcnt = 0;
  u32 bytesread = 0;
  u32 tokenbits = 0;
-@@ -610,6 +676,8 @@ bool supercard_we = false;
+@@ -604,12 +670,43 @@ enum SDBlkstate {
+ };
+ enum SDBlkstate blkstate = SDBusy;
+ 
++// SD read fault injection (tests): when a file named "sd-read-fail" shows up
++// in the working directory, it holds "N K": after N more read commands, the
++// next K ones never send their data (the host times out), then reads work
++// again (and a new file can be armed).
++static bool sd_read_failing = false;
++static bool sd_read_fault(void) {
++  static int skip = -1, fails = 0;
++  if (skip < 0) {
++    FILE *f = fopen("sd-read-fail", "r");
++    if (!f)
++      return false;
++    if (fscanf(f, "%d %d", &skip, &fails) < 1 || skip < 0)
++      skip = 0;
++    if (fails <= 0)
++      fails = 1;
++    fclose(f);
++    remove("sd-read-fail");
++    fprintf(stderr, "SD fault injection: failing %d reads after %d\n", fails, skip);
++  }
++  if (skip > 0) {
++    skip--;
++    return false;
++  }
++  if (--fails <= 0)
++    skip = -1;
++  return true;
++}
++
++
+ void remap_gamepak();
+ 
+ bool supercard_we = false;
  bool supercard_sdcard = false;
  u16 modeq[4] = {0};
  void supercard_mode(u16 data) {
@@ -106,16 +141,17 @@ index 4b58f8f..e9153e0 100644
    for (unsigned i = 0; i < 3; i++)
      modeq[i] = modeq[i+1];
    modeq[3] = data;
-@@ -742,7 +810,7 @@ void supercard_cmd_write_16(u16 value) {
+@@ -742,7 +839,8 @@ void supercard_cmd_write_16(u16 value) {
          sdrespsz = 8;
          sdresp[0] = 0;
          sdst = WriteResp;
 -        foffset = 512 * d;
 +        foffset = 512ULL * d;
++        sd_read_failing = sd_read_fault();
          //printf("\nread card addr %d\n", d);
          blkstate = SDBusy;
          bytesread = 0;
-@@ -753,7 +821,7 @@ void supercard_cmd_write_16(u16 value) {
+@@ -753,7 +851,7 @@ void supercard_cmd_write_16(u16 value) {
          sdrespsz = 8;
          sdresp[0] = 0;
          sdst = WriteResp;
@@ -124,16 +160,71 @@ index 4b58f8f..e9153e0 100644
          //printf("\nwrite card addr %d\n", d);
          blkstate = SDWaitData;
          bytesread = 0;
-@@ -787,7 +855,7 @@ void supercard_writereg_write(u16 value) {
+@@ -773,6 +871,31 @@ void supercard_cmd_write(int type, u32 value) {
+ }
+ 
+ 
++// SD write fault injection (tests): when a file named "sd-write-fail" shows
++// up in the working directory, it holds how many more data blocks are written
++// normally. Every block after that is not stored and gets a CRC error status
++// token, like a card that stopped accepting writes (until the emulator exits).
++static bool sd_write_fault(void) {
++  static int remaining = -1;
++  if (remaining < 0) {
++    FILE *f = fopen("sd-write-fail", "r");
++    if (!f)
++      return false;
++    if (fscanf(f, "%d", &remaining) != 1 || remaining < 0)
++      remaining = 0;
++    fclose(f);
++    remove("sd-write-fail");
++    fprintf(stderr, "SD fault injection: failing writes after %d blocks\n", remaining);
++  }
++  if (remaining > 0) {
++    remaining--;
++    return false;
++  }
++  return true;
++}
++
++static u8 sd_wrbuf[512];
++
+ void supercard_writereg_write(u16 value) {
+   //printf("Write Reg write val %x (off reg %d)\n", value, foffset);
+   if (blkstate == SDWaitData) {
+@@ -780,14 +903,17 @@ void supercard_writereg_write(u16 value) {
+       blkstate = SDDataWrite;
+   }
+   else if (blkstate == SDDataWrite) {
+-    if (foffset < sdcardsize && bytesread < 512) {
+-      sdcardmap[foffset++] = value;   // byte write
+-      //printf("%02x ", value & 0xFF);
+-    }
++    if (bytesread < 512)
++      sd_wrbuf[bytesread] = value;   // The block is stored once complete
      // TODO: Do not ignore the CRC and return errors if necessary
      if (bytesread == 520) {
++      bool fail = sd_write_fault();
++      if (!fail && foffset + 512 <= sdcardsize)
++        memcpy(&sdcardmap[foffset], sd_wrbuf, 512);
++      foffset += 512;
        blkstate = SDDataWriteToken;
 -      tokenbits = 0xEB;  // 111.0.101.1
-+      tokenbits = 0xCA;  // Spec: 1 1 (start)0 (status)010 (end)1 then busy 0s
++      // Spec: 1 1 (start)0 (status)010 (end)1 then busy 0s. Status 101: CRC error.
++      tokenbits = fail ? 0xD6 : 0xCA;
        clkcnt = 0;
      }
  
-@@ -890,7 +958,7 @@ u16 supercard_readreg_read() {
+@@ -801,6 +927,8 @@ void supercard_writereg_write(u16 value) {
+ 
+ void sdclock(int c) {
+   if (blkstate == SDBusy) {
++    if (sd_read_failing)
++      return;             // Never sends the data start bit
+     clkcnt += c;
+     if (clkcnt > 32) {
+       clkcnt = 0;
+@@ -890,7 +1018,7 @@ u16 supercard_readreg_read() {
      return 0xF00;
  
    {
@@ -142,7 +233,7 @@ index 4b58f8f..e9153e0 100644
      //if (foffset > 0) {
      {
  
-@@ -1031,6 +1099,8 @@ u32 function_cc read_eeprom(void)
+@@ -1031,6 +1159,8 @@ u32 function_cc read_eeprom(void)
                                                                                \
      case 0x04:                                                                \
        /* I/O registers */                                                     \
@@ -151,7 +242,7 @@ index 4b58f8f..e9153e0 100644
        value = readaddress##type(io_registers, address & 0x3FF);               \
        break;                                                                  \
                                                                                \
-@@ -1301,9 +1371,18 @@ cpu_alert_type function_cc write_io_register16(u32 address, u32 value)
+@@ -1301,9 +1431,18 @@ cpu_alert_type function_cc write_io_register16(u32 address, u32 value)
  
      // Serial port registers
      case REG_SIOCNT:
@@ -170,7 +261,7 @@ index 4b58f8f..e9153e0 100644
        return write_rcnt(value);
  
      // Interrupt flag, clears the bits it tries to write
-@@ -1429,6 +1508,16 @@ void function_cc write_backup(u32 address, u32 value)
+@@ -1429,6 +1568,16 @@ void function_cc write_backup(u32 address, u32 value)
    if(backup_type == BACKUP_EEPROM)
      return;
  
@@ -187,7 +278,7 @@ index 4b58f8f..e9153e0 100644
    if(backup_type == BACKUP_UNKN)
      backup_type = BACKUP_SRAM;
  
-@@ -2655,7 +2744,7 @@ void init_gamepak_buffer(void)
+@@ -2655,7 +2804,7 @@ void init_gamepak_buffer(void)
    assert(sdfd >= 0);
    fstat(sdfd, &st);
    printf("Maping SD card file (size %d bytes)\n", st.st_size);
@@ -196,7 +287,7 @@ index 4b58f8f..e9153e0 100644
    assert(sdcardmap != NULL);
    sdcardsize = st.st_size;
  }
-@@ -3021,7 +3110,7 @@ u32 load_gamepak(const struct retro_game_info* info, const char *name,
+@@ -3021,7 +3170,7 @@ u32 load_gamepak(const struct retro_game_info* info, const char *name,
     flash_bank_cnt = FLASH_SIZE_64KB;
     rtc_enabled = false;
     rumble_enabled = false;
@@ -205,7 +296,7 @@ index 4b58f8f..e9153e0 100644
     serial_mode = force_serial;
  
     load_game_config_over(&gpinfo);
-@@ -3049,3 +3138,8 @@ s32 load_bios(char *name)
+@@ -3049,3 +3198,8 @@ s32 load_bios(char *name)
  }
  
  
