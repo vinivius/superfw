@@ -2919,11 +2919,22 @@ static void settings_autosave() {
     spop.alert_msg = msgs[lang_id][MSG_ERR_SETSAVE];
 }
 
-// File name of the entry delta rows away from the cursor, if it can have
-// art (a file in the browser or the recent list), or NULL.
-#define ART_PREFETCH_IDLE  30      // Frames without input before prefetching
+#define ART_PREFETCH_IDLE  4       // Frames without input before prefetching
 static unsigned last_input_frame;
 
+// Selector of the list showing box art (-1: none), and the direction the
+// cursor last moved in: art is prefetched ahead of it first.
+static int art_selector() {
+  if (smenu.menu_tab == MENUTAB_ROMBROWSE && browser_loaded && !smenu.browser.qedit)
+    return smenu.browser.selector;
+  if (smenu.menu_tab == MENUTAB_RECENT)
+    return smenu.recent.selector;
+  return -1;
+}
+static int art_last_sel = -1, art_dir = 1;
+
+// File name of the entry delta rows away from the cursor, if it can have
+// art (a file in the browser or the recent list), or NULL.
 static const char *art_neighbour(int delta) {
   if (!boxart_enabled)
     return NULL;
@@ -2965,12 +2976,21 @@ bool menu_tick() {
     bart.want[0] = 0;
     return true;
   }
-  // Idle for a while: prefetch the art of the entries around the cursor,
-  // nearest first, one per frame.
-  if (frame_count - last_input_frame >= ART_PREFETCH_IDLE && !keys_held) {
-    static const int8_t order[] = {1, -1, 2, -2, 3, -3};
+  // Between key presses (and never while the D-pad is held, so scrolling
+  // stays smooth): prefetch the art of the entries around the cursor, one per
+  // frame, mostly ahead in the direction it moves (5 ahead and 2 behind, with
+  // the current one they fill the cache).
+  int sel = art_selector();
+  if (sel != art_last_sel) {
+    if (sel >= 0 && art_last_sel >= 0)
+      art_dir = sel < art_last_sel ? -1 : 1;
+    art_last_sel = sel;
+  }
+  if (frame_count - last_input_frame >= ART_PREFETCH_IDLE &&
+      !(keys_held & (KEY_BUTTUP | KEY_BUTTDOWN | KEY_BUTTLEFT | KEY_BUTTRIGHT))) {
+    static const int8_t order[] = {1, 2, -1, 3, 4, -2, 5};
     for (unsigned i = 0; i < sizeof(order); i++) {
-      const char *fn = art_neighbour(order[i]);
+      const char *fn = art_neighbour(order[i] * art_dir);
       if (fn && art_find(fn) < 0) {
         art_load(fn);
         break;
