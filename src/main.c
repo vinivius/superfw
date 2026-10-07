@@ -107,7 +107,7 @@ void check_pending_saves() {
     unsigned ecode = flush_pending_sram();
     WRITE_LOG("Pending save flush result: %u", ecode);
     sdcard_flush_log();
-    if (ecode == ERR_SAVE_FLUSH_WRITEFAIL) {
+    if (SAVE_FLUSH_RETRY(ecode)) {
       // Display error messages briefly if any
       display_info_clear();
       display_info_msg("Failed to write savegame to SD!");
