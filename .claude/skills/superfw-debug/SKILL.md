@@ -200,6 +200,14 @@ expose the UART as a pty and to keep SD image writes.
   writes to the card image (patch answers, settings): keep a pristine copy
   and restore it before each capture run. Take list shots right after moving
   the cursor, before long names start scrolling.
+- SD fault injection (`gba_memory.c`): a file in the emulator folder (the
+  core's working directory) makes SD accesses fail from then on.
+  `sd-write-fail` holds N: after N more data blocks, every write gets a CRC
+  error token and isn't stored (until the emulator exits). `sd-read-fail`
+  holds "N K": after N more read commands, the next K never send data (the
+  host times out), then reads work again. Use them to test save paths
+  (sweep N to hit each step), as done for the in-game save and pending-save
+  fixes.
 - Don't rebuild or replace the core while an emulator uses it (SIGBUS).
 
 ## Firmware memory budgets
@@ -208,8 +216,12 @@ expose the UART as a pty and to keep SD image writes.
   UART build is the tight one, so it is compressed at level 9 by default
   (~65 s per build instead of ~12; pass `COMPRESSION_RATIO=4` for quick
   emulator iterations, but check the final size at 9). Cold files use
-  `#pragma GCC optimize("Os")`. Check sizes after every visual change: with
-  the NEXT logo the UART build has ~250 bytes free, the release ~2.3 KiB.
+  `#pragma GCC optimize("Os")` (grep for `optimize *("Os")`, some files
+  write it with a space). Check sizes after every change: the UART build
+  had dropped to a few dozen bytes free; sha256.c (always) and nanoprintf.c
+  (UART builds only, `#ifdef ENABLE_UART_LOGGING`) went -Os to get ~1.1 KiB
+  back. The release has ~2 KiB. Measure the overflow with a temporary
+  `MAXFSIZE=600` build instead of guessing.
 - Bootloader (`rom_boot.S`, draws the boot screen and unpacks the firmware):
   3 KiB, asserted at link time; check `arm-none-eabi-nm -n firmware.elf |
   grep _end_bootloader` (< 0x08000c00, it was 0x08000bb0). Bigger data it
