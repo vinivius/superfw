@@ -684,6 +684,13 @@ unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo
   if (fs > 8*1024*1024)
     return ERR_LOAD_BADROM;
 
+  // Data copied to SDRAM is read back (see copy_chunk_verified), like for GBA
+  // ROMs: a dropped write would corrupt the emulator or the game.
+  chunk_rewrites = 0;
+  #ifdef HAVE_LOGGING
+    chunk_rewrite_num = 0;
+  #endif
+
   // Try to find a valid and existing emulator.
   if (!memcmp(ldinfo->emu_name, "vfs:", 4)) {
     // Look the emulator up in the VFS
@@ -718,13 +725,13 @@ unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo
       if (!rdbytes)
         break;
 
-      // Copy data into the ROM (disable SD interface to avoid collisions!)
-      set_supercard_mode(MAPPED_SDRAM, true, false);
-      if (use_slowld)
-        rom_copy_write16(ptr, tmp, rdbytes);
-      else
-        dma_memcpy32(ptr, tmp, rdbytes/4);
-      set_supercard_mode(MAPPED_SDRAM, true, true);
+      // Copy data into the ROM (the SD interface is disabled meanwhile)
+      unsigned bytes = (rdbytes + 3) & ~3;
+      if (copy_chunk_verified(ptr, tmp, bytes, ptr - (uint8_t*)GBA_ROM_ADDR) < 0) {
+        WRITE_LOG("Emulator chunk at 0x%06lx never verified in SDRAM", ptr - (uint8_t*)GBA_ROM_ADDR);
+        f_close(&fd);
+        return ERR_LOAD_VERIFY;
+      }
       ptr += rdbytes;
     }
     f_close(&fd);
@@ -749,18 +756,25 @@ unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo
       return ERR_LOAD_BADROM;
     }
 
-    // Copy data into the ROM (disable SD interface to avoid collisions!)
-    set_supercard_mode(MAPPED_SDRAM, true, false);
-    if (use_slowld)
-      rom_copy_write16(ptr, tmp, LOAD_BS);
-    else
-      dma_memcpy32(ptr, tmp, LOAD_BS/4);
-    set_supercard_mode(MAPPED_SDRAM, true, true);
+    // Copy data into the ROM (the SD interface is disabled meanwhile)
+    if (copy_chunk_verified(ptr, tmp, LOAD_BS, ptr - (uint8_t*)GBA_ROM_ADDR) < 0) {
+      WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", ptr - (uint8_t*)GBA_ROM_ADDR);
+      f_close(&fd);
+      return ERR_LOAD_VERIFY;
+    }
     ptr += LOAD_BS;
   }
 
   // Close the file, not super necessary really :P
   f_close(&fd);
+
+  #ifdef HAVE_LOGGING
+    for (unsigned i = 0; i < chunk_rewrite_num; i++)
+      WRITE_LOG("Emulator load: chunk at 0x%06lx needed rewriting (%u extra writes)",
+                chunk_rewrite_off[i], chunk_rewrite_cnt[i]);
+    if (chunk_rewrites)
+      WRITE_LOG("Emulator load: chunks rewritten: %u", chunk_rewrites);
+  #endif
 
   // Set the ROM into read only mode, disable SD card reader as well.
   set_supercard_mode(MAPPED_SDRAM, false, false);
