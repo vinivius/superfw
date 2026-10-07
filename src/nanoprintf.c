@@ -3,6 +3,12 @@
    charles.nicholson+nanoprintf@gmail.com
    dual-licensed under 0bsd and unlicense, take your pick. see eof for details. */
 
+// SuperFW: UART debug builds are the tightest fit in the flash, optimize this
+// for size there (their output goes to a 115200 baud serial port anyway).
+#ifdef ENABLE_UART_LOGGING
+#pragma GCC optimize ("Os")
+#endif
+
 #include "nanoprintf.h"
 
 #include <inttypes.h>
