@@ -18,6 +18,8 @@
 
 // Minimal SHA256 implementation
 
+// Only used to validate firmware images before flashing them: size over speed.
+#pragma GCC optimize ("Os")
 #include <stdint.h>
 #include <string.h>
 
