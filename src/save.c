@@ -444,7 +444,7 @@ static bool flush_failed_pending_save() {
     return true;                          // Nothing pending
   if (res != FR_OK)
     return false;                         // Can't tell (ie. SD error), don't risk it
-  if (SAVE_FLUSH_RETRY(flush_pending_sram()))
+  if (save_flush_retry(flush_pending_sram()))
     return false;
   // Written (or not recoverable, ie. an invalid sentinel): remove the sentinel
   // before the game replaces it, and don't go on if that fails.
