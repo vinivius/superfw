@@ -1,7 +1,7 @@
 # superfw-next
 
 Changes on the `superfw-next` branch, on top of upstream SuperFW (up to
-bb97fe5) and the `search-boxart` branch (ROM search, box art, SD write and
+5ecb841) and the `search-boxart` branch (ROM search, box art, SD write and
 ROM loading fixes). Everything was tested in the gpsp emulator and on a
 Supercard SD with a 2245/1237/653 ROM card.
 
@@ -34,7 +34,8 @@ SuperFW and SuperFW Next can install each other.
   the letter (L/R jump 5), Right moves on to the next one, Left goes back to
   edit the previous one, A/START close the field and B cancels it. Space is
   a real character (shown as `_` on the wheel). The wheel stays responsive
-  in big folders (the list filters once it rests).
+  in big folders (the list filters once it rests, or right away when the
+  wheel closes), and long queries are clipped to the bar.
 
 ## Design
 
@@ -60,6 +61,11 @@ SuperFW and SuperFW Next can install each other.
   before they replace the current one; a full card or failed rename no
   longer destroys the save (main menu and in-game menu). "Save and quit"
   only quits when the save worked.
+- A save that could not be written at boot is retried before the next game
+  is launched; if it still fails, the launch stops with an error instead of
+  erasing it (the save is kept in SRAM and retried on the next boot).
+- A damaged or hand-edited recent.txt (no final newline, overlong lines,
+  Windows line endings) no longer crashes or hangs the boot.
 - Firmware updates retry (up to 3 times) when erasing, writing or
   verifying fails, and the screen says not to turn the console off.
 - Fixed crashes: more than 200 recent games, malformed recent.txt and

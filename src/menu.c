@@ -789,17 +789,15 @@ static bool prepare_gba_info(
     else
       info->patch_type = PatchNone;
   }
-  // Downgrade to no patches if the specified was not found.
-  else if (st->patch_policy == PatchDatabase) {
-    if (!info->patches_datab_found)
-      info->patch_type = PatchNone;
-  }
-  else if (st->patch_policy == PatchEngine) {
-    if (!info->patches_cache_found)
-      info->patch_type = PatchNone;
-  }
-  else
+  else {
+    // Use the specified patch type.
     info->patch_type = st->patch_policy;
+
+    // Downgrade to no patches if the specified was not found.
+    if ((info->patch_type == PatchDatabase && !info->patches_datab_found) ||
+        (info->patch_type == PatchEngine   && !info->patches_cache_found))
+      info->patch_type = PatchNone;
+  }
 
   // Fill defaults as requested if possible.
   bool allowds = load_sdram ? dirsav_avail_sdram(info) : dirsav_avail_flash(info);
@@ -2130,8 +2128,10 @@ void render_browser(volatile uint8_t *frame) {
     const char *label = msgs[lang_id][MSG_BROW_SEARCH];
     unsigned qx = 8 + font_width(label) + 4;
     draw_text_idx8_bus16(label, (uint8_t*)&frame[144 * SCREEN_WIDTH + 8], SCREEN_WIDTH, FT_COLOR);
-    draw_text_idx8_bus16(q, (uint8_t*)&frame[144 * SCREEN_WIDTH + qx], SCREEN_WIDTH, FT_COLOR);
-    qx += font_width(q);
+    // Long queries (and longer translated labels) are clipped to the bar.
+    unsigned maxcols = qx < SCREEN_WIDTH - 8 ? SCREEN_WIDTH - 8 - qx : 0;
+    draw_text_idx8_bus16_range(q, (uint8_t*)&frame[144 * SCREEN_WIDTH + qx], 0, maxcols, SCREEN_WIDTH, FT_COLOR);
+    qx += MIN(font_width(q), maxcols);
 
     if (smenu.browser.qedit)
       render_search_wheel(frame, (qx + 3) & ~1);
@@ -3836,8 +3836,12 @@ static void keypress_browse_search(unsigned newkeys) {
       changed = true;
     }
   }
-  else if (newkeys & (KEY_BUTTA | KEY_BUTTSTA))
+  else if (newkeys & (KEY_BUTTA | KEY_BUTTSTA)) {
     smenu.browser.qedit = false;
+    // The browser keys work on the list right away: filter it now if the
+    // wheel was still spinning.
+    changed = search_pending;
+  }
   else if (newkeys & KEY_BUTTLEFT) {
     if (smenu.browser.qlen > 1)
       smenu.browser.qlen--;
