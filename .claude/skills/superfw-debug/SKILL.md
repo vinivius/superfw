@@ -29,7 +29,8 @@ and commit it as its own commit. Push only when the user asks.
 - Always `make clean` when changing build flags.
 - The SD board firmware must fit 512 KiB (enforced at link time). UART builds
   are within a few hundred bytes of the limit, keep debug features small.
-  `superfw.gba` is padded to 1 KiB, so `stat` doesn't show the free space;
+  `superfw.gba` is padded to the next 512 byte block (`tools/fw-fixer.py`),
+  so `stat` doesn't show the free space;
   measure where the content ends with `tools/debug/flash-free.sh superfw.gba`
   (CI reports it for both builds in the job summary).
 - `superfw-next` is protected: changes go through pull requests, built by

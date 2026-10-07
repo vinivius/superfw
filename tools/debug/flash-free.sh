@@ -1,6 +1,7 @@
 #!/bin/sh
 # flash-free.sh IMAGE [LABEL]: how much of the 512 KiB flash a firmware image
-# leaves free (superfw.gba is padded to 1 KiB, so its size doesn't tell).
+# leaves free. tools/fw-fixer.py pads superfw.gba with 0xFF up to the next 512
+# byte block, so its size doesn't tell: this measures where the data ends.
 python3 - "$1" "${2:-$1}" <<'PY'
 import sys
 d = open(sys.argv[1], "rb").read()
