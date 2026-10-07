@@ -17,8 +17,11 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels its outdated run. Pushes to
+# superfw-next get a group each (GitHub keeps only one pending run per group,
+# so a shared one could drop a version), and all of them run.
 concurrency:
-  group: superfw-next-${{ github.ref }}
+  group: superfw-next-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -60,22 +63,26 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          # Only firmware changes need a new version (not docs, tools, CI...).
-          fw=$(git diff --name-only "$BASE"...HEAD | grep -v -E \
-            '^(docs/|tests/|\.github/|\.claude/|tools/debug/|tools/rom-|tools/superfw_romlib\.py$|README\.md$)' || true)
-          if [ -z "$fw" ]; then
-            echo "No firmware changes, no version bump needed."
-            exit 0
-          fi
+          # The version must change whenever the firmware people flash (the
+          # release build) changes. Builds are reproducible, so build it for
+          # the base and for this pull request with the same commit hash (the
+          # firmware embeds it) and compare them.
           old=$(git show "$BASE:Makefile" | sed -n 's/^VERSION_WORD := //p')
           new=$(sed -n 's/^VERSION_WORD := //p' Makefile)
-          echo "Firmware files changed:"
-          echo "$fw" | sed 's/^/  /'
-          if [ $(( new )) -le $(( old )) ]; then
-            echo "::error file=Makefile::The firmware changed, but VERSION_WORD was not bumped ($old). Increase it (ie. 0x00000002 is version 0.2)."
+          if [ $(( new )) -gt $(( old )) ]; then
+            echo "Version bumped: $old -> $new"
+            exit 0
+          fi
+          git worktree add -q "$RUNNER_TEMP/base" "$BASE"
+          make -C "$RUNNER_TEMP/base" BOARD=sd VERSION_SLUG_WORD=00000000 -j"$(nproc)" >/dev/null
+          make BOARD=sd VERSION_SLUG_WORD=00000000 -j"$(nproc)" >/dev/null
+          if cmp -s superfw.gba "$RUNNER_TEMP/base/superfw.gba"; then
+            echo "The release firmware is unchanged, no version bump needed."
+          else
+            echo "::error file=Makefile::The release firmware changed, but VERSION_WORD was not bumped ($old). Increase it (ie. 0x00000002 is version 0.2)."
             exit 1
           fi
-          echo "Version bumped: $old -> $new"
+          make clean >/dev/null
 
       - name: Build the release firmware
         run: |
@@ -147,6 +154,10 @@ jobs:
 
           \`superfw-next-$V-sd-uart-debug.gba\` is the serial debug build (see tools/debug). Checksums are in SHA256SUMS.
           EOF
-          gh release create "$tag" --target "$GITHUB_SHA" --title "SuperFW Next ${V#v}" \
-            --notes-file notes.md --generate-notes \
-            out/*.fw out/*.gba out/SHA256SUMS
+          if ! gh release create "$tag" --target "$GITHUB_SHA" --title "SuperFW Next ${V#v}" \
+               --notes-file notes.md --generate-notes \
+               out/*.fw out/*.gba out/SHA256SUMS; then
+            # Another run (ie. two merges at once) may have just published it.
+            gh release view "$tag" >/dev/null 2>&1 || exit 1
+            echo "$tag was published by another run."
+          fi

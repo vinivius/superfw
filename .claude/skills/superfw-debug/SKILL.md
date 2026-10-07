@@ -35,7 +35,9 @@ and commit it as its own commit. Push only when the user asks.
   (CI reports it for both builds in the job summary).
 - `superfw-next` is protected: changes go through pull requests, built by
   CI (`.github/workflows/superfw-next.yml`). Bump `VERSION_WORD` in any PR
-  that changes the firmware; merging publishes the release `next-vX.Y`.
+  that changes the release firmware (CI compares release builds of the base
+  and the PR made with `VERSION_SLUG_WORD=00000000`); merging publishes the
+  release `next-vX.Y`.
 
 - `ENABLE_DISK_LOGGING=1` writes `/superfwlog.txt` on the SD card instead;
   it is slow and changes SD timing, prefer UART logging.
