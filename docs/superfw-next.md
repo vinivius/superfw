@@ -82,3 +82,15 @@ SuperFW and SuperFW Next can install each other.
 key injection, screenshots and file transfer, test-booting builds from the
 SD card without flashing, and a gpsp setup (Supercard SD, UART, DirectSave)
 with key injection and frame capture.
+
+## Builds and releases
+
+`superfw-next` only accepts pull requests. GitHub Actions
+(`.github/workflows/superfw-next.yml`) builds every pull request into it:
+the release and the UART debug firmware, with the same Arm toolchain as
+`tools/debug/setup-toolchain.sh` (the output is byte-identical to a local
+build), plus the unit tests. A pull request that changes the firmware must
+bump `VERSION_WORD` in the Makefile (`0x00000002` is version 0.2), or the
+check fails. Every merge publishes the release `next-vX.Y` for that version
+(once): `superfw-next-vX.Y-sd.fw` to flash, the same image as `.gba` to try
+it from the SD card first, the debug build and `SHA256SUMS`.

@@ -1,0 +1,152 @@
+name: SuperFW Next
+run-name: SuperFW Next ${{ github.event_name == 'pull_request' && 'PR check' || 'build and release' }}
+
+# Pull requests into superfw-next: check the version was bumped (when the
+# firmware changed), build it and run the unit tests.
+# Pushes to superfw-next (ie. merged pull requests): build it, run the unit
+# tests and publish a release for its version (once: a version that already
+# has a release only gets the workflow artifacts).
+
+on:
+  pull_request:
+    branches: [superfw-next]
+  push:
+    branches: [superfw-next]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: superfw-next-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build firmware
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # The version check needs the base branch
+
+      # The same toolchain as tools/debug/setup-toolchain.sh: the flash is
+      # nearly full, and other compiler versions produce different sizes.
+      - name: Cache the Arm GNU toolchain
+        id: toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchain
+          key: arm-gnu-toolchain-14.3.rel1-x86_64
+      - name: Install the Arm GNU toolchain
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        run: SUPERFW_DEV=$HOME tools/debug/setup-toolchain.sh
+      - name: Add the toolchain to PATH
+        run: echo "$HOME/toolchain/bin" >> "$GITHUB_PATH"
+
+      - name: Read the version
+        id: version
+        run: |
+          w=$(sed -n 's/^VERSION_WORD := //p' Makefile)
+          v="v$(( w >> 16 )).$(( w & 0xFFFF ))"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Version: $v ($w)"
+
+      - name: Check the version was bumped
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Only firmware changes need a new version (not docs, tools, CI...).
+          fw=$(git diff --name-only "$BASE"...HEAD | grep -v -E \
+            '^(docs/|tests/|\.github/|\.claude/|tools/debug/|tools/rom-|tools/superfw_romlib\.py$|README\.md$)' || true)
+          if [ -z "$fw" ]; then
+            echo "No firmware changes, no version bump needed."
+            exit 0
+          fi
+          old=$(git show "$BASE:Makefile" | sed -n 's/^VERSION_WORD := //p')
+          new=$(sed -n 's/^VERSION_WORD := //p' Makefile)
+          echo "Firmware files changed:"
+          echo "$fw" | sed 's/^/  /'
+          if [ $(( new )) -le $(( old )) ]; then
+            echo "::error file=Makefile::The firmware changed, but VERSION_WORD was not bumped ($old). Increase it (ie. 0x00000002 is version 0.2)."
+            exit 1
+          fi
+          echo "Version bumped: $old -> $new"
+
+      - name: Build the release firmware
+        run: |
+          make BOARD=sd -j"$(nproc)"
+          mkdir -p out
+          v=${{ steps.version.outputs.version }}
+          cp superfw.gba "out/superfw-next-$v-sd.fw"     # To flash
+          cp superfw.gba "out/superfw-next-$v-sd.gba"    # Same image, to try it from the SD card first
+          tools/debug/flash-free.sh superfw.gba "Release" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build the UART debug firmware
+        run: |
+          make clean >/dev/null
+          make BOARD=sd ENABLE_UART_LOGGING=1 -j"$(nproc)"
+          cp superfw.gba "out/superfw-next-${{ steps.version.outputs.version }}-sd-uart-debug.gba"
+          tools/debug/flash-free.sh superfw.gba "UART debug" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checksums
+        run: cd out && sha256sum *.fw *.gba > SHA256SUMS && cat SHA256SUMS
+
+      - name: Upload the firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: superfw-next-${{ steps.version.outputs.version }}-${{ github.sha }}
+          path: out/
+          if-no-files-found: error
+
+  tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update -q && sudo apt-get install -y -q lcov
+      - name: Build and run the tests
+        run: cd tests && make
+
+  release:
+    name: Publish the release
+    needs: [build, tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/superfw-next'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the firmware
+        uses: actions/download-artifact@v4
+        with:
+          name: superfw-next-${{ needs.build.outputs.version }}-${{ github.sha }}
+          path: out
+      - name: Publish (once per version)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          V: ${{ needs.build.outputs.version }}
+        run: |
+          tag="next-$V"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag is already released, nothing to publish (bump VERSION_WORD for a new release)."
+            exit 0
+          fi
+          cat > notes.md <<EOF
+          SuperFW Next ${V#v} for the Supercard SD, built from ${GITHUB_SHA::8}.
+
+          **Try it first:** copy \`superfw-next-$V-sd.gba\` to the SD card and launch it from the browser like a game. It runs from memory; turning the console off brings back your current firmware.
+
+          **Flash it:** with fresh batteries or a power adapter, copy \`superfw-next-$V-sd.fw\` to the SD card (keep only one \`.fw\` there). On the About tab press Down + B + START, pick the \`.fw\` in the browser, press A, then L + R + Up, and wait for "Flash update complete!".
+
+          \`superfw-next-$V-sd-uart-debug.gba\` is the serial debug build (see tools/debug). Checksums are in SHA256SUMS.
+          EOF
+          gh release create "$tag" --target "$GITHUB_SHA" --title "SuperFW Next ${V#v}" \
+            --notes-file notes.md --generate-notes \
+            out/*.fw out/*.gba out/SHA256SUMS

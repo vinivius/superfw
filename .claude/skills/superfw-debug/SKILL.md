@@ -30,9 +30,11 @@ and commit it as its own commit. Push only when the user asks.
 - The SD board firmware must fit 512 KiB (enforced at link time). UART builds
   are within a few hundred bytes of the limit, keep debug features small.
   `superfw.gba` is padded to 1 KiB, so `stat` doesn't show the free space;
-  measure where the content ends:
-
-      python3 -c "d=open('superfw.gba','rb').read(); e=min(len(d.rstrip(b'\xff')),len(d.rstrip(b'\x00'))); print(524288-e, 'bytes free')"
+  measure where the content ends with `tools/debug/flash-free.sh superfw.gba`
+  (CI reports it for both builds in the job summary).
+- `superfw-next` is protected: changes go through pull requests, built by
+  CI (`.github/workflows/superfw-next.yml`). Bump `VERSION_WORD` in any PR
+  that changes the firmware; merging publishes the release `next-vX.Y`.
 
 - `ENABLE_DISK_LOGGING=1` writes `/superfwlog.txt` on the SD card instead;
   it is slow and changes SD timing, prefer UART logging.
