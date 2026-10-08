@@ -840,6 +840,8 @@ static void prepare_gba_settings(t_load_gba_lcfg *data, bool uses_dsaving, uint3
 }
 
 
+static void loadgba_normalize(unsigned newkeys);
+
 static void browser_open_gba(const char *fn, uint32_t fs, bool prompt_patchgen) {
   if (fs > MAX_GBA_ROM_SIZE) {
     // The ROM is too big to be loaded!
@@ -895,6 +897,7 @@ static void browser_open_gba(const char *fn, uint32_t fs, bool prompt_patchgen) 
       prepare_gba_settings(&spop.p.load.l, spop.p.load.i.use_dsaving, lh_sett.rtcts, game_no_save);
 
       // Show load ROM menu.
+      loadgba_normalize(0);
       spop.pop_num = POPUP_GBA_LOAD;
       spop.anim = 0;
       spop.submenu = GbaLoadPopInfo;
@@ -904,6 +907,8 @@ static void browser_open_gba(const char *fn, uint32_t fs, bool prompt_patchgen) 
 }
 
 #ifdef SUPPORT_NORGAMES
+static void norload_normalize(unsigned newkeys);
+
 static void browser_open_nor(const t_flash_game_entry * e) {
   // Use attributes to determine patched save method.
   const bool game_no_save = GET_GATTR_SAVEM(e->gattrs) <= SaveTypeNone;
@@ -932,6 +937,7 @@ static void browser_open_nor(const t_flash_game_entry * e) {
   spop.p.norld.e = e;
 
   // Show load ROM menu.
+  norload_normalize(0);
   spop.pop_num = POPUP_GBA_NORLOAD;
   spop.submenu = GbaLoadPopInfo;
   spop.selector = 0;
@@ -1053,6 +1059,12 @@ static bool delete_recent_flush(unsigned entry_num) {
 // Error message for a ROM load error.
 #define ERR_LOAD_SAVEARMED 0x80   // The failed game's save is still due on reboot
 
+static unsigned save_error_msg(unsigned err) {
+  return err == ERR_SAVE_BADSAVE   ? MSG_ERR_SAVERD :
+         err == ERR_SAVE_CANTALLOC ? MSG_ERR_SAVEPR :
+         err == ERR_SAVE_BADARG    ? MSG_ERR_SAVEIT : MSG_ERR_SAVEWR;
+}
+
 static unsigned load_error_msg(unsigned err) {
   return err == ERR_LOAD_NOEMU       ? MSG_ERR_NOEMU :
          err == ERR_LOAD_VERIFY      ? MSG_ERR_VERIFY :
@@ -1070,9 +1082,7 @@ void start_emu_game(const t_emu_loader *ldinfo, const char *fn, uint32_t fs) {
   t_sram_load_policy lp = fr_missing(f_stat(spop.p.load.l.savefn, NULL)) ? SaveLoadReset : SaveLoadSav;
   unsigned errsave = prepare_sram_based_savegame(lp, SaveReboot, spop.p.load.l.savefn);
   if (errsave) {
-    unsigned errmsg = (errsave == ERR_SAVE_BADSAVE)   ? MSG_ERR_SAVERD :
-                                                        MSG_ERR_SAVEWR;
-    spop.alert_msg = msgs[lang_id][errmsg];
+    spop.alert_msg = msgs[lang_id][save_error_msg(errsave)];
   }
   else {
     // fn may be a recent list entry, which inserting it moves.
@@ -2007,18 +2017,24 @@ static void sdram_data_load(uint32_t end) {
     art_cache_clear();
 }
 
-// Writes or reads (FA_WRITE/FA_READ) the error of a load that rebooted the
-// menu, shown after the reboot.
-static bool load_error_file(uint8_t *err, BYTE mode) {
+// The error of a load that rebooted the menu, shown after the reboot.
+static void load_error_write(uint8_t err) {
   FIL fd;
-  UINT n;
-  if (FR_OK != f_open(&fd, LOAD_ERROR_FILEPATH, mode | (mode & FA_WRITE ? FA_CREATE_ALWAYS : 0)))
-    return false;
-  if (mode & FA_WRITE)
-    return write_close(&fd, err, 1);
-  FRESULT res = f_read(&fd, err, 1, &n);
+  if (superfw_file_open(&fd, NULL, LOAD_ERROR_FILEPATH, FA_CREATE_ALWAYS))
+    write_close(&fd, &err, 1);
+}
+
+// The error written before the reboot (0 if none). The file is removed,
+// whatever it holds (ie. nothing, if its write failed).
+static uint8_t load_error_take() {
+  FIL fd;
+  UINT n = 0;
+  uint8_t err = 0;
+  if (FR_OK != f_open(&fd, LOAD_ERROR_FILEPATH, FA_READ))
+    return 0;
+  FRESULT res = f_read(&fd, &err, 1, &n);
   f_close(&fd);
-  return FR_OK == res && n == 1;
+  return FR_OK == f_unlink(LOAD_ERROR_FILEPATH) && FR_OK == res && n == 1 ? err : 0;
 }
 
 // A ROM load failed with err, after overwriting SDRAM (load_sdram_end and
@@ -2037,9 +2053,8 @@ static void menu_load_failed(unsigned err) {
   const bool lost = load_sdram_lost;
   load_sdram_reset();
   if (lost) {
-    uint8_t e = err;
     if (flash_fw_is_self())
-      load_error_file(&e, FA_WRITE);
+      load_error_write(err);
     set_supercard_mode(MAPPED_FIRMWARE, false, false);
     launch_reset(true, false);
   }
@@ -3129,8 +3144,8 @@ void menu_init(int sram_testres) {
 
   // A failed load that reached the fonts rebooted the menu: show its error
   // (once: not if the file can't be removed).
-  uint8_t err;
-  if (load_error_file(&err, FA_READ) && FR_OK == f_unlink(LOAD_ERROR_FILEPATH))
+  const uint8_t err = load_error_take();
+  if (err)
     spop.alert_msg = msgs[lang_id][load_error_msg(err)];
 
   reload_theme(menu_theme);
@@ -3291,26 +3306,43 @@ static void patch_type_normalize(t_load_gba_info *i, bool right) {
     i->patch_type = PatchNone;
 }
 
-// The load popup's options follow the patches and each other (after every key
-// and patch generation).
+// Left/Right (dir) on a load settings page: cycle (or toggle) the option.
+static void load_settings_cycle(t_load_gba_lcfg *l, bool ds, int dir) {
+  if (spop.selector == GBALdSetCheats)
+    l->use_cheats = !l->use_cheats;
+  else if (spop.selector == GBALdSetLoadP) {
+    const unsigned cnt = ds ? SaveLoadDSCNT : SaveLoadCNT;
+    l->sram_load_type = (l->sram_load_type + cnt + dir) % cnt;
+  }
+  else if (spop.selector == GBALdSetSaveP && !ds)
+    l->sram_save_type = (l->sram_save_type + SaveCNT + dir) % SaveCNT;
+}
+
+// DirectSave (ds) forces automatic saving, and loading the .sav (or resetting
+// it) over manual loading. Without a .sav that option is skipped (in the
+// direction it was cycled).
+static void save_options_normalize(t_load_gba_lcfg *l, bool ds, unsigned newkeys) {
+  if (ds)
+    l->sram_save_type = SaveDirect;
+  else if (l->sram_save_type == SaveDirect)
+    l->sram_save_type = autosave_default ? SaveReboot : SaveDisable;
+  if (l->sram_load_type == SaveLoadDisable && ds)
+    l->sram_load_type = SaveLoadSav;
+  if (l->sram_load_type == SaveLoadSav && !l->savefile_found)
+    l->sram_load_type = (newkeys & KEY_BUTTLEFT) && !ds ? SaveLoadDisable : SaveLoadReset;
+}
+
+// The load popup's options follow the patches and each other (when it opens,
+// after every key and patch generation).
 static void loadgba_normalize(unsigned newkeys) {
   t_load_gba_info *i = &spop.p.load.i;
   t_load_gba_lcfg *l = &spop.p.load.l;
   patch_type_normalize(i, newkeys & KEY_BUTTRIGHT);
 
-  // DirectSave, only if the patches allow it (and it fits), forces automatic
-  // saving, and loading the .sav (or resetting it) over manual loading.
+  // DirectSave, only if the patches allow it (and it fits).
   if (!dirsav_avail_sdram(i))
     i->use_dsaving = false;
-  if (i->use_dsaving)
-    l->sram_save_type = SaveDirect;
-  else if (l->sram_save_type == SaveDirect)
-    l->sram_save_type = autosave_default ? SaveReboot : SaveDisable;
-  if (l->sram_load_type == SaveLoadDisable && i->use_dsaving)
-    l->sram_load_type = SaveLoadSav;
-  // Without a .sav that option is skipped (in the direction it was cycled).
-  if (l->sram_load_type == SaveLoadSav && !l->savefile_found)
-    l->sram_load_type = (newkeys & KEY_BUTTLEFT) && !i->use_dsaving ? SaveLoadDisable : SaveLoadReset;
+  save_options_normalize(l, i->use_dsaving, newkeys);
 
   // The in-game menu and RTC patches, if available; cheats need the menu (and
   // room for them with it).
@@ -3342,16 +3374,8 @@ static void keypress_popup_loadgba(unsigned newkeys) {
 
   // Left/Right cycle (or toggle) the option.
   const int dir = (newkeys & KEY_BUTTRIGHT) ? 1 : (newkeys & KEY_BUTTLEFT) ? -1 : 0;
-  if (dir && spop.submenu == GbaLoadPopLoadS) {
-    if (spop.selector == GBALdSetCheats)
-      spop.p.load.l.use_cheats = !spop.p.load.l.use_cheats;
-    else if (spop.selector == GBALdSetLoadP) {
-      const unsigned cnt = spop.p.load.i.use_dsaving ? SaveLoadDSCNT : SaveLoadCNT;
-      spop.p.load.l.sram_load_type = (spop.p.load.l.sram_load_type + cnt + dir) % cnt;
-    }
-    else if (spop.selector == GBALdSetSaveP && !spop.p.load.i.use_dsaving)
-      spop.p.load.l.sram_save_type = (spop.p.load.l.sram_save_type + SaveCNT + dir) % SaveCNT;
-  }
+  if (dir && spop.submenu == GbaLoadPopLoadS)
+    load_settings_cycle(&spop.p.load.l, spop.p.load.i.use_dsaving, dir);
   else if (dir && spop.submenu == GbaLoadPopPatch) {
     if (spop.selector == GBALoadPatch)
       spop.p.load.i.patch_type = (spop.p.load.i.patch_type + PatchOptCNT + dir) % PatchOptCNT;
@@ -3414,11 +3438,7 @@ static void keypress_popup_loadgba(unsigned newkeys) {
       if (errsave) {
         WRITE_LOG("Save game preparation failed: %u", errsave);
         sdcard_flush_log();
-        unsigned errmsg = (errsave == ERR_SAVE_BADSAVE)   ? MSG_ERR_SAVERD :
-                          (errsave == ERR_SAVE_CANTALLOC) ? MSG_ERR_SAVEPR :
-                          (errsave == ERR_SAVE_BADARG)    ? MSG_ERR_SAVEIT :
-                                                            MSG_ERR_SAVEWR;
-        spop.alert_msg = msgs[lang_id][errmsg];
+        spop.alert_msg = msgs[lang_id][save_error_msg(errsave)];
         return;
       }
 
@@ -3594,6 +3614,16 @@ static void keypress_popup_norwrite(unsigned newkeys) {
   }
 }
 
+// The NOR load popup's options follow the flashed game (when it opens and
+// after every key).
+static void norload_normalize(unsigned newkeys) {
+  const t_flash_game_entry *e = spop.p.norld.e;
+  save_options_normalize(&spop.p.norld.l, e->gattrs & GATTR_SAVEDS, newkeys);
+  // Cheats need the in-game menu.
+  if (!spop.p.norld.l.cheats_found || !(e->gattrs & GATTR_IGM))
+    spop.p.norld.l.use_cheats = false;
+}
+
 static void keypress_popup_norload(unsigned newkeys) {
   if (newkeys & KEY_BUTTUP)
     spop.selector = MAX(0, spop.selector - 1);
@@ -3601,70 +3631,12 @@ static void keypress_popup_norload(unsigned newkeys) {
     spop.selector = MIN(GBALdSetCNT - 1, spop.selector + 1);
 
   const t_flash_game_entry *e = spop.p.norld.e;
-  bool uses_dsave = e->gattrs & GATTR_SAVEDS;
-  bool uses_igm   = e->gattrs & GATTR_IGM;
-  bool uses_rtc   = e->gattrs & GATTR_RTC;
 
-  if (newkeys & KEY_BUTTLEFT) {
-    if (spop.submenu == GbaNorLoad) {
-      if (spop.selector == GBALdSetCheats)
-        spop.p.norld.l.use_cheats = !spop.p.norld.l.use_cheats;
-      if (uses_dsave) {
-        if (spop.selector == GBALdSetLoadP)
-          spop.p.norld.l.sram_load_type = (spop.p.norld.l.sram_load_type + SaveLoadDSCNT - 1) % SaveLoadDSCNT;
-      } else {
-        if (spop.selector == GBALdSetLoadP)
-          spop.p.norld.l.sram_load_type = (spop.p.norld.l.sram_load_type + SaveLoadCNT - 1) % SaveLoadCNT;
-        else if (spop.selector == GBALdSetSaveP)
-          spop.p.norld.l.sram_save_type = (spop.p.norld.l.sram_save_type + SaveCNT - 1) % SaveCNT;
-      }
-    }
-
-    // DirSav forces automatic saving
-    if (uses_dsave)
-      spop.p.norld.l.sram_save_type = SaveDirect;
-    else if (spop.p.norld.l.sram_save_type == SaveDirect)
-      spop.p.norld.l.sram_save_type = autosave_default ? SaveReboot : SaveDisable;
-
-    // If DS is selected, do not allow manual mode.
-    if (spop.p.norld.l.sram_load_type == SaveLoadDisable && uses_dsave)
-      spop.p.norld.l.sram_load_type = SaveLoadSav;
-    // If no .sav is available, do not allow that option!
-    if (spop.p.norld.l.sram_load_type == SaveLoadSav && !spop.p.norld.l.savefile_found)
-      spop.p.norld.l.sram_load_type = uses_dsave ? SaveLoadReset : SaveLoadDisable;
-  }
-  if (newkeys & KEY_BUTTRIGHT) {
-    if (spop.submenu == GbaNorLoad) {
-      if (spop.selector == GBALdSetCheats)
-        spop.p.norld.l.use_cheats = !spop.p.norld.l.use_cheats;
-      if (uses_dsave) {
-        if (spop.selector == GBALdSetLoadP)
-          spop.p.norld.l.sram_load_type = (spop.p.norld.l.sram_load_type + 1) % SaveLoadDSCNT;
-      } else {
-        if (spop.selector == GBALdSetLoadP)
-          spop.p.norld.l.sram_load_type = (spop.p.norld.l.sram_load_type + 1) % SaveLoadCNT;
-        else if (spop.selector == GBALdSetSaveP)
-          spop.p.norld.l.sram_save_type = (spop.p.norld.l.sram_save_type + 1) % SaveCNT;
-      }
-    }
-
-    // DirSav forces automatic saving
-    if (uses_dsave)
-      spop.p.norld.l.sram_save_type = SaveDirect;
-    else if (spop.p.norld.l.sram_save_type == SaveDirect)
-      spop.p.norld.l.sram_save_type = autosave_default ? SaveReboot : SaveDisable;
-
-    // If DS is selected, do not allow manual mode.
-    if (spop.p.norld.l.sram_load_type == SaveLoadDisable && uses_dsave)
-      spop.p.norld.l.sram_load_type = SaveLoadSav;
-    // If no .sav is available, do not allow that option!
-    if (spop.p.norld.l.sram_load_type == SaveLoadSav && !spop.p.norld.l.savefile_found)
-      spop.p.norld.l.sram_load_type = SaveLoadReset;
-  }
-
-  // Disable cheat loading if no cheats are avail, or IGM is disabled
-  if (!spop.p.norld.l.cheats_found || !uses_igm)
-    spop.p.norld.l.use_cheats = false;
+  // Left/Right cycle (or toggle) the option.
+  const int dir = (newkeys & KEY_BUTTRIGHT) ? 1 : (newkeys & KEY_BUTTLEFT) ? -1 : 0;
+  if (dir && spop.submenu == GbaNorLoad)
+    load_settings_cycle(&spop.p.norld.l, e->gattrs & GATTR_SAVEDS, dir);
+  norload_normalize(newkeys);
 
   if (newkeys & KEY_BUTTA) {
     if (spop.submenu == GbaLoadPopInfo) {
@@ -3681,11 +3653,7 @@ static void keypress_popup_norload(unsigned newkeys) {
       if (errsave) {
         WRITE_LOG("Save game preparation failed: %u", errsave);
         sdcard_flush_log();
-        unsigned errmsg = (errsave == ERR_SAVE_BADSAVE)   ? MSG_ERR_SAVERD :
-                          (errsave == ERR_SAVE_CANTALLOC) ? MSG_ERR_SAVEPR :
-                          (errsave == ERR_SAVE_BADARG)    ? MSG_ERR_SAVEIT :
-                                                            MSG_ERR_SAVEWR;
-        spop.alert_msg = msgs[lang_id][errmsg];
+        spop.alert_msg = msgs[lang_id][save_error_msg(errsave)];
         return;
       }
       t_rtc_info rtci = {
@@ -3731,7 +3699,7 @@ static void keypress_popup_norload(unsigned newkeys) {
       void accept_rtc() {
         spop.p.norld.l.rtcval = date2timestamp(&spop.rtcpop.val);
       }
-      if (uses_rtc) {
+      if (e->gattrs & GATTR_RTC) {
         timestamp2date(spop.p.norld.l.rtcval, &spop.rtcpop.val);
         spop.rtcpop.callback = accept_rtc;
       }

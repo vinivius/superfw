@@ -149,9 +149,12 @@ static bool lookup_chptr(uint32_t code, t_char_render_info *chinfo) {
 #undef blks
 #undef blkcnt
 
+// Read once: a ROM load (and a retry of it) overwrites the font pack in SDRAM.
 unsigned font_block_size() {
-  const t_charblock_header *chdat = (const t_charblock_header*)(font_base_addr);
-  return chdat->data_size;
+  static unsigned size;
+  if (!size)
+    size = ((const t_charblock_header*)font_base_addr)->data_size;
+  return size;
 }
 
 FONT_HOT

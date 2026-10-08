@@ -28,7 +28,7 @@ and commit it as its own commit. Push only when the user asks.
 
 - Always `make clean` when changing build flags.
 - The SD board firmware must fit 512 KiB (enforced at link time). UART builds
-  are within ~270 bytes of the limit (v0.2), keep debug features small.
+  are within ~330 bytes of the limit (v0.2), keep debug features small.
   `superfw.gba` is padded to the next 512 byte block (`tools/fw-fixer.py`),
   so `stat` doesn't show the free space;
   measure where the content ends with `tools/debug/flash-free.sh superfw.gba`
@@ -238,6 +238,15 @@ expose the UART as a pty and to keep SD image writes.
   test reads leaves the card failing afterwards, which looks like the
   firmware never recovers: use a small K (2 covers a fast and a slow load
   attempt).
+- Counting reads to place a fault: a read command covers at most one FAT
+  cluster, and `mkfs.fat` gives a 128 MiB FAT32 image 512-byte clusters
+  (an 8 KiB ROM chunk is 16 reads). Format a 4 GiB sparse image with
+  `-s 64` (32 KiB clusters) to make a chunk one read, then N ~ the chunk
+  number (the fonts start at chunk 1856, 14.5 MiB).
+- `run.sh`'s MINUTES stops the emulator: a load that seems stuck at the
+  same progress for longer than that is just the last frame. And when
+  waiting on the UART log, "ROM load failed" also matches the slow retry's
+  "Fast ROM load failed (n)": match "ROM load failed:" for the final one.
 
 ## Firmware memory budgets
 
@@ -251,7 +260,7 @@ expose the UART as a pty and to keep SD image writes.
   write it with a space). Check sizes after every change: the UART build had
   dropped to a few dozen bytes free; sha256.c (always) and nanoprintf.c
   (UART builds only, `#ifdef ENABLE_UART_LOGGING`) went -Os to get ~1.1 KiB
-  back. In v0.2 the release has ~290 bytes free and the UART build ~270;
+  back. In v0.2 the release has ~355 bytes free and the UART build ~330;
   code compresses poorly (a byte of code costs about a byte of flash).
   nanoprintf.c and utf_util.c are built for size in UART builds only. To
   fit, the UART build also lost the diagnostic that listed where SDRAM
