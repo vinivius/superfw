@@ -346,24 +346,38 @@ static void parse_rom_launch_settings(void *usr, const char *var, const char *va
     rs->rtcts = valu;
 }
 
-bool load_rom_settings(const char *fn, t_rom_load_settings *rld, t_rom_launch_settings *rlh) {
-  char buf[512];
-  strcpy(buf, ROMCONFIG_PATH);
-  strcat(buf, file_basename(fn));
-  replace_extension(buf, ".config");
-
-  // Attempt to open and read the file.
-  FIL fd;
-  if (FR_OK != f_open(&fd, buf, FA_READ))
+// Builds the path of a ROM's config file: ROMCONFIG_PATH + ROM name + .config
+// Returns false if it does not fit in MAX_FN_LEN (very long ROM names).
+static bool rom_config_fn(char *cfgfn, const char *romfn) {
+  const char *bn = file_basename(romfn);
+  if (sizeof(ROMCONFIG_PATH) + strlen(bn) + sizeof(".config") - 1 > MAX_FN_LEN)
     return false;
 
-  UINT rdbytes;
-  if (FR_OK == f_read(&fd, buf, sizeof(buf) - 1, &rdbytes)) {
-    buf[rdbytes] = 0;
-    if (rld)
-      parse_file(buf, parse_rom_load_settings, rld);
-    if (rlh)
-      parse_file(buf, parse_rom_launch_settings, rlh);
+  strcpy(cfgfn, ROMCONFIG_PATH);
+  strcat(cfgfn, bn);
+  replace_extension(cfgfn, ".config");
+  return true;
+}
+
+bool load_rom_settings(const char *fn, t_rom_load_settings *rld, t_rom_launch_settings *rlh) {
+  FIL fd;
+  {
+    char cfgfn[MAX_FN_LEN];
+    // Attempt to open and read the file.
+    if (!rom_config_fn(cfgfn, fn) || FR_OK != f_open(&fd, cfgfn, FA_READ))
+      return false;
+  }
+
+  {
+    char buf[128];
+    UINT rdbytes;
+    if (FR_OK == f_read(&fd, buf, sizeof(buf) - 1, &rdbytes)) {
+      buf[rdbytes] = 0;
+      if (rld)
+        parse_file(buf, parse_rom_load_settings, rld);
+      if (rlh)
+        parse_file(buf, parse_rom_launch_settings, rlh);
+    }
   }
   f_close(&fd);
 
@@ -378,14 +392,13 @@ bool save_rom_patchmode(const char *fn, unsigned mode) {
   f_mkdir(ROMCONFIG_PATH);
   f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
 
-  char buf[MAX_FN_LEN + 32];
-  strcpy(buf, ROMCONFIG_PATH);
-  strcat(buf, file_basename(fn));
-  replace_extension(buf, ".config");
-
   FIL fd;
-  if (FR_OK != f_open(&fd, buf, FA_WRITE | FA_OPEN_APPEND))
-    return false;
+  {
+    char cfgfn[MAX_FN_LEN];
+    if (!rom_config_fn(cfgfn, fn) || FR_OK != f_open(&fd, cfgfn, FA_WRITE | FA_OPEN_APPEND))
+      return false;
+  }
+  char buf[32];
   npf_snprintf(buf, sizeof(buf), "patchmode=%u\n", mode);
   UINT wrbytes;
   FRESULT res = f_write(&fd, buf, strlen(buf), &wrbytes);
@@ -399,34 +412,36 @@ bool save_rom_settings(const char *fn, const t_rom_load_settings *rld, const t_r
   // Make it hidden
   f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
 
-  char buf[MAX_FN_LEN + 32];
-  strcpy(buf, ROMCONFIG_PATH);
-  strcat(buf, file_basename(fn));
-  replace_extension(buf, ".config");
-
   // Proceed to create the file
   FIL fd;
-  if (FR_OK != f_open(&fd, buf, FA_WRITE | FA_CREATE_ALWAYS))
-    return false;
+  {
+    char cfgfn[MAX_FN_LEN];
+    if (!rom_config_fn(cfgfn, fn) || FR_OK != f_open(&fd, cfgfn, FA_WRITE | FA_CREATE_ALWAYS))
+      return false;
+  }
 
   // Serialize the ROM settings
-  npf_snprintf(buf, sizeof(buf),
-    "patchmode=%u\n"
-    "igm=%u\n"
-    "rtc=%u\n"
-    "directsaving=%u\n"
-    "cheats=%u\n"
-    "rtcts=%u\n",
-    rld->patch_policy,
-    rld->use_igm ? 1 : 0,
-    rld->use_rtc ? 1 : 0,
-    rld->use_dsaving ? 1 : 0,
-    rlh->use_cheats ? 1 : 0,
-    (unsigned int)rlh->rtcts);
+  FRESULT res;
+  {
+    char buf[128];
+    npf_snprintf(buf, sizeof(buf),
+      "patchmode=%u\n"
+      "igm=%u\n"
+      "rtc=%u\n"
+      "directsaving=%u\n"
+      "cheats=%u\n"
+      "rtcts=%u\n",
+      rld->patch_policy,
+      rld->use_igm ? 1 : 0,
+      rld->use_rtc ? 1 : 0,
+      rld->use_dsaving ? 1 : 0,
+      rlh->use_cheats ? 1 : 0,
+      (unsigned int)rlh->rtcts);
 
-  UINT wrbytes;
-  FRESULT res = f_write(&fd, buf, strlen(buf), &wrbytes);
-  f_close(&fd);
+    UINT wrbytes;
+    res = f_write(&fd, buf, strlen(buf), &wrbytes);
+    f_close(&fd);
+  }
 
   return FR_OK == res;
 }
