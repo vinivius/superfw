@@ -81,6 +81,10 @@ static bool parse_hex(const char *s, uint32_t *val, unsigned nibcnt) {
   return true;
 }
 
+static inline bool code_sep(char c) {
+  return c == ' ' || c == '+' || c == '\t';
+}
+
 // Parses RAW codes into a uint32 buffer (two words a code), up to
 // MAX_CHEAT_CODES of them (-1 if there are more).
 int parse_cheat_codes(const char *s, uint32_t *codes) {
@@ -89,7 +93,7 @@ int parse_cheat_codes(const char *s, uint32_t *codes) {
   // We parse them assuming that the separators are space or plus. We admit multiple separators.
   unsigned cnt = 0;
 
-  while (*s == ' ' || *s == '+') s++;      // Skip initial spaces
+  while (code_sep(*s)) s++;      // Skip initial spaces
 
   while (*s) {
     uint32_t addr, val;
@@ -97,7 +101,7 @@ int parse_cheat_codes(const char *s, uint32_t *codes) {
       return -1;
 
     s += 8;  // Consume the hex32
-    while (*s == ' ' || *s == '+') s++;      // Skip separators
+    while (code_sep(*s)) s++;      // Skip separators
     if (!*s)
       return -1;   // The code is truncated, abort.
 
@@ -110,7 +114,7 @@ int parse_cheat_codes(const char *s, uint32_t *codes) {
     *codes++ = val;
     cnt++;
 
-    while (*s == ' ' || *s == '+') s++;      // Skip trailing separators
+    while (code_sep(*s)) s++;      // Skip trailing separators
   }
   return cnt;
 }
@@ -119,65 +123,65 @@ int parse_cheat_codes(const char *s, uint32_t *codes) {
 typedef struct {
   uint8_t *buffer;
   unsigned size, used, count;
-  bool codes;               // The next line is a cheat's codes (else its title)
+  bool titled;              // chdr has a title, waiting for its codes
   bool error;               // Out of space, or a write that never verified
   t_cheathdr_ext chdr;
 } t_cheat_read;
 
-// A line of the cheat file: titles and code lines alternate (empty lines are
-// skipped). A cheat whose codes can't be used is left out.
+// A line of the cheat file: the codes of the cheat titled by the line before,
+// or else a title (empty lines are skipped). A cheat whose codes can't be
+// used, or a title without codes, is left out.
 static bool cheat_line(char *line, unsigned len, void *usr) {
   t_cheat_read *cr = (t_cheat_read*)usr;
+  if (!line) {
+    cr->titled = false;     // Too long for a title or codes
+    return true;
+  }
   while (*line == ' ' || *line == '\t')
     line++;
   if (!*line)
     return true;
 
-  if (cr->codes) {
-    // The codes, in hex: generate the predecoded ones.
-    cr->codes = false;
-    uint32_t codes[2 * (MAX_CHEAT_CODES + 1)];  // And the end one
-    memset(codes, 0, sizeof(codes));
-    int numcodes = parse_cheat_codes(line, codes);
-    if (numcodes <= 0 || !predecode_cheats(codes, numcodes))
-      return true;
-    cr->chdr.h.codelen = 8 * (numcodes + 1);
-
-    // The cheats go to the cart's SDRAM: writes are checked.
-    unsigned pheadl = sizeof(t_cheathdr) + cr->chdr.h.slen;
-    cr->error = cr->used + pheadl + cr->chdr.h.codelen > cr->size ||
-                !memcpy32_checked(&cr->buffer[cr->used], &cr->chdr, pheadl) ||
-                !memcpy32_checked(&cr->buffer[cr->used + pheadl], codes, cr->chdr.h.codelen);
-    cr->used += pheadl + cr->chdr.h.codelen;
-    cr->count++;
-    return !cr->error;
+  // The codes, in hex: generate the predecoded ones.
+  uint32_t codes[2 * (MAX_CHEAT_CODES + 1)];  // And the end one
+  memset(codes, 0, sizeof(codes));
+  int numcodes = parse_cheat_codes(line, codes);
+  if (numcodes <= 0) {
+    // A title: long ones are cut (at a character start).
+    len = strlen(line);
+    if (len > MAX_CHEAT_TITLE)
+      len = MAX_CHEAT_TITLE;
+    while (len && (line[len] & 0xC0) == 0x80)
+      len--;
+    memcpy(cr->chdr.title, line, len);
+    cr->chdr.title[len] = 0;
+    cr->chdr.h.slen = (len + 1 + 3) & ~3U;  // Word aligned!
+    cr->chdr.h.enabled = 0;
+    cr->titled = true;
+    return true;
   }
+  if (!cr->titled || !predecode_cheats(codes, numcodes))
+    return true;
+  cr->titled = false;
+  cr->chdr.h.codelen = 8 * (numcodes + 1);
 
-  // The title: long ones are cut (at a character start).
-  len = strlen(line);
-  if (len > MAX_CHEAT_TITLE)
-    len = MAX_CHEAT_TITLE;
-  while (len && (line[len] & 0xC0) == 0x80)
-    len--;
-  memcpy(cr->chdr.title, line, len);
-  cr->chdr.title[len] = 0;
-  cr->chdr.h.slen = (len + 1 + 3) & ~3U;  // Word aligned!
-  cr->chdr.h.enabled = 0;
-  cr->codes = true;
-  return true;
+  // The cheats go to the cart's SDRAM: writes are checked.
+  unsigned pheadl = sizeof(t_cheathdr) + cr->chdr.h.slen;
+  cr->error = cr->used + pheadl + cr->chdr.h.codelen > cr->size ||
+              !memcpy32_checked(&cr->buffer[cr->used], &cr->chdr, pheadl) ||
+              !memcpy32_checked(&cr->buffer[cr->used + pheadl], codes, cr->chdr.h.codelen);
+  cr->used += pheadl + cr->chdr.h.codelen;
+  cr->count++;
+  return !cr->error;
 }
 
 // Reads a cheat file into a buffer (usually in SDRAM): the count of cheats,
 // then each one. Returns its size in bytes, or -1 if the file can't be read
 // or has no cheat that can be used.
 int open_read_cheats(uint8_t *buffer, unsigned buffsize, const char *fn) {
-  FIL fd;
-  if (FR_OK != f_open(&fd, fn, FA_READ))
-    return -1;
   // Lines too long for any cheat are skipped.
   char tmp[1024];
-  t_cheat_read cr = { .buffer = buffer, .size = buffsize, .used = 4, .codes = false };
-  bool ok = read_lines(&fd, tmp, sizeof(tmp), cheat_line, &cr);
-  f_close(&fd);
-  return ok && !cr.error && cr.count && memcpy32_checked(buffer, &cr.count, 4) ? (int)cr.used : -1;
+  t_cheat_read cr = { .buffer = buffer, .size = buffsize, .used = 4 };
+  return FR_OK == read_lines_file(fn, tmp, sizeof(tmp), cheat_line, &cr) && !cr.error && cr.count &&
+         memcpy32_checked(buffer, &cr.count, 4) ? (int)cr.used : -1;
 }

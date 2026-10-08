@@ -87,7 +87,8 @@ SuperFW and SuperFW Next can install each other.
 - Cheat files next to the ROM (NAME.cht) are loaded; they were found but
   never loaded. Damaged or oversized cheat files no longer crash the menu
   (a cheat takes up to 30 codes; long titles are cut), Windows line endings
-  work, and a cheat that can't be used is left out (not the whole file).
+  and tabs work, and a cheat that can't be used (or a title without codes)
+  is left out, not the whole file.
   Super codes (5) take their value as halfwords (3 a line) and write all of
   them right; button codes (D) check the keys.
 - DirectSave, the in-game menu and its cheats are offered only when they fit

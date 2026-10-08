@@ -76,6 +76,16 @@ int main() {
   assert(open_read_cheats(tmp, sizeof(tmp), "data/empty.cht") < 0);
   assert(open_read_cheats(tmp, sizeof(tmp), "data/mixed.cht") > 0 && *(uint32_t*)tmp == 1);
 
+  // Titles and codes pair by what they are: a title without codes, or one too
+  // long to read (and its codes), is left out, the cheats after it load.
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/pairing.cht") > 0 && *(uint32_t*)tmp == 1);
+  assert(!strcmp((char*)((t_cheathdr*)&tmp[4])->data, "Second"));
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/longtitle.cht") > 0 && *(uint32_t*)tmp == 2);
+  assert(!strcmp((char*)((t_cheathdr*)&tmp[4])->data, "Second"));
+  // Tabs between and after codes.
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/tabs.cht") > 0 && *(uint32_t*)tmp == 1 &&
+         ((t_cheathdr*)&tmp[4])->codelen == 3 * 8);
+
   // Windows line endings, tabs, no final newline.
   assert(open_read_cheats(tmp, sizeof(tmp), "data/crlf.cht") > 0 && *(uint32_t*)tmp == 2);
   assert(!strcmp((char*)((t_cheathdr*)&tmp[4])->data, "CRLF title"));

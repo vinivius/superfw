@@ -126,6 +126,8 @@ typedef struct {
 // A line of the list: a path (or "nor:" and a path).
 static bool recent_line(char *line, unsigned len, void *usr) {
   t_recent_read *rd = (t_recent_read*)usr;
+  if (!line)
+    return true;            // Too long to be a path
   bool nor = len >= 4 && !memcmp(line, "nor:", 4);
   const char *path = nor ? &line[4] : line;
   unsigned plen = nor ? len - 4 : len;
@@ -133,26 +135,25 @@ static bool recent_line(char *line, unsigned len, void *usr) {
   if (plen && plen < MAX_FN_LEN) {
     t_rentry *e = &rd->rentries[rd->cnt++];
     e->flags = nor ? FLAG_RECENT_NOR : 0;
-    dma_memcpy16(e->fpath, path, (plen + 2) / 2);
+    // Half word writes (SDRAM), from a line at any address (its NUL ends it).
+    volatile uint16_t *d = (uint16_t*)e->fpath;
+    unsigned i;
+    for (i = 0; i < plen; i += 2)
+      d[i / 2] = path[i] | (path[i + 1] << 8);
+    if (i == plen)
+      d[i / 2] = 0;
     e->fname_offset = file_basename(e->fpath) - e->fpath;
   }
   return rd->cnt < RECENT_MAXFN_CNT;
 }
 
 NOINLINE int recent_load(const char *fpath, t_rentry *rentries) {
-  FIL fi;
-  FRESULT res = f_open(&fi, fpath, FA_READ);
-  if (res != FR_OK)
-    return fr_missing(res) ? 0 : -1;
-
   // Lines too long to be a path ("nor:", its path and "\r\n") are skipped.
-  uint32_t buf[(MAX_FN_LEN + 8) / 4];      // Aligned for dma_memcpy16()
+  char buf[MAX_FN_LEN + 8];
   t_recent_read rd = { rentries, 0 };
-  bool ok = read_lines(&fi, (char*)buf, sizeof(buf), recent_line, &rd);
-  f_close(&fi);
-
+  FRESULT res = read_lines_file(fpath, buf, sizeof(buf), recent_line, &rd);
   WRITE_LOG("Loaded recently played games. %d entries found", rd.cnt);
-  return ok ? (int)rd.cnt : -1;
+  return FR_OK == res ? (int)rd.cnt : fr_missing(res) ? 0 : -1;
 }
 
 

@@ -621,8 +621,10 @@ unsigned flash_gba_nor(
   // Map the game to the base 32MiB address space.
   set_superchis_normap(blkmap);
 
-  t_flash_erase_state erst;
-  for (uint32_t bigoff = 0; bigoff < fs; bigoff += ssize) {
+  // Errors stop the erase (see flash_erase_fsm_stop()) and the file.
+  unsigned err = 0;
+  t_flash_erase_state erst = {0};
+  for (uint32_t bigoff = 0; bigoff < fs && !err; bigoff += ssize) {
     // Start clearing the flash block we will be writing to!
     flash_erase_fsm_start(&erst, GBA_ROM_BASE_WS1 + bigoff, flashinfo.blksize, ssize / flashinfo.blksize);
 
@@ -640,20 +642,16 @@ unsigned flash_gba_nor(
       UINT rdbytes;
       uint32_t tmp[LOAD_BS/4];
       if (FR_OK != f_read(&fd, tmp, toread, &rdbytes) || rdbytes != toread) {
-        flash_erase_fsm_stop(&erst);
-        f_close(&fd);
-        reset_superchis_normap();
-        return ERR_LOAD_BADROM;
+        err = ERR_LOAD_BADROM;
+        goto out;
       }
 
       // Whole words: the end of the file is padded with zeros. Checked: what's
       // in scratch is what's flashed and verified.
       uint32_t ck[2] = {0, 0};
       if (copy_verified(&scratch[offset], tmp, pad_to_word(tmp, toread), ck) < 0) {
-        flash_erase_fsm_stop(&erst);
-        f_close(&fd);
-        reset_superchis_normap();
-        return ERR_FLASH_OP;
+        err = ERR_FLASH_OP;
+        goto out;
       }
     }
 
@@ -669,22 +667,16 @@ unsigned flash_gba_nor(
       ok = ok && payload_apply_rom(scratch, ssize, bigoff, ingame_trampoline_payload,
                                    ingame_trampoline_payload_size, igm_flashoffset);
     if (!ok) {
-      flash_erase_fsm_stop(&erst);
-      f_close(&fd);
-      reset_superchis_normap();
-      return ERR_FLASH_OP;
+      err = ERR_FLASH_OP;
+      break;
     }
 
     // Wait until erasing is complete (if it didn't complete in the meantime)
-    while (1) {
-      int r = flash_erase_fsm_step(&erst);
-      if (r > 0)
-        break;
-      if (r < 0) {
-        f_close(&fd);
-        reset_superchis_normap();
-        return ERR_FLASH_OP;
-      }
+    int r;
+    while (!(r = flash_erase_fsm_step(&erst)));
+    if (r < 0) {
+      err = ERR_FLASH_OP;
+      break;
     }
 
     // Write flash blocks.
@@ -702,15 +694,17 @@ unsigned flash_gba_nor(
         wr_ok = flash_verify(flashaddr, &scratch[offset], toflash);
 
       if (!wr_ok) {
-        f_close(&fd);
-        reset_superchis_normap();
-        return ERR_FLASH_OP;
+        err = ERR_FLASH_OP;
+        break;
       }
     }
   }
 
+out:
+  flash_erase_fsm_stop(&erst);
+  f_close(&fd);
   reset_superchis_normap();
-  return 0;
+  return err;
 }
 
 NOINLINE

@@ -1054,10 +1054,11 @@ static bool delete_recent_flush(unsigned entry_num) {
 #define ERR_LOAD_SAVEARMED 0x80   // The failed game's save is still due on reboot
 
 static unsigned load_error_msg(unsigned err) {
-  return err == ERR_LOAD_NOEMU     ? MSG_ERR_NOEMU :
-         err == ERR_LOAD_VERIFY    ? MSG_ERR_VERIFY :
-         err == ERR_LOAD_TOOBIG    ? MSG_ERR_TOOBIG :
-         err == ERR_LOAD_SAVEARMED ? MSG_ERR_SAVEWR : MSG_ERR_READ;
+  return err == ERR_LOAD_NOEMU       ? MSG_ERR_NOEMU :
+         err == ERR_LOAD_VERIFY      ? MSG_ERR_VERIFY :
+         err == ERR_LOAD_TOOBIG ||
+         err == ERR_NO_PAYLOAD_SPACE ? MSG_ERR_TOOBIG :     // (No room for its payloads)
+         err == ERR_LOAD_SAVEARMED   ? MSG_ERR_SAVEWR : MSG_ERR_READ;
 }
 
 static void menu_load_failed(unsigned err);
@@ -1406,9 +1407,12 @@ static void browser_save_position() {
   f_close(&fd);
 }
 
-// The browser position file: the folder ("/.../"), then the entry to select.
+// The browser position file: the folder ("/.../"), then the entry to select
+// (lines too long for a path end it).
 static bool browser_position_line(char *line, unsigned len, void *usr) {
   unsigned *n = (unsigned*)usr;
+  if (!line)
+    return false;
   if ((*n)++) {
     strcpy(browser_reselect, line);
     return false;
@@ -1422,14 +1426,9 @@ static bool browser_position_line(char *line, unsigned len, void *usr) {
 static void browser_load_position() {
   strcpy(smenu.browser.cpath, "/");
   browser_reselect[0] = 0;
-  FIL fd;
-  if (FR_OK != f_open(&fd, BROWSER_POS_FILEPATH, FA_READ))
-    return;
-  // Lines that don't fit a path are skipped.
   char buf[MAX_FN_LEN + 1];
   unsigned n = 0;
-  read_lines(&fd, buf, sizeof(buf), browser_position_line, &n);
-  f_close(&fd);
+  read_lines_file(BROWSER_POS_FILEPATH, buf, sizeof(buf), browser_position_line, &n);
 }
 
 static void art_cache_clear();
@@ -3281,6 +3280,23 @@ void start_flash_update(const char *fn, unsigned fwsize, bool validate_superfw) 
   spop.pop_num = 0;
 }
 
+// DirectSave, only if the patches allow it (and it fits), forces automatic
+// saving, and loading the .sav (or resetting it) over manual loading.
+static void loadgba_check_dsaving() {
+  if (!dirsav_avail_sdram(&spop.p.load.i))
+    spop.p.load.i.use_dsaving = false;
+
+  // DirSav forces automatic saving
+  if (spop.p.load.i.use_dsaving)
+    spop.p.load.l.sram_save_type = SaveDirect;
+  else if (spop.p.load.l.sram_save_type == SaveDirect)
+    spop.p.load.l.sram_save_type = autosave_default ? SaveReboot : SaveDisable;
+
+  // If DS is selected, do not allow manual mode.
+  if (spop.p.load.l.sram_load_type == SaveLoadDisable && spop.p.load.i.use_dsaving)
+    spop.p.load.l.sram_load_type = SaveLoadSav;
+}
+
 static void keypress_popup_loadgba(unsigned newkeys) {
   const unsigned maxm[] = {
     GBAInfoCNT,
@@ -3329,18 +3345,7 @@ static void keypress_popup_loadgba(unsigned newkeys) {
     if (!spop.p.load.i.patches_datab_found && spop.p.load.i.patch_type == PatchDatabase)
       spop.p.load.i.patch_type = PatchNone;
 
-    if (!dirsav_avail_sdram(&spop.p.load.i))
-      spop.p.load.i.use_dsaving = false;
-
-    // DirSav forces automatic saving
-    if (spop.p.load.i.use_dsaving)
-      spop.p.load.l.sram_save_type = SaveDirect;
-    else if (spop.p.load.l.sram_save_type == SaveDirect)
-      spop.p.load.l.sram_save_type = autosave_default ? SaveReboot : SaveDisable;
-
-    // If DS is selected, do not allow manual mode.
-    if (spop.p.load.l.sram_load_type == SaveLoadDisable && spop.p.load.i.use_dsaving)
-      spop.p.load.l.sram_load_type = SaveLoadSav;
+    loadgba_check_dsaving();
     // If no .sav is available, do not allow that option!
     if (spop.p.load.l.sram_load_type == SaveLoadSav && !spop.p.load.l.savefile_found)
       spop.p.load.l.sram_load_type = spop.p.load.i.use_dsaving ? SaveLoadReset : SaveLoadDisable;
@@ -3376,18 +3381,7 @@ static void keypress_popup_loadgba(unsigned newkeys) {
     if (!spop.p.load.i.patches_cache_found && spop.p.load.i.patch_type == PatchEngine)
       spop.p.load.i.patch_type = PatchNone;
 
-    if (!dirsav_avail_sdram(&spop.p.load.i))
-      spop.p.load.i.use_dsaving = false;
-
-    // DirSav forces automatic saving
-    if (spop.p.load.i.use_dsaving)
-      spop.p.load.l.sram_save_type = SaveDirect;
-    else if (spop.p.load.l.sram_save_type == SaveDirect)
-      spop.p.load.l.sram_save_type = autosave_default ? SaveReboot : SaveDisable;
-
-    // If DS is selected, do not allow manual mode.
-    if (spop.p.load.l.sram_load_type == SaveLoadDisable && spop.p.load.i.use_dsaving)
-      spop.p.load.l.sram_load_type = SaveLoadSav;
+    loadgba_check_dsaving();
     // If no .sav is available, do not allow that option!
     if (spop.p.load.l.sram_load_type == SaveLoadSav && !spop.p.load.l.savefile_found)
       spop.p.load.l.sram_load_type = SaveLoadReset;
@@ -3422,6 +3416,9 @@ static void keypress_popup_loadgba(unsigned newkeys) {
       spop.alert_msg = msgs[lang_id][ok ? MSG_PATCHGEN_OK : MSG_PATCHGEN_ERR];
       // Try/Load the just-generated patches.
       spop.p.load.i.patches_cache_found = load_cached_patches(spop.p.load.i.romfn, &spop.p.load.i.patches_cache);
+      loadgba_check_dsaving();    // They may not allow DirectSave
+      if (spop.p.load.l.sram_load_type == SaveLoadSav && !spop.p.load.l.savefile_found)
+        spop.p.load.l.sram_load_type = SaveLoadReset;
     }
     else if (spop.submenu == GbaLoadPopLoadS && spop.selector == GBALdRemember) {
       // Save settings to disk now!

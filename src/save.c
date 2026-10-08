@@ -253,9 +253,11 @@ typedef struct {
 
 static bool sentinel_line(char *line, unsigned len, void *usr) {
   t_sentinel *st = (t_sentinel*)usr;
-  if (!st->lines++)
-    memcpy(st->fn, line, len + 1);    // read_lines() keeps it under sizeof(fn)
-  else if (!strncmp(line, "backup_count=", 13)) {
+  if (!st->lines++) {
+    if (line)                         // (Else too long: no name)
+      memcpy(st->fn, line, len + 1);  // read_lines() keeps it under sizeof(fn)
+  }
+  else if (line && !strncmp(line, "backup_count=", 13)) {
     const unsigned n = parseuint(&line[13]);
     st->backups = MIN(n, MAX_BACKUP_CNT);     // A damaged one can't loop for ages
   }
@@ -264,21 +266,14 @@ static bool sentinel_line(char *line, unsigned len, void *usr) {
 
 // Writes a save game from SRAM using a pending file sentinel as input.
 unsigned flush_pending_sram() {
-  FIL fd;
-  FRESULT res = f_open(&fd, PENDING_SAVE_FILEPATH, FA_READ);
+  // A name too long for a save (ie. a damaged file) leaves it without one.
+  t_sentinel st = { .fn = "", .lines = 0, .backups = 0 };
+  char buf[sizeof(st.fn)];
+  FRESULT res = read_lines_file(PENDING_SAVE_FILEPATH, buf, sizeof(buf), sentinel_line, &st);
   if (fr_missing(res))
     return ERR_SAVE_FLUSH_NOSENTINEL;
   if (res != FR_OK)
     return ERR_SAVE_FLUSH_READFAIL;      // ie. an SD card error, retry later
-
-  // A name too long for a save (ie. a damaged file) is skipped: the next line
-  // is taken as the name, and isn't one.
-  t_sentinel st = { .fn = "", .lines = 0, .backups = 0 };
-  char buf[sizeof(st.fn)];
-  bool ok = read_lines(&fd, buf, sizeof(buf), sentinel_line, &st);
-  f_close(&fd);
-  if (!ok)
-    return ERR_SAVE_FLUSH_READFAIL;
   const char *savefn = st.fn;
   const unsigned backup_num = st.backups;
 

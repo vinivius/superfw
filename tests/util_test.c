@@ -42,8 +42,14 @@ FRESULT f_stat (const TCHAR* path, FILINFO* fno) {
   return FR_OK;
 }
 
-// f_read() serves this text (all that's asked, as FatFs does, unless at its end).
 static const char *rd_text;
+
+// f_open() opens rd_text (unless rd_text is NULL: a missing file).
+FRESULT f_open (FIL* fp, const TCHAR* path, BYTE mode) {
+  return rd_text ? FR_OK : FR_NO_FILE;
+}
+
+// f_read() serves this text (all that's asked, as FatFs does, unless at its end).
 static unsigned rd_off;
 FRESULT f_read (FIL* fp, void* buff, UINT btr, UINT* br) {
   unsigned n = strlen(&rd_text[rd_off]);
@@ -67,8 +73,8 @@ FRESULT f_close (FIL* fp) {
 static char rd_lines[256];
 static unsigned rd_count;
 static bool collect_line(char *line, unsigned len, void *usr) {
-  assert(strlen(line) == len);
-  strcat(rd_lines, line);
+  assert(!line || strlen(line) == len);
+  strcat(rd_lines, line ? line : "~");       // ~: a line too long, skipped
   strcat(rd_lines, "|");
   return ++rd_count < *(unsigned*)usr;
 }
@@ -87,12 +93,25 @@ int main() {
 
   // Lines (CRLF too) without their newline, the last one with or without
   // one; lines that don't fit the buffer (9 bytes, a newline included) are
-  // skipped whole; the callback can stop it.
+  // skipped whole (the callback gets NULL for them); the callback can stop it.
   assert(!strcmp(read_all("a=1\nbb=2\r\n\nlast", 10, 99), "a=1|bb=2||last|"));
-  assert(!strcmp(read_all("12345678\n123456789\nx\n1234567890123456789012\ny", 10, 99), "12345678|x|y|"));
-  assert(!strcmp(read_all("toolongforit", 10, 99), ""));
+  assert(!strcmp(read_all("12345678\n123456789\nx\n1234567890123456789012\ny", 10, 99), "12345678|~|x|~|y|"));
+  assert(!strcmp(read_all("toolongforit", 10, 99), "~|"));
+  assert(!strcmp(read_all("1\n2\n3\n4\n5\n6\n7\n8\n9", 10, 99), "1|2|3|4|5|6|7|8|9|"));
   assert(!strcmp(read_all("a\nb\nc\n", 10, 2), "a|b|"));
   assert(!strcmp(read_all("", 10, 99), ""));
+
+  // read_lines_file(): opens the file (or says it's missing).
+  {
+    char buf[16];
+    unsigned max = 99;
+    rd_text = "a\nb";
+    rd_off = rd_count = 0;
+    rd_lines[0] = 0;
+    assert(FR_OK == read_lines_file("x", buf, sizeof(buf), collect_line, &max) && !strcmp(rd_lines, "a|b|"));
+    rd_text = NULL;
+    assert(FR_NO_FILE == read_lines_file("x", buf, sizeof(buf), collect_line, &max));
+  }
 
   // write_close(): the data must be all written and the file closed.
   wr_room = 100; cl_res = FR_OK;

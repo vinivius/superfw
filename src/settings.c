@@ -282,21 +282,17 @@ static void parse_file(char *buf, void(*parse_cb)(void *usr, const char*, const 
 typedef void (*setting_fn)(void *usr, const char *var, const char *value);
 
 static bool parse_setting_line(char *line, unsigned len, void *usr) {
-  parse_file(line, *(setting_fn*)usr, NULL);
+  if (line)
+    parse_file(line, *(setting_fn*)usr, NULL);
   return true;
 }
 
 // Settings files are read line by line, however long (hand edited) they are.
 // Lines too long for a setting are skipped. False on SD card errors.
 static bool load_settings_file(const char *fn, setting_fn parse_cb) {
-  FIL fd;
-  FRESULT res = f_open(&fd, fn, FA_READ);
-  if (res != FR_OK)
-    return fr_missing(res);
   char buf[64];
-  bool ok = read_lines(&fd, buf, sizeof(buf), parse_setting_line, &parse_cb);
-  f_close(&fd);
-  return ok;
+  FRESULT res = read_lines_file(fn, buf, sizeof(buf), parse_setting_line, &parse_cb);
+  return FR_OK == res || fr_missing(res);
 }
 
 void load_settings() {
@@ -338,12 +334,22 @@ static void parse_rom_launch_settings(void *usr, const char *var, const char *va
     rs->rtcts = valu;
 }
 
-// Opens the config file of a ROM: ROMCONFIG_PATH + its name + .config, the
-// name shortened if needed to the FAT limit (FF_MAX_LFN).
-static FRESULT rom_config_open(FIL *fd, const char *romfn, BYTE mode) {
-  char cfgfn[sizeof(ROMCONFIG_PATH) + FF_MAX_LFN];
-  derived_fn(cfgfn, sizeof(cfgfn) - 1, ROMCONFIG_PATH, romfn, ".config");
-  return f_open(fd, cfgfn, mode);
+// The config file of a ROM: ROMCONFIG_PATH + its name + .config, the name
+// shortened if needed to the FAT limit (FF_MAX_LFN).
+#define ROM_CONFIG_FN_SIZE   (sizeof(ROMCONFIG_PATH) + FF_MAX_LFN)
+static void rom_config_fn(char *cfgfn, const char *romfn) {
+  derived_fn(cfgfn, ROM_CONFIG_FN_SIZE - 1, ROMCONFIG_PATH, romfn, ".config");
+}
+
+// Creates the settings folders (SUPERFW_DIR is hidden), and opens the config
+// file of a ROM to write it.
+static bool rom_config_create(FIL *fd, const char *romfn, BYTE mode) {
+  f_mkdir(SUPERFW_DIR);
+  f_mkdir(ROMCONFIG_PATH);
+  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
+  char cfgfn[ROM_CONFIG_FN_SIZE];
+  rom_config_fn(cfgfn, romfn);
+  return FR_OK == f_open(fd, cfgfn, FA_WRITE | mode);
 }
 
 typedef struct {
@@ -353,40 +359,30 @@ typedef struct {
 
 static bool parse_rom_settings_line(char *line, unsigned len, void *usr) {
   const t_rom_settings *rs = (t_rom_settings*)usr;
-  if (rs->rld)
+  if (line && rs->rld)
     parse_file(line, parse_rom_load_settings, rs->rld);
-  if (rs->rlh)
+  if (line && rs->rlh)
     parse_file(line, parse_rom_launch_settings, rs->rlh);
   return true;
 }
 
 // False on SD card errors (without a config, the defaults are kept).
 bool load_rom_settings(const char *fn, t_rom_load_settings *rld, t_rom_launch_settings *rlh) {
-  // Attempt to open and read the file.
-  FIL fd;
-  FRESULT res = rom_config_open(&fd, fn, FA_READ);
-  if (res != FR_OK)
-    return fr_missing(res);
-
   // Line by line, however long the (hand edited) file is: lines appended by
   // save_rom_patchmode() come last. Lines too long for a setting are skipped.
-  char buf[64];
+  char cfgfn[ROM_CONFIG_FN_SIZE], buf[64];
+  rom_config_fn(cfgfn, fn);
   t_rom_settings rs = { rld, rlh };
-  bool ok = read_lines(&fd, buf, sizeof(buf), parse_rom_settings_line, &rs);
-  f_close(&fd);
-  return ok;
+  FRESULT res = read_lines_file(cfgfn, buf, sizeof(buf), parse_rom_settings_line, &rs);
+  return FR_OK == res || fr_missing(res);
 }
 
 // Records the patch mode for a ROM, appended to its config (created if
 // needed): later lines win, and the other settings keep following the
 // global defaults unless the config already sets them.
 bool save_rom_patchmode(const char *fn, unsigned mode) {
-  f_mkdir(SUPERFW_DIR);
-  f_mkdir(ROMCONFIG_PATH);
-  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
-
   FIL fd;
-  if (FR_OK != rom_config_open(&fd, fn, FA_WRITE | FA_OPEN_APPEND))
+  if (!rom_config_create(&fd, fn, FA_OPEN_APPEND))
     return false;
   // On a line of its own (a hand-edited file may not end in a newline).
   char buf[32];
@@ -395,15 +391,8 @@ bool save_rom_patchmode(const char *fn, unsigned mode) {
 }
 
 bool save_rom_settings(const char *fn, const t_rom_load_settings *rld, const t_rom_launch_settings *rlh) {
-  // Create the directory (just in case it doesn't exist
-  f_mkdir(SUPERFW_DIR);
-  f_mkdir(ROMCONFIG_PATH);
-  // Make it hidden
-  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
-
-  // Proceed to create the file
   FIL fd;
-  if (FR_OK != rom_config_open(&fd, fn, FA_WRITE | FA_CREATE_ALWAYS))
+  if (!rom_config_create(&fd, fn, FA_CREATE_ALWAYS))
     return false;
 
   // Serialize the ROM settings

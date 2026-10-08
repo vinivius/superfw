@@ -31,39 +31,56 @@ bool check_file_exists(const char *fn) {
 }
 
 bool read_lines(FIL *fd, char *buf, unsigned bufsize, line_fn cb, void *usr) {
-  unsigned cnt = 0;           // Bytes in buf
-  bool skipping = false;      // In a line too long for buf
+  unsigned cnt = 0, pos = 0;  // Bytes in buf, where the next line starts
+  bool eof = false, skipping = false;
   while (true) {
-    // Fill the buffer: a short read is the end of the file.
-    UINT rdbytes;
-    if (FR_OK != f_read(fd, &buf[cnt], bufsize - 1 - cnt, &rdbytes))
-      return false;
-    cnt += rdbytes;
-    if (!cnt)
-      return true;
-
-    char *nl = memchr(buf, '\n', cnt);
-    unsigned len = nl ? (unsigned)(nl - buf) : cnt;
-    if (!nl && cnt == bufsize - 1) {
-      skipping = true;        // Too long, skipped up to its newline
-      cnt = 0;
+    char *line = &buf[pos], *nl = memchr(line, '\n', cnt - pos);
+    if (!nl && !eof) {
+      // Refill the buffer (the line so far moves to its start): a short read
+      // is the end of the file. Full without a newline: too long, skipped
+      // up to its newline.
+      memmove(buf, line, cnt - pos);
+      cnt -= pos;
+      pos = 0;
+      if (cnt == bufsize - 1) {
+        if (!skipping && !cb(NULL, 0, usr))
+          return true;
+        skipping = true;
+        cnt = 0;
+      }
+      UINT rdbytes;
+      if (FR_OK != f_read(fd, &buf[cnt], bufsize - 1 - cnt, &rdbytes))
+        return false;
+      eof = cnt + rdbytes < bufsize - 1;
+      cnt += rdbytes;
       continue;
     }
-    if (skipping)
-      skipping = false;       // Its end
-    else {
-      buf[len] = 0;
-      if (len && buf[len - 1] == '\r')
-        buf[--len] = 0;       // Edited on Windows
-      if (!cb(buf, len, usr))
-        return true;
-    }
+    if (pos == cnt)
+      return true;
 
-    // Consume the line
-    unsigned used = nl ? (unsigned)(nl - buf) + 1 : cnt;
-    memmove(buf, &buf[used], cnt - used);
-    cnt -= used;
+    unsigned len = nl ? (unsigned)(nl - line) : cnt - pos;
+    pos += len + (nl ? 1 : 0);
+    if (skipping) {
+      skipping = false;       // Its end
+      continue;
+    }
+    line[len] = 0;
+    if (len && line[len - 1] == '\r')
+      line[--len] = 0;        // Edited on Windows
+    if (!cb(line, len, usr))
+      return true;
   }
+}
+
+FRESULT read_lines_file(const char *fn, char *buf, unsigned bufsize, line_fn cb, void *usr) {
+  FIL fd;
+  FRESULT res = f_open(&fd, fn, FA_READ);
+  if (res == FR_OK) {
+    if (!read_lines(&fd, buf, bufsize, cb, usr))
+      res = FR_DISK_ERR;
+    f_close(&fd);
+  }
+  return res;
 }
 
 bool write_close(FIL *fd, const void *buf, unsigned len) {

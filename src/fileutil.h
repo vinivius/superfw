@@ -29,10 +29,14 @@ static inline bool fr_missing(FRESULT res) {
 }
 
 // Reads a text file line by line, into buf: calls cb with each line (without
-// its newline, nor a "\r" before it) until it returns false. Lines that don't
-// fit buf (bufsize - 1 bytes) are skipped. False on read errors.
+// its newline, nor a "\r" before it, NUL ended, anywhere in buf: not word
+// aligned) until it returns false. A line that
+// doesn't fit buf (bufsize - 2 chars) is skipped: cb gets NULL for it. False
+// on read errors.
 typedef bool (*line_fn)(char *line, unsigned len, void *usr);
 bool read_lines(FIL *fd, char *buf, unsigned bufsize, line_fn cb, void *usr);
+// Opens fn and reads it so. FR_OK, the f_open() result, or FR_DISK_ERR.
+FRESULT read_lines_file(const char *fn, char *buf, unsigned bufsize, line_fn cb, void *usr);
 
 // Writes len bytes to the open file fd and closes it (the data reaches the
 // card then). False if they weren't all written.

@@ -28,7 +28,7 @@ and commit it as its own commit. Push only when the user asks.
 
 - Always `make clean` when changing build flags.
 - The SD board firmware must fit 512 KiB (enforced at link time). UART builds
-  are within ~55 bytes of the limit (v0.2), keep debug features small.
+  are within ~140 bytes of the limit (v0.2), keep debug features small.
   `superfw.gba` is padded to the next 512 byte block (`tools/fw-fixer.py`),
   so `stat` doesn't show the free space;
   measure where the content ends with `tools/debug/flash-free.sh superfw.gba`
@@ -242,14 +242,16 @@ expose the UART as a pty and to keep SD image writes.
 ## Firmware memory budgets
 
 - Flash: 512 KiB for the SD board (`stat -c %s superfw.gba` < 524288); the
-  UART build is the tight one, so it is compressed at level 9 by default
-  (~65 s per build instead of ~12). `COMPRESSION_RATIO=4` no longer fits the
-  UART build; use it for quick release-build iterations only. Cold files use
+  UART build is the tight one, so it is compressed at upkr level 11 by
+  default (~110 s per build instead of ~12; level 9 was ~65 s and ~200 bytes
+  bigger). Compression varies: smaller code can compress worse by ~100
+  bytes, so keep a margin. `COMPRESSION_RATIO=4` no longer fits the UART
+  build; use it for quick release-build iterations only. Cold files use
   `#pragma GCC optimize("Os")` (grep for `optimize *("Os")`, some files
   write it with a space). Check sizes after every change: the UART build had
   dropped to a few dozen bytes free; sha256.c (always) and nanoprintf.c
   (UART builds only, `#ifdef ENABLE_UART_LOGGING`) went -Os to get ~1.1 KiB
-  back. In v0.2 the release has ~390 bytes free and the UART build ~55;
+  back. In v0.2 the release has ~300 bytes free and the UART build ~140;
   code compresses poorly (a byte of code costs about a byte of flash).
   nanoprintf.c and utf_util.c are built for size in UART builds only. To
   fit, the UART build also lost the diagnostic that listed where SDRAM
