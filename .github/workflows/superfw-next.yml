@@ -1,0 +1,185 @@
+name: SuperFW Next
+run-name: SuperFW Next ${{ github.event_name == 'pull_request' && 'PR check' || 'build and release' }}
+
+# Pull requests into superfw-next: check the version was bumped (when the
+# firmware changed), build it and run the unit tests.
+# Pushes to superfw-next (ie. merged pull requests): build it, run the unit
+# tests and publish a release for its version (once: a version that already
+# has a release only gets the workflow artifacts).
+
+on:
+  pull_request:
+    branches: [superfw-next]
+  push:
+    branches: [superfw-next]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its outdated run. Pushes to
+# superfw-next get a group each (GitHub keeps only one pending run per group,
+# so a shared one could drop a version), and all of them run; so do manual
+# runs, in groups of their own, so they can't replace a push run either.
+concurrency:
+  group: superfw-next-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build firmware
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # The version check needs the base branch
+
+      # The same toolchain as tools/debug/setup-toolchain.sh: the flash is
+      # nearly full, and other compiler versions produce different sizes.
+      - name: Cache the Arm GNU toolchain
+        id: toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchain
+          key: arm-gnu-toolchain-14.3.rel1-x86_64
+      - name: Install the Arm GNU toolchain
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        run: SUPERFW_DEV=$HOME tools/debug/setup-toolchain.sh
+      - name: Add the toolchain to PATH
+        run: echo "$HOME/toolchain/bin" >> "$GITHUB_PATH"
+
+      - name: Read the version
+        id: version
+        run: |
+          w=$(sed -n 's/^VERSION_WORD := //p' Makefile)
+          v="v$(( w >> 16 )).$(( w & 0xFFFF ))"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Version: $v ($w)"
+
+      - name: Check the version was bumped
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # The version must change whenever the firmware people flash (the
+          # release build) changes. Builds are reproducible, so build it for
+          # the base and for this pull request with the same commit hash (the
+          # firmware embeds it) and compare them.
+          old=$(git show "$BASE:Makefile" | sed -n 's/^VERSION_WORD := //p')
+          new=$(sed -n 's/^VERSION_WORD := //p' Makefile)
+          if [ $(( new )) -gt $(( old )) ]; then
+            echo "Version bumped: $old -> $new"
+            exit 0
+          fi
+          git worktree add -q "$RUNNER_TEMP/base" "$BASE"
+          make -C "$RUNNER_TEMP/base" BOARD=sd VERSION_SLUG_WORD=00000000 -j"$(nproc)" >/dev/null
+          make BOARD=sd VERSION_SLUG_WORD=00000000 -j"$(nproc)" >/dev/null
+          if cmp -s superfw.gba "$RUNNER_TEMP/base/superfw.gba"; then
+            echo "The release firmware is unchanged, no version bump needed."
+          else
+            echo "::error file=Makefile::The release firmware changed, but VERSION_WORD was not bumped ($old). Increase it (ie. 0x00000002 is version 0.2)."
+            exit 1
+          fi
+          make clean >/dev/null
+
+      - name: Build the release firmware
+        run: |
+          make BOARD=sd -j"$(nproc)"
+          mkdir -p out
+          v=${{ steps.version.outputs.version }}
+          cp superfw.gba "out/superfw-next-$v-sd.fw"     # To flash
+          cp superfw.gba "out/superfw-next-$v-sd.gba"    # Same image, to try it from the SD card first
+          tools/debug/flash-free.sh superfw.gba "Release" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build the UART debug firmware
+        run: |
+          make clean >/dev/null
+          make BOARD=sd ENABLE_UART_LOGGING=1 -j"$(nproc)"
+          cp superfw.gba "out/superfw-next-${{ steps.version.outputs.version }}-sd-uart-debug.gba"
+          tools/debug/flash-free.sh superfw.gba "UART debug" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checksums
+        run: |
+          # Named one by one: the order of a glob depends on the locale.
+          v=${{ steps.version.outputs.version }}
+          cd out
+          sha256sum "superfw-next-$v-sd.fw" "superfw-next-$v-sd.gba" "superfw-next-$v-sd-uart-debug.gba" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload the firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: superfw-next-${{ steps.version.outputs.version }}-${{ github.sha }}
+          path: out/
+          if-no-files-found: error
+
+  tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update -q && sudo apt-get install -y -q lcov
+      - name: Build and run the tests
+        run: cd tests && make
+      # The release jobs only run after a merge: test their scripts here.
+      - name: Test the release scripts
+        run: python3 tools/ci/test-release.py
+
+  # Releases are published in merge order: when merges come quickly, each run
+  # waits here for the earlier ones (lower run number) to finish. This keeps
+  # the release lock's queue short (GitHub keeps one pending job per group and
+  # cancels the older one; a run cancelled that way can be rerun). It runs
+  # outside the lock: waiting inside it would deadlock with a rerun of an
+  # older run, which keeps its run number.
+  order:
+    name: Wait for the earlier releases
+    needs: [build, tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/superfw-next'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/ci
+      - name: Wait for the earlier runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tools/ci/wait-earlier-runs.sh
+
+  release:
+    name: Publish the release
+    needs: [build, order]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/superfw-next'
+    runs-on: ubuntu-latest
+    # The release lock: one release job at a time (reruns of old runs too),
+    # so the release list can't change while a job publishes.
+    concurrency:
+      group: superfw-next-release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/ci
+      - name: Download the firmware
+        uses: actions/download-artifact@v4
+        with:
+          name: superfw-next-${{ needs.build.outputs.version }}-${{ github.sha }}
+          path: out
+      - name: Publish (once per version)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          V: ${{ needs.build.outputs.version }}
+        run: tools/ci/publish-release.sh
