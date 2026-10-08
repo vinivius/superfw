@@ -613,16 +613,13 @@ bool generate_patches_progress(const char *fn, unsigned fs) {
 }
 
 bool dump_flashmem_backup() {
-  f_mkdir(SUPERFW_DIR);
-
   // Use a different file name to ensure we do not overwrite firmwares by
   // accident. This adds some minimal overhead.
   SHA256_State st;
   sha256_init(&st);
 
   FIL fd;
-  FRESULT res = f_open(&fd, FLASHBACKUPTMP_FILEPATH, FA_WRITE | FA_CREATE_ALWAYS);
-  if (res != FR_OK)
+  if (!superfw_file_open(&fd, NULL, FLASHBACKUPTMP_FILEPATH, FA_CREATE_ALWAYS))
     return false;
 
   const unsigned fsize = flashinfo.size ? flashinfo.size : FW_MAX_SIZE_KB*1024;
@@ -1405,16 +1402,14 @@ static void browser_ensure_loaded() {
 static void browser_save_position() {
   if (!browser_loaded)
     return;      // Never opened since boot: keep the saved position.
+  char buf[2 * MAX_FN_LEN];
+  const unsigned len = npf_snprintf(buf, sizeof(buf), "%s\n%s", smenu.browser.cpath,
+                                    smenu.browser.dispentries ?
+                                    sdr_state->fileorder[smenu.browser.selector]->fname : "");
   FIL fd;
-  if (FR_OK != f_open(&fd, BROWSER_POS_FILEPATH, FA_WRITE | FA_CREATE_ALWAYS))
-    return;
-  const char *sel = smenu.browser.dispentries ?
-                    sdr_state->fileorder[smenu.browser.selector]->fname : "";
-  UINT wr;
-  f_write(&fd, smenu.browser.cpath, strlen(smenu.browser.cpath), &wr);
-  f_write(&fd, "\n", 1, &wr);
-  f_write(&fd, sel, strlen(sel), &wr);
-  f_close(&fd);
+  if (superfw_file_open(&fd, NULL, BROWSER_POS_FILEPATH, FA_CREATE_ALWAYS) &&
+      !write_close(&fd, buf, MIN(len, sizeof(buf) - 1)))
+    f_unlink(BROWSER_POS_FILEPATH);   // A cut position would be misread
 }
 
 // The browser position file: the folder ("/.../"), then the entry to select
@@ -2072,11 +2067,18 @@ static int art_find(const char *fn) {
   uint32_t h = boxart_hash(fn);
   unsigned l = strlen(fn);
   for (unsigned i = 0; i < ART_CACHE_N; i++)
-    if (bart.len[i] == l && bart.hash[i] == h) {
-      bart.used[i] = ++bart.stamp;
+    if (bart.len[i] == l && bart.hash[i] == h)
       return i;
-    }
   return -1;
+}
+
+// The art for fn is in use (shown or about to be): the cache keeps it over
+// the least recently used. Returns its slot, or -1 if it isn't cached.
+static int art_use(const char *fn) {
+  const int slot = art_find(fn);
+  if (slot >= 0)
+    bart.used[slot] = ++bart.stamp;
+  return slot;
 }
 
 // Loads (decodes) the art for fn into the least recently used slot (never
@@ -2134,7 +2136,7 @@ out:
 // (16..bottom). The file size is drawn under the art unless szstr is NULL.
 static void render_boxart(volatile uint8_t *frame, const char *fname, bool isdir,
                           const char *szstr, unsigned iconidx, unsigned bottom) {
-  const int slot = isdir ? -1 : art_find(fname);
+  const int slot = isdir ? -1 : art_use(fname);
   const bool cached = slot >= 0;
   // Ask for the art, it is loaded between frames once the cursor rests.
   if (isdir || cached)
@@ -3103,9 +3105,11 @@ bool menu_tick() {
   art_last_sel = sel;
   if (frame_count - last_input_frame >= ART_PREFETCH_IDLE && !keys_held) {
     static const int8_t order[] = {1, 2, -1, 3, 4, -2};
+    _Static_assert(sizeof(order) + 2 <= ART_CACHE_N, "The prefetched entries evict each other");
     for (unsigned i = 0; i < sizeof(order); i++) {
+      // The ones cached are in use: loading the next one doesn't evict them.
       const char *fn = art_neighbour(order[i] * art_dir);
-      if (fn && art_find(fn) < 0) {
+      if (fn && art_use(fn) < 0) {
         art_load(fn);
         break;
       }

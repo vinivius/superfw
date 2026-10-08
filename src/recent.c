@@ -34,7 +34,7 @@ NOINLINE bool recent_flush(const t_rentry *rentries, unsigned rcount) {
 
   // Flush to disk!
   FIL fo;
-  if (FR_OK != f_open(&fo, RECENT_FILEPATH, FA_WRITE | FA_CREATE_ALWAYS))
+  if (!superfw_file_open(&fo, NULL, RECENT_FILEPATH, FA_CREATE_ALWAYS))
     return false;
 
   // Write stuff to disk. Use a 1KiB buffer and flush as full blocks fill.
@@ -64,17 +64,8 @@ NOINLINE bool recent_flush(const t_rentry *rentries, unsigned rcount) {
     }
   }
 
-  // Flush the last bytes (if any!)
-  if (coff) {
-    UINT wrbytes;
-    if (FR_OK != f_write(&fo, tmpbuf, coff, &wrbytes) || wrbytes != coff) {
-      f_close(&fo);
-      return false;
-    }
-  }
-
-  // The data reaches the card when it's closed.
-  return FR_OK == f_close(&fo);
+  // The last bytes (if any): the data reaches the card when it's closed.
+  return write_close(&fo, tmpbuf, coff);
 }
 
 NOINLINE unsigned insert_recent_fn(t_rentry *rentries, unsigned rcount, const char *fn, unsigned flags) {

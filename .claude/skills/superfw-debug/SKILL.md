@@ -28,7 +28,7 @@ and commit it as its own commit. Push only when the user asks.
 
 - Always `make clean` when changing build flags.
 - The SD board firmware must fit 512 KiB (enforced at link time). UART builds
-  are within ~330 bytes of the limit (v0.2), keep debug features small.
+  are within ~300 bytes of the limit (v0.2), keep debug features small.
   `superfw.gba` is padded to the next 512 byte block (`tools/fw-fixer.py`),
   so `stat` doesn't show the free space;
   measure where the content ends with `tools/debug/flash-free.sh superfw.gba`
@@ -260,7 +260,7 @@ expose the UART as a pty and to keep SD image writes.
   write it with a space). Check sizes after every change: the UART build had
   dropped to a few dozen bytes free; sha256.c (always) and nanoprintf.c
   (UART builds only, `#ifdef ENABLE_UART_LOGGING`) went -Os to get ~1.1 KiB
-  back. In v0.2 the release has ~355 bytes free and the UART build ~330;
+  back. In v0.2 the release has ~300 bytes free and the UART build ~325;
   code compresses poorly (a byte of code costs about a byte of flash).
   nanoprintf.c and utf_util.c are built for size in UART builds only. To
   fit, the UART build also lost the diagnostic that listed where SDRAM
@@ -286,6 +286,11 @@ expose the UART as a pty and to keep SD image writes.
   payload with a build of the previous commit (`git worktree add` + `make
   ingamemenu.payload`) to know whether the in-game menu changed and needs
   testing (open it in the emulator with `keys.sh DIR '<LRs20>'`).
+  Its items: Resume, Reset, Save to SD card, Savestates (4th: `ddd` then
+  `a`), RTC clock, Cheats. In Savestates, Left from memory slot 1 goes to
+  the persistent (disk) slots 1-5, files `/SAVESTATE/<game>.<n>.state`;
+  confirmation popups start on "No" (`l` then `a` for Yes). Pre-create
+  state files on the card to test slot handling without saving.
 
 ## Known hardware behaviour (Supercard SD)
 

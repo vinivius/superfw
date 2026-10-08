@@ -26,6 +26,7 @@
 #include "save.h"
 #include "supercard_driver.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
 
 static const uint32_t start_seed = 0xdeadbeef;
 static uint32_t lcg32(uint32_t s) {
@@ -119,10 +120,8 @@ unsigned sram_test() {
 
 void program_sram_check() {
   // Just drop a file to schedule an SRAM test next boot.
-  f_mkdir(SUPERFW_DIR);
-
   FIL fout;
-  if (FR_OK == f_open(&fout, PENDING_SRAM_TEST, FA_WRITE | FA_CREATE_ALWAYS))
+  if (superfw_file_open(&fout, NULL, PENDING_SRAM_TEST, FA_CREATE_ALWAYS))
     f_close(&fout);
 }
 
