@@ -276,6 +276,7 @@ typedef struct {
 } t_payload_space;
 bool gba_payload_space(uint32_t fs, const struct struct_t_patch *ptch, bool ds, bool igm, unsigned cheats,
                        t_payload_space *ps);
+bool nor_payload_space(uint32_t fs, const struct struct_t_patch *ptch, bool igm);
 // Loads a ROM file and launches it.
 unsigned load_gba_rom(const char *fn, uint32_t fs, const char *savefn,
                       const struct struct_t_patch *ptch,

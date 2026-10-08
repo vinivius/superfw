@@ -293,6 +293,15 @@ int flash_erase_fsm_step(t_flash_erase_state *st) {
   return 0; // Work in progress
 }
 
+// Stops an erase (ie. on errors): the sector being erased, if any, finishes
+// (or times out), and no other one is started, so the flash can be read.
+void flash_erase_fsm_stop(t_flash_erase_state *st) {
+  if (st->currsect & 0x80000000) {
+    st->sectorcount = (st->currsect & 0x7FFFFFFF) + 1;
+    while (!flash_erase_fsm_step(st));
+  }
+}
+
 
 // Programs the built-in flash memory, assumes memory was cleared.
 // Also uses temporary buffers to allow for SDRAM buffers too.

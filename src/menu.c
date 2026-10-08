@@ -693,17 +693,9 @@ bool ingame_menu_avail_sdram(const t_load_gba_info *info) {
 }
 
 bool ingame_menu_avail_flash(const t_load_gba_info *info) {
-  const t_patch *p = get_game_patch(info);
-
-  // Checks if the ROM is small enough so the last 4MiB block can be remapped.
-  if (info->romfs > MAX_GBA_ROM_SIZE - NOR_BLOCK_SIZE) {
-    // Otherwise find a gap to flash on NOR our tiny payload
-    if (!p || p->hole_size < DIRSAVE_REQ_SPACE || p->hole_addr + p->hole_size > info->romfs)
-      return false;   // Too big to fit!
-  }
-
   // Check if the patches exist and have proper IRQ support.
-  return p && p->irqh_ops > 0;
+  const t_patch *p = get_game_patch(info);
+  return p && p->irqh_ops > 0 && nor_payload_space(info->romfs, p, true);
 }
 
 // Calculates whether DirectSaving can be used given some information.
@@ -714,15 +706,7 @@ bool dirsav_avail_sdram(const t_load_gba_info *info) {
 
 bool dirsav_avail_flash(const t_load_gba_info *info) {
   const t_patch *p = get_game_patch(info);
-
-  // Checks if the ROM is small enough so the last 4MiB block can be remapped.
-  if (info->romfs > MAX_GBA_ROM_SIZE - NOR_BLOCK_SIZE) {
-    // Otherwise find a gap to flash on NOR our tiny payload
-    if (!p || p->hole_size < DIRSAVE_REQ_SPACE || p->hole_addr + p->hole_size > info->romfs)
-      return false;   // Too big to fit!
-  }
-
-  return (p && supports_directsave(p->save_mode));
+  return p && supports_directsave(p->save_mode) && nor_payload_space(info->romfs, p, false);
 }
 
 bool rtcemu_avail(const t_load_gba_info *info) {

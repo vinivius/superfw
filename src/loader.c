@@ -97,10 +97,6 @@ bool validate_gb_header(const uint8_t *header) {
   return true;
 }
 
-// Data written to SDRAM is read back and rewritten if it did not stick (some
-// carts occasionally drop SDRAM writes), up to CHUNK_WRITE_TRIES times.
-#define CHUNK_WRITE_TRIES   8
-
 // The cart's registers are in the ROM space: the SD card's command register
 // at 24 MiB, the mode register in the last half word. While SDRAM is writable
 // (as SD card accesses need) writes to them reach it too: SD commands and mode
@@ -114,47 +110,41 @@ bool validate_gb_header(const uint8_t *header) {
 #define REG_MODE            1
 static const uint32_t reg_words[REG_WORDS] = { 0x01800000, MAX_GBA_ROM_SIZE - 4 };
 static uint32_t reg_word_data[REG_WORDS];
+static bool sdcmd_word_recorded;      // In this launch (load_sdram_reset())
 
 // Records the data written to SDRAM at offset (bytes, from data) that falls
 // on the register words.
 static void reg_words_record(uint32_t offset, const uint32_t *data, unsigned bytes) {
   for (unsigned i = 0; i < REG_WORDS; i++)
-    if (reg_words[i] - offset < bytes)
+    if (reg_words[i] - offset < bytes) {
       reg_word_data[i] = data[(reg_words[i] - offset) / 4];
+      sdcmd_word_recorded |= i == REG_SDCMD;
+    }
 }
 
-// Puts the data recorded at the SD command register back (SD card unmapped).
-// Where nothing was recorded nothing that's used is there either (SD commands
-// write there all the time). False if it doesn't read back as written.
+// Puts the data recorded at the SD command register back, if this launch's
+// loads wrote there (SD card unmapped). False if it doesn't stick.
 static bool sdcmd_word_restore() {
-  volatile uint32_t *w = (uint32_t*)&GBA_ROM_ADDR[reg_words[REG_SDCMD]];
-  for (unsigned t = 0; t < CHUNK_WRITE_TRIES && *w != reg_word_data[REG_SDCMD]; t++)
-    *w = reg_word_data[REG_SDCMD];
-  return *w == reg_word_data[REG_SDCMD];
+  volatile uint16_t *w = (uint16_t*)&GBA_ROM_ADDR[reg_words[REG_SDCMD]];
+  const uint32_t v = reg_word_data[REG_SDCMD];
+  return !sdcmd_word_recorded || (write16_checked(&w[0], v) && write16_checked(&w[1], v >> 16));
 }
 
 // Fixes the header checksum unconditionally (just in case we boot to BIOS).
-// False if it doesn't read back as written. SD card unmapped.
+// False if it doesn't stick. SD card unmapped.
 static bool fix_gba_header(volatile uint16_t *header) {
-  for (unsigned t = 0; t < CHUNK_WRITE_TRIES; t++) {
-    header[0xB2 / 2] = 0x0096;     // Device ID/fixed value
-    header[0xB4 / 2] = 0x0000;
-    header[0xB6 / 2] = 0x0000;
-    // 0xB8 and 0xBA are left out (contain IGM information)
-    const uint8_t version = header[0xBC / 2];
+  // Device ID/fixed value. 0xB8 and 0xBA are left out (contain IGM information)
+  if (!write16_checked(&header[0xB2 / 2], 0x0096) || !write16_checked(&header[0xB4 / 2], 0) ||
+      !write16_checked(&header[0xB6 / 2], 0))
+    return false;
 
-    uint8_t crc = version;
-    for (unsigned i = 0; i < 14; i++) {
-      uint16_t v = header[0xA0 / 2 + i];
-      crc += (v & 0xFF) + (v >> 8);
-    }
-
-    const uint16_t chk = (uint8_t)-(0x19 + crc) << 8 | version;
-    header[0xBC / 2] = chk;
-    if (header[0xB2 / 2] == 0x0096 && !header[0xB4 / 2] && !header[0xB6 / 2] && header[0xBC / 2] == chk)
-      return true;
+  const uint8_t version = header[0xBC / 2];      // Preserved
+  uint8_t crc = version;
+  for (unsigned i = 0; i < 14; i++) {
+    uint16_t v = header[0xA0 / 2 + i];
+    crc += (v & 0xFF) + (v >> 8);
   }
-  return false;
+  return write16_checked(&header[0xBC / 2], (uint8_t)-(0x19 + crc) << 8 | version);
 }
 
 void load_directsave_config(const t_dirsave_info *dsinfo) {
@@ -201,6 +191,7 @@ bool load_sdram_lost = false;
 void load_sdram_reset(void) {
   load_sdram_end = 0;
   load_sdram_lost = false;
+  sdcmd_word_recorded = false;
 }
 
 // Records that a load writes SDRAM [start, end). Every write a load makes goes
@@ -215,7 +206,7 @@ static void load_writes(uint32_t start, uint32_t end) {
     load_sdram_lost = true;
 }
 
-// The chunks that needed rewriting (CHUNK_WRITE_TRIES) are counted (and
+// The chunks that needed rewriting (SDRAM_WRITE_TRIES) are counted (and
 // logged) for diagnostics.
 static unsigned chunk_rewrites = 0;
 #ifdef HAVE_LOGGING
@@ -265,15 +256,14 @@ static unsigned pad_to_word(void *buf, unsigned len) {
   return padded;
 }
 
-// Copies a loaded chunk to SDRAM at offset (from GBA_ROM_ADDR) as whole words
-// (src is padded with zeros up to a word boundary) and reads it back,
+// Copies a loaded chunk to SDRAM at offset (from GBA_ROM_ADDR), whole words
+// (bytes, a multiple of 4), and reads it back,
 // rewriting it as needed. ck is the running checksum of the data loaded so
 // far (checksum_words()): the chunk is checked against it and added to it.
 // Returns the number of extra writes needed, or -1 if it never verified.
 NOINLINE
 static int copy_chunk_verified(uint32_t offset, uint32_t *src, unsigned bytes, uint32_t *ck) {
   uint8_t *dst = &GBA_ROM_ADDR[offset];
-  bytes = pad_to_word(src, bytes);
   if (!bytes)
     return 0;         // Nothing to copy (a DMA count of 0 would copy 64K words)
   load_writes(offset, offset + bytes);
@@ -282,7 +272,7 @@ static int copy_chunk_verified(uint32_t offset, uint32_t *src, unsigned bytes, u
 
   set_supercard_mode(MAPPED_SDRAM, true, false);
   int ret = -1;
-  for (unsigned t = 0; t < CHUNK_WRITE_TRIES; t++) {
+  for (unsigned t = 0; t < SDRAM_WRITE_TRIES; t++) {
     if (use_slowld) {
       // rom_copy_write16() copies 32-byte blocks: the rest goes by half words.
       const unsigned blocks = bytes & ~31;
@@ -390,13 +380,15 @@ static bool load_ingame_menu(
   reg_words_record(base_addr - GBA_ROM_BASE + menu_size, (uint32_t*)&ptr[menu_size], fcsize);
   set_supercard_mode(MAPPED_SDRAM, true, true);
 
-  // Then the menu (from rodata), with its header.
+  // Then the menu (from rodata, whole words: the asset is word aligned and
+  // padded), with its header.
   uint32_t ck[2] = {0, 0};
   const uint32_t off = base_addr - GBA_ROM_BASE;
+  const unsigned psize = ROUND_UP2(ingame_menu_payload_size, 4);
   ok = ok && copy_chunk_verified(off, (uint32_t*)&hdr, sizeof(hdr), ck) >= 0;
-  for (unsigned o = sizeof(hdr); ok && o < ingame_menu_payload_size; o += LOAD_BS)
+  for (unsigned o = sizeof(hdr); ok && o < psize; o += LOAD_BS)
     ok = copy_chunk_verified(off + o, (uint32_t*)((uintptr_t)&ingame_menu_payload + o),
-                             MIN(LOAD_BS, ingame_menu_payload_size - o), ck) >= 0;
+                             MIN(LOAD_BS, psize - o), ck) >= 0;
   return ok;
 }
 
@@ -419,8 +411,10 @@ static unsigned load_rom_region(FIL *fd, uint32_t start, uint32_t end, uint32_t 
     uint32_t tmp[LOAD_BS/4];
     if (FR_OK != f_read(fd, tmp, toread, &rdbytes) || rdbytes != toread)
       return ERR_LOAD_BADROM;
+    // Whole words: the end of the file is padded with zeros.
+    toread = pad_to_word(tmp, toread);
     if (dry)
-      checksum_words(tmp, pad_to_word(tmp, toread) / 4, ck);
+      checksum_words(tmp, toread / 4, ck);
     else if (copy_chunk_verified(offset, tmp, toread, ck) < 0) {
       WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", offset);
       return ERR_LOAD_VERIFY;
@@ -574,6 +568,10 @@ unsigned load_gba_rom(
   // Proceed to patch the ROM
   set_supercard_mode(MAPPED_SDRAM, true, false);
 
+  // Patches may write anywhere in the ROM space: if they (or the payloads,
+  // or the header fix) fail, nothing in it is trusted (the menu reboots).
+  load_writes(0, MAX_GBA_ROM_SIZE);
+
   // That was the last SD card access: put back the data written at its
   // command register (see reg_words).
   bool ok = sdcmd_word_restore();
@@ -611,6 +609,16 @@ unsigned load_gba_rom(
 
 // Flashes a game to NOR patching it as necessary. This includes DirSav as well as IGM.
 NOINLINE
+// Where flash_gba_nor() puts the DirectSave payload and the in-game menu
+// trampoline (if igm) fits: in a remapped flash block if the ROM leaves the
+// last 4 MiB free, or else in the patch's hole (DirectSave's space first, the
+// trampoline after it).
+bool nor_payload_space(uint32_t fs, const t_patch *ptch, bool igm) {
+  return fs <= MAX_GBA_ROM_SIZE - NOR_BLOCK_SIZE ||
+         (ptch && ptch->hole_size >= DIRSAVE_REQ_SPACE + (igm ? ingame_trampoline_payload_size : 0) &&
+          ptch->hole_addr + ptch->hole_size <= fs);
+}
+
 unsigned flash_gba_nor(
   const char *fn, uint32_t fs,
   const t_rom_header *rom_header,
@@ -625,8 +633,8 @@ unsigned flash_gba_nor(
   if (!flashinfo.size || !flashinfo.blksize || !flashinfo.blkcount || !flashinfo.blkwrite || !flashinfo.blksize)
     return ERR_FLASH_OP;
 
-  // Determine if the DirSav payload must be flashed in a ROM gap or not.
-  // (Both need patches: the menu only enables them with some.)
+  // Determine if the DirSav payload must be flashed in a ROM gap or not (see
+  // nor_payload_space(); both need patches: the menu only enables them then).
   const bool flashmap0 = fs <= MAX_GBA_ROM_SIZE - NOR_BLOCK_SIZE || !ptch;
   uint32_t ds_flashoffset  = flashmap0 ? 0 : ptch->hole_addr;
   uint32_t igm_flashoffset = flashmap0 ? 0 : ptch->hole_addr + DIRSAVE_REQ_SPACE;
@@ -662,6 +670,7 @@ unsigned flash_gba_nor(
       UINT rdbytes;
       uint32_t tmp[LOAD_BS/4];
       if (FR_OK != f_read(&fd, tmp, toread, &rdbytes) || rdbytes != toread) {
+        flash_erase_fsm_stop(&erst);
         f_close(&fd);
         reset_superchis_normap();
         return ERR_LOAD_BADROM;
@@ -683,6 +692,7 @@ unsigned flash_gba_nor(
       ok = ok && payload_apply_rom(scratch, ssize, bigoff, ingame_trampoline_payload,
                                    ingame_trampoline_payload_size, igm_flashoffset);
     if (!ok) {
+      flash_erase_fsm_stop(&erst);
       f_close(&fd);
       reset_superchis_normap();
       return ERR_FLASH_OP;
@@ -869,7 +879,7 @@ unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo
     const t_vfile *vf = get_vfile(&ldinfo->emu_name[4]);
     int t = 0;
     if (vf) {
-      for (; t < CHUNK_WRITE_TRIES; t++) {
+      for (; t < SDRAM_WRITE_TRIES; t++) {
         s.off = upkr_unpack16(GBA_ROM_ADDR, vf->payload);
         load_writes(0, s.off);
         s.ck[0] = s.ck[1] = 0;
@@ -881,8 +891,8 @@ unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo
     set_supercard_mode(MAPPED_SDRAM, true, true);
     if (!vf)
       return ERR_LOAD_NOEMU;    // Not bundled in
-    chunk_rewritten(0, t < CHUNK_WRITE_TRIES ? t : -1);
-    if (t == CHUNK_WRITE_TRIES) {
+    chunk_rewritten(0, t < SDRAM_WRITE_TRIES ? t : -1);
+    if (t == SDRAM_WRITE_TRIES) {
       WRITE_LOG("Emulator unpack mismatch");
       return ERR_LOAD_EMUERR;
     }

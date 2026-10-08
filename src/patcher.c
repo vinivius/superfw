@@ -25,6 +25,7 @@
 #include "common.h"
 #include "patches.h"
 #include "patchengine.h"
+#include "util.h"
 
 #pragma GCC optimize ("Os")
 
@@ -142,17 +143,10 @@ typedef struct {
   bool failed;          // A write never read back as written
 } t_rom_part;
 
-// Writes are read back and retried if they did not stick (some carts
-// occasionally drop SDRAM writes).
-#define WRITE_TRIES   8
-
+// Writes are checked (write16_checked()).
 static void put_half(t_rom_part *rp, volatile uint16_t *ptr, uint16_t data) {
-  for (unsigned t = 0; t < WRITE_TRIES; t++) {
-    *ptr = data;
-    if (*ptr == data)
-      return;
-  }
-  rp->failed = true;
+  if (!write16_checked(ptr, data))
+    rp->failed = true;
 }
 
 // Writes a byte at a ROM address, with 16 bit accesses only.

@@ -48,6 +48,7 @@ bool flash_program_buffered(uint32_t baseaddr, const uint8_t *buf, unsigned size
 bool flash_verify(uint32_t baseaddr, const uint8_t *buf, unsigned size);
 void flash_erase_fsm_start(t_flash_erase_state *st, uint32_t baseaddr, unsigned sectsize, unsigned sectorcnt);
 int flash_erase_fsm_step(t_flash_erase_state *st);
+void flash_erase_fsm_stop(t_flash_erase_state *st);
 
 bool check_superfw(const uint8_t *h, uint32_t *ver);
 bool flash_fw_is_self();

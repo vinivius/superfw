@@ -100,6 +100,10 @@ SuperFW and SuperFW Next can install each other.
   NDS homebrew (a header byte was written into the firmware instead).
 - Patches are applied correctly when writing a game to NOR flash, where a
   patched function can span two of the parts the image is processed in.
+  A NOR write that fails (ie. a read error) waits for the flash erase it
+  started, so the NOR game list isn't read as empty (a later write could
+  then overwrite the other games). Games over 28 MiB only get the in-game
+  menu on NOR when their free space holds its trampoline too.
   Patch database entries and patch files that can't be applied are refused,
   and a game's database patches no longer keep the free space found for the
   game opened before (where the in-game menu would go over game data).

@@ -49,6 +49,11 @@ uint32_t date2timestamp(const t_dec_date *d);
 void timestamp2date(uint32_t ts, t_dec_date *out);
 void fixdate(t_dec_date *d);
 
+// SDRAM (cart) writes are read back and rewritten if they did not stick (some
+// carts occasionally drop them), up to SDRAM_WRITE_TRIES times.
+#define SDRAM_WRITE_TRIES   8
+bool write16_checked(volatile uint16_t *p, uint16_t v);
+
 // Just checks that a file exists.
 bool check_file_exists(const char *fn);
 

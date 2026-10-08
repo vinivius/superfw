@@ -255,4 +255,12 @@ void memmove32(void *dst, void *src, unsigned count) {
   }
 }
 
-
+// Writes a half word to the cart's SDRAM, checked (see SDRAM_WRITE_TRIES).
+bool write16_checked(volatile uint16_t *p, uint16_t v) {
+  for (unsigned t = 0; t < SDRAM_WRITE_TRIES; t++) {
+    *p = v;
+    if (*p == v)
+      return true;
+  }
+  return false;
+}
