@@ -16,8 +16,8 @@
  * <http://www.gnu.org/licenses/>.
  */
 
-// Patch files (the patch engine cache): the format version they are written
-// with, and which older files are still trusted.
+// Patch files (the patch engine cache): the format they are written in, and
+// which files from older firmwares are still trusted.
 
 #include <stdio.h>
 #include <string.h>
@@ -60,16 +60,25 @@ int main() {
                                OP_FLASH_HD(FLASH_WRTS, 0x300), OP_FLASH_HD(FLASH_WRBT, 0x400) };
   int size = write_patch_ops(v1table, 3, NULL);
   assert(size <= (int)sizeof(buf));
-  assert(!memcmp(buf, "SUPERFWPATCHV02", 16));
+  assert(!memcmp(buf, "SUPERFWPATCHV01", 16) && buf[21] == 1);    // Same format as upstream, flagged
   assert(unserialize_patch(buf, size, &q));
   assert(q.wcnt_ops == 2 && q.save_ops == 3 && q.op[3] == OP_FLASH_HD(FLASH_CLRS, 0x200));
 
-  // V01 files predate the fix for v1 flash tables: refused if made from one
-  // (erase and write handlers, no byte write one), used otherwise.
-  assert(!unserialize_patch(buf, write_patch_ops(v1table, 3, "SUPERFWPATCHV01"), &q));
-  assert(unserialize_patch(buf, write_patch_ops(v2table, 4, "SUPERFWPATCHV01"), &q));
-  assert(unserialize_patch(buf, write_patch(OP_FLASH_HD(5, 0x1234), "SUPERFWPATCHV01"), &q));
-  assert(unserialize_patch(buf, write_patch(OP_EEPROM_HD(0x1234), "SUPERFWPATCHV01"), &q));
+  // Files without the flag (older firmwares write 0) predate the fix for v1
+  // flash tables: refused if made from one (erase and write handlers, no byte
+  // write one), used otherwise.
+  write_patch_ops(v1table, 3, NULL);
+  buf[21] = 0;
+  assert(!unserialize_patch(buf, size, &q));
+  write_patch_ops(v2table, 4, NULL);
+  buf[21] = 0;
+  assert(unserialize_patch(buf, size, &q));
+  write_patch(OP_FLASH_HD(5, 0x1234), NULL);
+  buf[21] = 0;
+  assert(unserialize_patch(buf, size, &q));
+  write_patch(OP_EEPROM_HD(0x1234), NULL);
+  buf[21] = 0;
+  assert(unserialize_patch(buf, size, &q));
   assert(q.op[2] == OP_EEPROM_HD(0x1234));
 
   // Op counts that don't fit the op table are refused (corrupted files).
@@ -90,9 +99,13 @@ int main() {
   assert(!unserialize_patch(buf, size, &q));
   write_patch((0u << 28) | ((MAX_PATCH_PRG - 1) << 25) | 0x1234, NULL);
   assert(unserialize_patch(buf, size, &q));
+  write_patch((0x7u << 28) | (4u << 25) | 0x1234, NULL);     // RTC handlers are 0-3
+  assert(!unserialize_patch(buf, size, &q));
+  write_patch((0x7u << 28) | (3u << 25) | 0x1234, NULL);
+  assert(unserialize_patch(buf, size, &q));
 
   // Unknown versions and wrong sizes are refused.
-  assert(!unserialize_patch(buf, write_patch(OP_EEPROM_HD(0x1234), "SUPERFWPATCHV03"), &q));
+  assert(!unserialize_patch(buf, write_patch(OP_EEPROM_HD(0x1234), "SUPERFWPATCHV02"), &q));
   assert(!unserialize_patch(buf, size - 1, &q));
 
   puts("Patch file tests OK");

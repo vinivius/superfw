@@ -1050,8 +1050,9 @@ static bool insert_recent_flush(const char *fn, unsigned flags) {
     recent_reload();
   if (recent_unread)
     return false;
-  // Insert element.
+  // Insert element: it becomes the first one, the cursor goes with it.
   smenu.recent.maxentries = insert_recent_fn(sdr_state->rentries, smenu.recent.maxentries, fn, flags);
+  smenu.recent.selector = smenu.recent.seloff = 0;
   return recent_flush(sdr_state->rentries, smenu.recent.maxentries);
 }
 
@@ -1321,13 +1322,13 @@ static FRESULT browser_reload() {
   unsigned fcount = 0;
   DIR d;
   FRESULT res = f_opendir(&d, smenu.browser.cpath);
-  if (res != FR_OK)
-    return res;
 
   unsigned start = frame_count, shown = frame_count;
   while (1) {
     FILINFO info;
-    if ((res = f_readdir(&d, &info)) != FR_OK) {
+    if (res == FR_OK)
+      res = f_readdir(&d, &info);
+    if (res != FR_OK) {
       // Unreadable (ie. SD errors): empty, read again on the next key press.
       smenu.browser.maxentries = smenu.browser.sortentries = smenu.browser.dispentries = 0;
       browser_loaded = false;

@@ -484,10 +484,13 @@ bool patchengine_process_rom(const uint32_t *rom, unsigned romsize, t_patch_buil
 #pragma GCC push_options
 #pragma GCC optimize("Os")
 
-// Patch file format. V02 files come after the fix for v1 flash tables
-// (f170dfb): V01 files made from one are not valid.
-#define PATCH_MAGIC     "SUPERFWPATCHV02"
-#define PATCH_MAGIC_V01 "SUPERFWPATCHV01"
+// Patch file format (as upstream writes it). Files made from a v1 flash
+// table before the fix for those (upstream f170dfb) have wrong handlers: the
+// files made after it say so in a header byte older firmwares write as 0 and
+// don't read, so all of them keep reading each other's files.
+#define PATCH_MAGIC         "SUPERFWPATCHV01"
+#define PATCH_FLAGS         21          // Header byte
+#define PATCH_V1FLASH_OK    0x01
 
 // Generates a patch buffer (for a file) so that it can be loaded later.
 int serialize_patch(const t_patch *patch, uint8_t *buffer) {
@@ -498,7 +501,7 @@ int serialize_patch(const t_patch *patch, uint8_t *buffer) {
   buffer[18] = patch->save_mode;
   buffer[19] = patch->irqh_ops;
   buffer[20] = patch->rtc_ops;
-  buffer[21] = 0;
+  buffer[PATCH_FLAGS] = PATCH_V1FLASH_OK;
   buffer[22] = (patch->hole_size >> 10) & 0xFF;
   buffer[23] = patch->hole_size >> 18;
   buffer[24] = (patch->hole_addr >> 10) & 0xFF;
@@ -523,9 +526,9 @@ bool unserialize_patch(const uint8_t *buffer, unsigned size, t_patch *patch) {
   // Check header anf size
   if (size != 32 + sizeof(patch->op) + sizeof(patch->prgs))
     return false;
-  bool v01 = !memcmp(&buffer[0], PATCH_MAGIC_V01, 16);
-  if (!v01 && memcmp(&buffer[0], PATCH_MAGIC, 16))
+  if (memcmp(&buffer[0], PATCH_MAGIC, 16))
     return false;
+  const bool v1flash_ok = buffer[PATCH_FLAGS] & PATCH_V1FLASH_OK;
 
   patch->wcnt_ops = buffer[16];
   patch->save_ops = buffer[17];
@@ -542,26 +545,26 @@ bool unserialize_patch(const uint8_t *buffer, unsigned size, t_patch *patch) {
   buffer += sizeof(patch->prgs);
   memcpy(patch->op, buffer, sizeof(patch->op));
 
-  // Corrupted files: programs longer than their data, or ops writing a
-  // program that doesn't exist.
+  // Corrupted files: programs longer than their data, or ops naming a
+  // program or an RTC handler that doesn't exist.
   for (unsigned i = 0; i < MAX_PATCH_PRG; i++)
     if (patch->prgs[i].length > sizeof(patch->prgs[i].data))
       return false;
 
-  // V01 files made from a v1 flash table hold wrong handlers (regenerate
-  // them). Those tables give the erase and write handlers but, unlike v2
-  // tables, no byte write one.
+  // Files from before the v1 flash fix made from a v1 flash table hold wrong
+  // handlers (regenerate them). Those tables give the erase and write
+  // handlers but, unlike v2 tables, no byte write one.
   bool v1table = false, wrbt = false;
   for (unsigned i = 0; i < patch->wcnt_ops + patch->save_ops + patch->irqh_ops + patch->rtc_ops; i++) {
     const unsigned opc = patch->op[i] >> 28, arg = (patch->op[i] >> 25) & 7;
-    if (opc == OPC_WR_BUF && arg >= MAX_PATCH_PRG)
+    if ((opc == OPC_WR_BUF && arg >= MAX_PATCH_PRG) || (opc == OPC_RTC_HD && arg > RTC_GETTD_HNDLR))
       return false;
     if (opc == OPC_FLASH_HD) {
       v1table |= arg == FLASH_CLRS_HNDLR;
       wrbt |= arg == FLASH_WRBT_HNDLR;
     }
   }
-  if (v01 && v1table && !wrbt)
+  if (!v1flash_ok && v1table && !wrbt)
     return false;
 
   return true;

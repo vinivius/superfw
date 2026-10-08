@@ -273,6 +273,13 @@ static void log_chunk_rewrites(const char *what) {
   #define log_chunk_rewrites(what)
 #endif
 
+// Pads buf with zeros from len up to a word boundary, returns the new length.
+static unsigned pad_to_word(void *buf, unsigned len) {
+  unsigned padded = ROUND_UP2(len, 4);
+  memset((uint8_t*)buf + len, 0, padded - len);
+  return padded;
+}
+
 // Copies a loaded chunk to SDRAM at offset (from GBA_ROM_ADDR) as whole words
 // (src is padded with zeros up to a word boundary) and reads it back,
 // rewriting it as needed. ck is the running checksum of the data loaded so
@@ -281,8 +288,7 @@ static void log_chunk_rewrites(const char *what) {
 NOINLINE
 static int copy_chunk_verified(uint32_t offset, uint32_t *src, unsigned bytes, uint32_t *ck) {
   uint8_t *dst = &GBA_ROM_ADDR[offset];
-  memset((uint8_t*)src + bytes, 0, ROUND_UP2(bytes, 4) - bytes);
-  bytes = ROUND_UP2(bytes, 4);
+  bytes = pad_to_word(src, bytes);
   if (!bytes)
     return 0;         // Nothing to copy (a DMA count of 0 would copy 64K words)
   load_writes(offset, offset + bytes);
@@ -335,8 +341,7 @@ static bool checksum_file_region(FIL *fd, uint32_t start, uint32_t end, uint32_t
     uint32_t tmp[LOAD_BS/4];
     if (FR_OK != f_read(fd, tmp, toread, &rdbytes) || rdbytes != toread)
       return false;
-    memset((uint8_t*)tmp + toread, 0, ROUND_UP2(toread, 4) - toread);
-    checksum_words(tmp, ROUND_UP2(toread, 4) / 4, st);
+    checksum_words(tmp, pad_to_word(tmp, toread) / 4, st);
   }
   return true;
 }
@@ -606,8 +611,7 @@ unsigned flash_gba_nor(
       }
 
       // Whole words: the end of the file is padded with zeros.
-      memset((uint8_t*)tmp + toread, 0, ROUND_UP2(toread, 4) - toread);
-      dma_memcpy32(&scratch[offset], tmp, ROUND_UP2(toread, 4) / 4);
+      dma_memcpy32(&scratch[offset], tmp, pad_to_word(tmp, toread) / 4);
     }
 
     // Patch ROM, don't need WAITCNT patches
@@ -639,7 +643,7 @@ unsigned flash_gba_nor(
       if (progress && (absoff & (128*1024-1)) == 0)
         progress((bigoff + ssize / 4 + offset * 3/4) >> 8, fs >> 8);
 
-      unsigned toflash = MIN(flashinfo.blksize, fs - absoff);
+      unsigned toflash = MIN(flashinfo.blksize, ROUND_UP2(fs, 4) - absoff);
       bool wr_ok = flash_program_buffered(flashaddr, &scratch[offset], toflash, flashinfo.blkwrite);
 
       // Check the written block if so configured
@@ -712,6 +716,7 @@ typedef struct {
   uint32_t ck[2];         // checksum_words() of the words written so far
   uint32_t carry;         // Bytes waiting for the next write
   unsigned ncarry;
+  bool dry;               // Only checksum the data (to compare a second read)
 } t_sdram_stream;
 
 // Writes len bytes from buf, which must have 4 spare bytes after them.
@@ -733,7 +738,9 @@ static unsigned stream_write(t_sdram_stream *s, uint32_t *buf, unsigned len) {
 
   if (s->off + wlen > s->lim)
     return ERR_LOAD_TOOBIG;
-  if (copy_chunk_verified(s->off, buf, wlen, s->ck) < 0) {
+  if (s->dry)
+    checksum_words(buf, wlen / 4, s->ck);
+  else if (copy_chunk_verified(s->off, buf, wlen, s->ck) < 0) {
     WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", s->off);
     return ERR_LOAD_VERIFY;
   }
@@ -747,6 +754,32 @@ static unsigned stream_flush(t_sdram_stream *s) {
   return stream_write(s, pad, (4 - s->ncarry) & 3);
 }
 
+// Streams the whole file fn. Returns 0, or the error: openerr if it can't be
+// opened, readerr if it can't be read (or a stream_write() one).
+static unsigned stream_file(t_sdram_stream *s, const char *fn, unsigned openerr, unsigned readerr,
+                            progress_fn progress, uint32_t fs) {
+  FIL fd;
+  if (FR_OK != f_open(&fd, fn, FA_READ))
+    return openerr;
+
+  unsigned err = 0;
+  for (uint32_t offset = 0; !err; offset += LOAD_BS) {
+    if (progress && (offset & (64*1024-1)) == 0)
+      progress(offset, fs);
+
+    UINT rdbytes;
+    uint32_t tmp[LOAD_BS/4 + 1];
+    if (FR_OK != f_read(&fd, tmp, LOAD_BS, &rdbytes))
+      err = readerr;
+    else if (!rdbytes)
+      break;
+    else
+      err = stream_write(s, tmp, rdbytes);
+  }
+  f_close(&fd);
+  return err;
+}
+
 // Generic-emulator (ie. NES, SMS, ...) loader. The emulator, the ROM header it
 // needs and the ROM are loaded one after the other, and verified like GBA
 // ROMs: a dropped SDRAM write would corrupt the emulator or the game. They
@@ -758,8 +791,7 @@ unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo
 
   t_sdram_stream s = { .lim = ROM_OFF_FONTS_BASE };
   chunk_stats_reset();
-  unsigned err;
-  FIL fd;
+  char emupath[64] = "";
 
   // Try to find a valid and existing emulator.
   if (!memcmp(ldinfo->emu_name, "vfs:", 4)) {
@@ -789,71 +821,44 @@ unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo
     }
   }
   else {
-    char emupath[64];
     strcpy(emupath, EMULATORS_PATH);
     strcat(emupath, ldinfo->emu_name);
     strcat(emupath, ".gba");
-
-    // Load the emulator from disk, check whether it exists tho.
-    if (FR_OK != f_open(&fd, emupath, FA_READ))
-      return ERR_LOAD_NOEMU;
-
-    while (1) {
-      UINT rdbytes;
-      uint32_t tmp[LOAD_BS/4 + 1];
-      if (FR_OK != f_read(&fd, tmp, LOAD_BS, &rdbytes)) {
-        f_close(&fd);
-        return ERR_LOAD_EMUERR;
-      }
-      if (!rdbytes)
-        break;
-      if ((err = stream_write(&s, tmp, rdbytes))) {
-        f_close(&fd);
-        return err == ERR_LOAD_TOOBIG ? ERR_LOAD_EMUERR : err;
-      }
-    }
-    f_close(&fd);
   }
 
-  // Generate rom header and what not (64 bytes at most).
-  if (ldinfo->hndlr) {
-    uint32_t hdr[64/4 + 1];
-    if ((err = stream_write(&s, hdr, ldinfo->hndlr((uint8_t*)hdr, fn, fs))))
+  // The SD emulator (if any), the ROM header it needs (64 bytes at most) and
+  // the ROM follow. A second, dry pass reads them again (only checksumming)
+  // with ROM verification, to catch corrupted reads from the SD card.
+  const t_sdram_stream start = s;
+  for (unsigned pass = 0; pass <= use_verify_rom; pass++) {
+    t_sdram_stream st = start;
+    st.dry = pass;
+    unsigned err;
+    if (emupath[0] && (err = stream_file(&st, emupath, ERR_LOAD_NOEMU, ERR_LOAD_EMUERR, NULL, 0)))
       return err;
-  }
-
-  // Proceed to load the ROM now.
-  if (FR_OK != f_open(&fd, fn, FA_READ))
-    return ERR_LOAD_BADROM;
-
-  for (uint32_t offset = 0; offset < fs; offset += LOAD_BS) {
-    if (progress && (offset & (64*1024-1)) == 0)
-      progress(offset, fs);
-
-    unsigned toread = MIN(LOAD_BS, fs - offset);
-    UINT rdbytes;
-    uint32_t tmp[LOAD_BS/4 + 1];
-    if (FR_OK != f_read(&fd, tmp, toread, &rdbytes) || rdbytes != toread) {
-      f_close(&fd);
-      return ERR_LOAD_BADROM;
+    if (ldinfo->hndlr) {
+      uint32_t hdr[64/4 + 1];
+      if ((err = stream_write(&st, hdr, ldinfo->hndlr((uint8_t*)hdr, fn, fs))))
+        return err;
     }
-    if ((err = stream_write(&s, tmp, rdbytes))) {
-      f_close(&fd);
+    if ((err = stream_file(&st, fn, ERR_LOAD_BADROM, ERR_LOAD_BADROM, pass ? NULL : progress, fs)) ||
+        (err = stream_flush(&st)))
       return err;
+
+    // The first pass checks the whole image in SDRAM (a write can disturb data
+    // written earlier), the second one that it reads the same.
+    uint32_t ck[2] = {0, 0};
+    if (!pass) {
+      log_chunk_rewrites("Emulator load:");
+      checksum_loaded_rom(0, st.off, ck);
+      s = st;
     }
-  }
-  f_close(&fd);
-  if ((err = stream_flush(&s)))
-    return err;
-
-  log_chunk_rewrites("Emulator load:");
-
-  // Verify the whole image: a write can disturb data written earlier.
-  uint32_t ck_mem[2] = {0, 0};
-  checksum_loaded_rom(0, s.off, ck_mem);
-  if (ck_mem[0] != s.ck[0] || ck_mem[1] != s.ck[1]) {
-    WRITE_LOG("Emulator load: SDRAM copy mismatch");
-    return ERR_LOAD_VERIFY;
+    else
+      memcpy(ck, st.ck, sizeof(ck));
+    if (ck[0] != s.ck[0] || ck[1] != s.ck[1]) {
+      WRITE_LOG("Emulator load: %s mismatch", pass ? "SD re-read" : "SDRAM copy");
+      return ERR_LOAD_VERIFY;
+    }
   }
 
   // Set the ROM into read only mode, disable SD card reader as well.

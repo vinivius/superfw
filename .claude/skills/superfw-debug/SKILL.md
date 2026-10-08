@@ -249,10 +249,11 @@ expose the UART as a pty and to keep SD image writes.
   write it with a space). Check sizes after every change: the UART build had
   dropped to a few dozen bytes free; sha256.c (always) and nanoprintf.c
   (UART builds only, `#ifdef ENABLE_UART_LOGGING`) went -Os to get ~1.1 KiB
-  back. In v0.2 the release has ~700 bytes free and the UART build ~100;
-  code compresses poorly (a byte of code costs about a byte of flash). To
-  fit, the UART build lost the diagnostic that listed where SDRAM differs
-  from the file after a failed final ROM verify (git log -S
+  back. In v0.2 the release has ~650 bytes free and the UART build ~170;
+  code compresses poorly (a byte of code costs about a byte of flash).
+  nanoprintf.c and utf_util.c are built for size in UART builds only. To
+  fit, the UART build also lost the diagnostic that listed where SDRAM
+  differs from the file after a failed final ROM verify (git log -S
   log_rom_mismatches brings it back for a hardware investigation). The
   ENABLE_DISK_LOGGING build hasn't fit the SD board since v0.2. Measure the
   overflow with a temporary `MAXFSIZE=600` build instead of guessing.

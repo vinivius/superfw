@@ -68,8 +68,8 @@ SuperFW and SuperFW Next can install each other.
 - GB, GBC and NES games are verified like GBA ROMs: the emulator (bundled
   ones against a checksum made at build time), the ROM header and the ROM
   are read back after being copied to the cart's RAM, rewritten when a write
-  was dropped, and checked once more as a whole, instead of starting a
-  corrupted game.
+  was dropped, and checked once more as a whole (and read again from the SD
+  card with "Verify ROM loading"), instead of starting a corrupted game.
 - A load that fails (ie. SD read errors) shows the error and reloads the
   menu data it overwrote (folder, recent list, box art), instead of going
   on with garbage. A big ROM that also overwrote the fonts reboots the menu
@@ -84,8 +84,9 @@ SuperFW and SuperFW Next can install each other.
   of overflowing their buffers. File manager paths are checked too.
 - Cheat files next to the ROM (NAME.cht) are loaded; they were found but
   never loaded.
-- Patch files the patch engine made before the v1 flash fix (upstream
-  f170dfb) are made again when they hook flash saves.
+- Patch files the patch engine made from a v1 flash table before the fix
+  for those (upstream f170dfb) are made again. The file format stays the
+  same, so SuperFW and SuperFW Next keep reading each other's files.
 - A damaged or hand-edited recent.txt (no final newline, overlong lines,
   Windows line endings) no longer crashes or hangs the boot.
 - Firmware updates retry (up to 3 times) when erasing, writing or
