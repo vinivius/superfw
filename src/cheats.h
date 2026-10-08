@@ -34,7 +34,7 @@ typedef struct {
 typedef struct {
   t_cheathdr h;
   char title[MAX_CHEAT_TITLE + 1];
-} t_cheathdr_ext;
+} __attribute__((aligned(4))) t_cheathdr_ext;    // Copied as words
 
 typedef struct {
   uint8_t opcode;            // The codebreaker opcode (0 to 15)

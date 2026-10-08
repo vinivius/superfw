@@ -16,7 +16,8 @@ all:
 	$(CC) $(CFLAGS) $(MEMCHK_FLAGS) -o sha256_test.bin sha256_test.c ../src/sha256.c -lcrypto
 	./sha256_test.bin
 	lcov -c -d . -o sha256_test.info
-	$(CC) $(CFLAGS) -o cheats_test.bin cheats_test.c ../src/cheats.c ../src/util.c ../src/nanoprintf.c -I../
+	$(CC) $(CFLAGS) $(MEMCHK_FLAGS) -o cheats_test.bin cheats_test.c ../src/cheats.c ../src/util.c ../src/nanoprintf.c ../src/fileutil.c -I../ \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections
 	./cheats_test.bin
 	lcov -c -d . -o cheats_test.info
 	$(CC) $(CFLAGS) $(MEMCHK_FLAGS) -o crc_test.bin crc_test.c ../src/crc.c

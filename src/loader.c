@@ -101,10 +101,12 @@ bool validate_gb_header(const uint8_t *header) {
 // at 24 MiB, the mode register in the last half word. While SDRAM is writable
 // (as SD card accesses need) writes to them reach it too: SD commands and mode
 // changes overwrite the data there. Loads record the data they write to those
-// words: the command one is put back after each SD card access, the other one
-// (that can't be written: it's the mode register) counts as written. The
-// mode change that runs the game overwrites it: the game sees that mode, as
-// it always did.
+// words: the command one is put back after the load's SD card accesses
+// (before its checks and before the game runs; after a failed load it holds
+// SD command bits until the next load reads it: only a retry keeping the
+// in-game menu does, and puts it back first), the other one (that can't be
+// written: it's the mode register) counts as written. The mode change that
+// runs the game overwrites it: the game sees that mode, as it always did.
 #define REG_WORDS           2
 #define REG_SDCMD           0
 #define REG_MODE            1

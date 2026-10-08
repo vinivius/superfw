@@ -23,41 +23,41 @@
 #include "cheats.h"
 #include "util.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
 
 #pragma GCC optimize ("Os")
 
 // Preprocessing cheats, includes a proper header and pre-formats some payloads.
-// False if a code takes more values than there are.
+// The values codes 4 (an iteration count and increments) and 5 (halfwords to
+// write, 3 a line) take follow them, as more codes. False if one takes more
+// than there are, or has a count of 0 (cheat_exec would loop 2^32 times).
 bool predecode_cheats(uint32_t *codes, unsigned cnt) {
   for (unsigned i = 0; i < cnt; i++) {
-    t_cheat_predec h = {
-      .opcode = ((codes[2*i] >> 28) & 0xF) * 2,    // Opcode scaled by 2
-      .value = codes[2*i+1],
-      .address = codes[2*i] & 0xFFFFFFF,
-    };
-    h.blen = (h.opcode == 4 * 2) ? 16 :
-             (h.opcode == 5 * 2) ? (h.value + 1) * 8 :
-             8;
+    const unsigned opcode = (codes[2*i] >> 28) & 0xF;
+    const uint16_t value = codes[2*i+1];
+    const unsigned extra = (opcode == 4) ? 1 : (opcode == 5) ? (value + 2) / 3 : 0;
+    if (i + extra >= cnt || (opcode == 5 && !value) || (opcode == 4 && !(uint16_t)codes[2*i+2]))
+      return false;
 
     // Overwrite buffer with the new format
+    t_cheat_predec h = {
+      .opcode = opcode * 2,             // Opcode scaled by 2
+      .blen = (extra + 1) * 8,          // Its size (conditional codes skip it)
+      .value = value,
+      .address = codes[2*i] & 0xFFFFFFF,
+    };
     memcpy(&codes[2*i], &h, sizeof(h));
 
-    // The values codes 4 and 5 take follow them.
-    const unsigned extra = (h.opcode == 4 * 2) ? 1 : (h.opcode == 5 * 2) ? h.value : 0;
-    if (i + extra >= cnt)
-      return false;
-    if (h.opcode == 4 * 2)
-      i++;                    // Extra addr + value for opc4
-    else if (h.opcode == 5 * 2) {
-      // Extra buffer. We perform some endianess conversion here.
-      for (unsigned j = 0; j < h.value; j++) {
-        i++;
-        uint32_t addr = codes[2*i];
-        uint16_t valu = codes[2*i+1];
-        codes[2*i] = __builtin_bswap32(addr);
-        codes[2*i+1] = __builtin_bswap16(valu);
-      }
+    // Code 5's data: endianess conversion.
+    for (unsigned j = 0; j < extra && opcode == 5; j++) {
+      i++;
+      uint32_t addr = codes[2*i];
+      uint16_t valu = codes[2*i+1];
+      codes[2*i] = __builtin_bswap32(addr);
+      codes[2*i+1] = __builtin_bswap16(valu);
     }
+    if (opcode == 4)
+      i++;
   }
   return true;
 }
@@ -116,104 +116,68 @@ int parse_cheat_codes(const char *s, uint32_t *codes) {
 }
 
 
-// Reads a cheat file into a temp buffer (usually in SDRAM) and returns the size in bytes
-// Returns -1 if the file is not found or the cheats cannot be loaded.
-// Parses the cheat file fd into buffer, returns its size (-1 on errors).
-static int read_cheats(FIL *fd, uint8_t *buffer, unsigned buffsize) {
-  bool parse_name = true;
-  unsigned bcount = 0;
-  char tmp[1024 + 4];
-
-  // The cheats go to the cart's SDRAM: writes are checked. Their count goes
-  // first, written once they're all parsed.
+typedef struct {
+  uint8_t *buffer;
+  unsigned size, used, count;
+  bool codes;               // The next line is a cheat's codes (else its title)
+  bool error;               // Out of space, or a write that never verified
   t_cheathdr_ext chdr;
-  uint32_t count = 0;
-  unsigned bufsz = 4;
+} t_cheat_read;
 
-  // Parse the file line by line, using a temp buffer.
-  do {
-    if (bcount <= 512) {
-      UINT rdbytes;
-      if (FR_OK != f_read(fd, &tmp[bcount], 512, &rdbytes))
-        return -1;
-      bcount += rdbytes;
-      tmp[bcount] = 0;
-    }
+// A line of the cheat file: titles and code lines alternate (empty lines are
+// skipped). A cheat whose codes can't be used is left out.
+static bool cheat_line(char *line, unsigned len, void *usr) {
+  t_cheat_read *cr = (t_cheat_read*)usr;
+  while (*line == ' ' || *line == '\t')
+    line++;
+  if (!*line)
+    return true;
 
-    // Attempt to parse the next line.
-    char *p = strchr(tmp, '\n');
-    if (!p) 
-      p = strchr(tmp, '\0');
-    if (!p)
-      break;       // Some path is way too long!
+  if (cr->codes) {
+    // The codes, in hex: generate the predecoded ones.
+    cr->codes = false;
+    uint32_t codes[2 * (MAX_CHEAT_CODES + 1)];  // And the end one
+    memset(codes, 0, sizeof(codes));
+    int numcodes = parse_cheat_codes(line, codes);
+    if (numcodes <= 0 || !predecode_cheats(codes, numcodes))
+      return true;
+    cr->chdr.h.codelen = 8 * (numcodes + 1);
 
-    *p = 0;        // Add the string end char.
+    // The cheats go to the cart's SDRAM: writes are checked.
+    unsigned pheadl = sizeof(t_cheathdr) + cr->chdr.h.slen;
+    cr->error = cr->used + pheadl + cr->chdr.h.codelen > cr->size ||
+                !memcpy32_checked(&cr->buffer[cr->used], &cr->chdr, pheadl) ||
+                !memcpy32_checked(&cr->buffer[cr->used + pheadl], codes, cr->chdr.h.codelen);
+    cr->used += pheadl + cr->chdr.h.codelen;
+    cr->count++;
+    return !cr->error;
+  }
 
-    // Skip leading characters.
-    char *s = tmp;
-    while (*s == ' ' || *s == '\t')
-      s++;
-
-    // Skip empty lines!
-    if (*s != 0) {
-      if (bufsz + 1024 > buffsize)
-        return -1;
-
-      // Fill entry, string or cheat codes.
-      if (parse_name) {
-        // Fill title and header. Long titles are cut (at a character start).
-        unsigned len = strlen(s);
-        if (len > MAX_CHEAT_TITLE)
-          len = MAX_CHEAT_TITLE;
-        while (len && (s[len] & 0xC0) == 0x80)
-          len--;
-        memcpy(chdr.title, s, len);
-        chdr.title[len] = 0;
-        chdr.h.slen = (len + 1 + 3) & ~3U;  // Word aligned!
-        chdr.h.enabled = 0;
-        chdr.h.codelen = 0;
-      } else {
-        // Parse the cheat codes (in hex), and generate the respective code.
-        uint32_t codes[2 * (MAX_CHEAT_CODES + 1)];  // And the end one
-        memset(codes, 0, sizeof(codes));
-        int numcodes = parse_cheat_codes(tmp, codes);
-        if (numcodes < 0)
-          return -1;
-        // Process the raw codes and format them into t_cheat_predec (predecoded opcode)
-        if (!predecode_cheats(codes, numcodes))
-          return -1;
-        // Each code takes 8 bytes
-        chdr.h.codelen = 8 * (numcodes + 1);
-
-        { // Copy the data to the actual buffer.
-          unsigned pheadl = sizeof(t_cheathdr) + chdr.h.slen;
-          if (!memcpy32_checked(&buffer[bufsz], &chdr, pheadl) ||
-              !memcpy32_checked(&buffer[bufsz + pheadl], codes, chdr.h.codelen))
-            return -1;
-          bufsz += pheadl + chdr.h.codelen;
-          count++;
-        }
-      }
-
-      parse_name = !parse_name;
-    }
-
-    // Consume bytes
-    unsigned cnt = strlen(tmp) + 1;
-    memmove(&tmp[0], &tmp[cnt], bcount - cnt);
-    bcount -= cnt;
-  } while (bcount);
-
-  return memcpy32_checked(buffer, &count, 4) ? (int)bufsz : -1;
+  // The title: long ones are cut (at a character start).
+  len = strlen(line);
+  if (len > MAX_CHEAT_TITLE)
+    len = MAX_CHEAT_TITLE;
+  while (len && (line[len] & 0xC0) == 0x80)
+    len--;
+  memcpy(cr->chdr.title, line, len);
+  cr->chdr.title[len] = 0;
+  cr->chdr.h.slen = (len + 1 + 3) & ~3U;  // Word aligned!
+  cr->chdr.h.enabled = 0;
+  cr->codes = true;
+  return true;
 }
 
+// Reads a cheat file into a buffer (usually in SDRAM): the count of cheats,
+// then each one. Returns its size in bytes, or -1 if the file can't be read
+// or has no cheat that can be used.
 int open_read_cheats(uint8_t *buffer, unsigned buffsize, const char *fn) {
   FIL fd;
   if (FR_OK != f_open(&fd, fn, FA_READ))
     return -1;
-  int ret = read_cheats(&fd, buffer, buffsize);
+  // Lines too long for any cheat are skipped.
+  char tmp[1024];
+  t_cheat_read cr = { .buffer = buffer, .size = buffsize, .used = 4, .codes = false };
+  bool ok = read_lines(&fd, tmp, sizeof(tmp), cheat_line, &cr);
   f_close(&fd);
-  return ret;
+  return ok && !cr.error && cr.count && memcpy32_checked(buffer, &cr.count, 4) ? (int)cr.used : -1;
 }
-
-

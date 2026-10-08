@@ -177,7 +177,7 @@ cheat_cc_opc5:               // Super code
   beq 2f
 
   lsr r5, #16
-  strh r3, [r1]
+  strh r5, [r1]
   add r1, $2
   sub r2, $1                 // Decrement count
   beq 2f
@@ -210,7 +210,7 @@ cheat_cc_opcD:
   nop; nop; nop;
 
   // case 1: ~pad & value == value, skip code
-  eor r3, r3
+  mvn r3, r3
   and r3, r2
   cmp r3, r2
   bne 3f
@@ -220,7 +220,7 @@ cheat_cc_opcD:
   nop
 
   // case 2: ~pad & value == 0, skip code
-  eor r3, r3
+  mvn r3, r3
   and r3, r2
   cmp r3, $0
   bne 3f
