@@ -93,6 +93,7 @@ build), plus the unit tests. A pull request that changes the release
 firmware must bump `VERSION_WORD` in the Makefile (`0x00000002` is version
 0.2), or the check fails: CI builds the release for the base and for the
 pull request with the same commit hash and compares them, so docs, tools or
-debug-only changes don't need a bump. Every merge publishes the release `next-vX.Y` for that version
-(once): `superfw-next-vX.Y-sd.fw` to flash, the same image as `.gba` to try
+debug-only changes don't need a bump. A pull request must be up to date with
+`superfw-next` to merge, so the check always runs against the latest version. Every merge publishes the release `next-vX.Y` for that version
+(once, in merge order): `superfw-next-vX.Y-sd.fw` to flash, the same image as `.gba` to try
 it from the SD card first, the debug build and `SHA256SUMS`.

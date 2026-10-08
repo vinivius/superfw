@@ -126,9 +126,25 @@ jobs:
     needs: [build, tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/superfw-next'
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
       contents: write
+      actions: read
     steps:
+      # Releases are published in merge order, one at a time: when merges
+      # come quickly, each run waits for the earlier ones (lower run number)
+      # to finish, so the release list can't change while it publishes.
+      - name: Wait for the earlier releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          while :; do
+            n=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/superfw-next.yml/runs?branch=superfw-next&event=push&per_page=100" \
+              --jq "[.workflow_runs[] | select(.status != \"completed\" and .run_number < $GITHUB_RUN_NUMBER)] | length")
+            [ "$n" = 0 ] && break
+            echo "Waiting for $n earlier run(s) to finish..."
+            sleep 20
+          done
       - name: Download the firmware
         uses: actions/download-artifact@v4
         with:
@@ -152,9 +168,9 @@ jobs:
 
           \`superfw-next-$V-sd-uart-debug.gba\` is the serial debug build (see tools/debug). Checksums are in SHA256SUMS.
           EOF
-            # Releases from different merges may finish in any order: notes
-            # start at the highest existing version below this one, and only
-            # the highest version is marked as the latest release.
+            # An earlier version can still be published after a later one (ie.
+            # rerunning an old run): notes start at the highest existing
+            # version below this one, and only the highest one is the latest.
             tags=$( { gh release list --limit 200 --json tagName --jq '.[].tagName' | grep '^next-v' || true; echo "$tag"; } | sort -V -u)
             prev=$(echo "$tags" | grep -x -B1 "$tag" | grep -v -x "$tag" || true)
             latest=$([ "$(echo "$tags" | tail -n1)" = "$tag" ] && echo true || echo false)
