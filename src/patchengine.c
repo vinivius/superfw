@@ -542,21 +542,27 @@ bool unserialize_patch(const uint8_t *buffer, unsigned size, t_patch *patch) {
   buffer += sizeof(patch->prgs);
   memcpy(patch->op, buffer, sizeof(patch->op));
 
+  // Corrupted files: programs longer than their data, or ops writing a
+  // program that doesn't exist.
+  for (unsigned i = 0; i < MAX_PATCH_PRG; i++)
+    if (patch->prgs[i].length > sizeof(patch->prgs[i].data))
+      return false;
+
   // V01 files made from a v1 flash table hold wrong handlers (regenerate
   // them). Those tables give the erase and write handlers but, unlike v2
   // tables, no byte write one.
-  if (v01) {
-    bool v1table = false, wrbt = false;
-    for (unsigned i = 0; i < patch->save_ops; i++) {
-      uint32_t op = patch->op[patch->wcnt_ops + i];
-      if ((op >> 28) == OPC_FLASH_HD) {
-        v1table |= ((op >> 25) & 7) == FLASH_CLRS_HNDLR;
-        wrbt |= ((op >> 25) & 7) == FLASH_WRBT_HNDLR;
-      }
-    }
-    if (v1table && !wrbt)
+  bool v1table = false, wrbt = false;
+  for (unsigned i = 0; i < patch->wcnt_ops + patch->save_ops + patch->irqh_ops + patch->rtc_ops; i++) {
+    const unsigned opc = patch->op[i] >> 28, arg = (patch->op[i] >> 25) & 7;
+    if (opc == OPC_WR_BUF && arg >= MAX_PATCH_PRG)
       return false;
+    if (opc == OPC_FLASH_HD) {
+      v1table |= arg == FLASH_CLRS_HNDLR;
+      wrbt |= arg == FLASH_WRBT_HNDLR;
+    }
   }
+  if (v01 && v1table && !wrbt)
+    return false;
 
   return true;
 }

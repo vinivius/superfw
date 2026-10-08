@@ -116,7 +116,7 @@
     "MSG_FWUP_ERRPG": "플래시 오류!",
     "MSG_FWUP_ERRVR": "검증 오류!",
     "MSG_ERR_READ": "오류:롬 읽기 실패!",
-    "MSG_ERR_TOOBIG": "GBA 파일이 너무 큽니다!",
+    "MSG_ERR_TOOBIG": "파일이 너무 큽니다!",
     "MSG_ERR_SAVERD": "오류: 저장 파일 읽기 실패",
     "MSG_ERR_SAVEWR": "오류: 저장 파일 작성 실패",
     "MSG_ERR_SAVEPR": "오류: 저장 파일 준비 실패",

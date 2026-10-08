@@ -35,11 +35,12 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from superfw_romlib import (  # noqa: E402
-  ART_DIR, CONFIG_DIR, DEFAULT_CACHE, EXT_SYSTEMS, MAX_FN_LEN, PATCHDB_DIR,
-  PENDING_SAVE_FILE, RECENT_FILE, ROM_EXTS, SAVE_DIRS, STATE_DIRS, SUPERFW_DIR,
+  ART_DIR, CONFIG_DIR, DEFAULT_CACHE, EXT_SYSTEMS, FF_MAX_LFN, MAX_FN_LEN, PATCHDB_DIR,
+  PENDING_SAVE_FILE, RECENT_FILE, ROM_EXTS, SAVE_DIRS, SAVE_FN_RESERVE, STATE_DIRS,
+  STATE_FN_RESERVE, SUPERFW_DIR,
   LEVELS, Options, Organizer, Reporter,
   art_is_valid, art_relpath, default_threads, migrate_flat_art, encode_art, fat_sanitize, fetch_thumbnail,
-  hash_rom, load_dats, log, preview, sfw_stem, warn, write_atomic)
+  derived_stem, hash_rom, load_dats, log, preview, sfw_stem, warn, write_atomic)
 
 
 # --- ROM scanning / identification (in-place mode) ---------------------------------
@@ -107,7 +108,12 @@ def dir_listing(path, cache):
 def sd_path(sd_root, path):
   """Converts a host path to the SuperFW (FatFs) absolute path: /dir/file."""
   rel = os.path.relpath(path, sd_root).replace(os.sep, "/")
-  return "/" + rel
+  return "/" if rel == "." else "/" + rel
+
+
+def sd_dir(sd_root, path):
+  """The SuperFW path of a folder, with its trailing slash."""
+  return sd_path(sd_root, path).rstrip("/") + "/"
 
 
 class Renamer(object):
@@ -166,20 +172,25 @@ class Renamer(object):
         out.append((real, real[len(stem):]))   # keep the original suffix spelling
     return out
 
-  def related_files(self, rom, old_stem, shared_ok, local_ok):
-    """Yields (dir, suffix_regex, kind) for files SuperFW associates with a ROM."""
+  def related_files(self, rom, shared_ok, local_ok):
+    """Yields (dir, suffix_regex, kind, ext, maxlen) for files SuperFW
+       associates with a ROM. Their names come from derived_fn() (util.c):
+       ext and maxlen are the ones the firmware passes it."""
     sav = r"\.sav|\.tmp\.sav|\.\d+\.sav"
+    savelen = MAX_FN_LEN - 1 - SAVE_FN_RESERVE    # settings.c sram_filename_calc()
+    statelen = MAX_FN_LEN - 1 - STATE_FN_RESERVE  # settings.c savestate_filename_calc()
     if local_ok:
-      yield rom.dir, sav, "save"                 # save_path_policy=2 (next to ROM)
-      yield rom.dir, r"\.cht", "cheats"          # menu.c prepare_gba_cheats()
-      yield rom.dir, r"\.patch", "patch"         # patchengine.c load_rom_patches()
+      yield rom.dir, sav, "save", ".sav", savelen                       # save_path_policy=2 (next to ROM)
+      yield rom.dir, r"\.cht", "cheats", ".cht", MAX_FN_LEN - 1         # menu.c prepare_gba_cheats()
+      yield rom.dir, r"\.patch", "patch", ".patch", len("/%s/" % PATCHDB_DIR) + FF_MAX_LFN   # patchengine.c load_rom_patches()
     if shared_ok:
       for d in SAVE_DIRS:
-        yield os.path.join(self.sd, d), sav, "save"
+        yield os.path.join(self.sd, d), sav, "save", ".sav", savelen
       for d in STATE_DIRS:
-        yield os.path.join(self.sd, d), r"\.\d+\.state", "savestate"
-      yield os.path.join(self.sd, CONFIG_DIR), r"\.config", "config"
-      yield os.path.join(self.sd, PATCHDB_DIR), r"\.patch", "patch-cache"
+        yield os.path.join(self.sd, d), r"\.\d+\.state", "savestate", "", statelen
+      for d, ext in ((CONFIG_DIR, ".config"), (PATCHDB_DIR, ".patch")):   # The FAT name limit
+        yield (os.path.join(self.sd, d), re.escape(ext), ext[1:], ext,
+               len(sd_dir(self.sd, os.path.join(self.sd, d))) + FF_MAX_LFN)
 
   def rename_rom(self, rom, new_fname, shared_ok, local_ok):
     old_path = rom.path
@@ -187,10 +198,14 @@ class Renamer(object):
     if not self._do_rename(old_path, new_path):
       return False
     rom.final_fname = new_fname
-    old_stem, new_stem = sfw_stem(rom.fname), sfw_stem(new_fname)
 
-    # Associated files (saves, backups, states, cheats, patches, config).
-    for d, rx, kind in self.related_files(rom, old_stem, shared_ok, local_ok):
+    # Associated files (saves, backups, states, cheats, patches, config),
+    # named as the firmware names them in each folder (long names shortened).
+    for d, rx, kind, ext, maxlen in self.related_files(rom, shared_ok, local_ok):
+      old_stem = derived_stem(sd_dir(self.sd, d), rom.fname, ext, maxlen)
+      new_stem = derived_stem(sd_dir(self.sd, d), new_fname, ext, maxlen)
+      if old_stem is None or new_stem is None:
+        continue        # The firmware keeps it elsewhere (ie. saves of ROMs in very long paths)
       for real, suffix in self._matching(d, old_stem, rx):
         self._do_rename(os.path.join(d, real), os.path.join(d, new_stem + suffix))
       if kind == "save":

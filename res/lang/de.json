@@ -116,7 +116,7 @@
     "MSG_FWUP_ERRPG": "Flashing-Fehler!",
     "MSG_FWUP_ERRVR": "Fehler bei Prüfung!",
     "MSG_ERR_READ": "Fehler: Kann ROM nicht laden!",
-    "MSG_ERR_TOOBIG": "Die GBA-Datei ist zu groß!",
+    "MSG_ERR_TOOBIG": "Die Datei ist zu groß!",
     "MSG_ERR_SAVERD": "Fehler: Save nicht lesbar",
     "MSG_ERR_SAVEWR": "Fehler: Save nicht schreibbar",
     "MSG_ERR_SAVEPR": "Fehler: Save nicht vorbereitet",

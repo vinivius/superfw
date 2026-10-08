@@ -1070,7 +1070,8 @@ static bool delete_recent_flush(unsigned entry_num) {
 // Error message for a ROM load error.
 static unsigned load_error_msg(unsigned err) {
   return err == ERR_LOAD_NOEMU  ? MSG_ERR_NOEMU :
-         err == ERR_LOAD_VERIFY ? MSG_ERR_VERIFY : MSG_ERR_READ;
+         err == ERR_LOAD_VERIFY ? MSG_ERR_VERIFY :
+         err == ERR_LOAD_TOOBIG ? MSG_ERR_TOOBIG : MSG_ERR_READ;
 }
 
 static void menu_load_failed(unsigned err);
@@ -1086,24 +1087,32 @@ void start_emu_game(const t_emu_loader *ldinfo, const char *fn, uint32_t fs) {
     spop.alert_msg = msgs[lang_id][errmsg];
   }
   else {
-    // Try the emulators in turn (a successful load launches the game), and
-    // report the error of the last one that was found.
-    unsigned errcode = ERR_LOAD_NOEMU;
-    load_sdram_end = 0;
-    for (; ldinfo->emu_name; ldinfo++) {
-      if (recent_menu)
-        insert_recent_flush(fn, FLAG_RECENT_SD);
+    // fn may be a recent list entry, which inserting it moves.
+    char romfn[MAX_FN_LEN];
+    strcpy(romfn, fn);
+    if (recent_menu)
+      insert_recent_flush(romfn, FLAG_RECENT_SD);
 
-      unsigned err = load_extemu_rom(fn, fs, ldinfo, loadrom_progress);
-      if (err && err != ERR_LOAD_NOEMU && !use_slowld) {
+    // Try the emulators in turn (a successful load launches the game): one
+    // that is missing or can't be read gives way to the next one.
+    unsigned errcode = ERR_LOAD_NOEMU;
+    load_sdram_reset();
+    for (; ldinfo->emu_name; ldinfo++) {
+      unsigned err = load_extemu_rom(romfn, fs, ldinfo, loadrom_progress);
+      if (err != ERR_LOAD_NOEMU && err != ERR_LOAD_TOOBIG && !use_slowld) {
         // Fast loading is not reliable with some carts/SD cards, retry slowly.
+        // An error that got as far as the ROM is the one that counts.
         WRITE_LOG("Fast emulator ROM load failed (%u), retrying in slow mode", err);
         use_slowld = 1;
-        err = load_extemu_rom(fn, fs, ldinfo, loadrom_progress);
+        unsigned retry = load_extemu_rom(romfn, fs, ldinfo, loadrom_progress);
         use_slowld = 0;
+        if (err == ERR_LOAD_EMUERR)
+          err = retry;
       }
       if (err != ERR_LOAD_NOEMU)
         errcode = err;
+      if (err != ERR_LOAD_NOEMU && err != ERR_LOAD_EMUERR)
+        break;
     }
     WRITE_LOG("Emulator ROM load failed: %u", errcode);
     sdcard_flush_log();
@@ -1390,9 +1399,11 @@ static void browser_ensure_loaded() {
     strcpy(smenu.browser.cpath, "/");
     browser_reload();
   }
-  if (browser_reselect[0])
-    browser_select_name(browser_reselect);
-  browser_reselect[0] = 0;
+  if (browser_loaded) {
+    if (browser_reselect[0])
+      browser_select_name(browser_reselect);
+    browser_reselect[0] = 0;
+  }
 }
 
 static void browser_save_position() {
@@ -2026,16 +2037,20 @@ static bool load_error_file(uint8_t *err, BYTE mode) {
   return FR_OK == res && n == 1;
 }
 
-// A ROM load failed with err, after overwriting SDRAM up to load_sdram_end:
-// shows the error and loads the menu data it reached again. Past the fonts
-// (and the patch database and emulators above them) only a reboot restores
-// them, like after playing a game (a patch database loaded from the SD card
-// is gone too). The error is shown after it if the reboot comes back to this
-// firmware (not when it runs from the SD card).
+// A ROM load failed with err, after overwriting SDRAM (load_sdram_end and
+// load_sdram_lost): shows the error and loads the menu data it reached again.
+// The fonts and what lies above them only a reboot restores, like after
+// playing a game (a patch database loaded from the SD card is gone too). The
+// error is shown after it if the reboot comes back to this firmware (not when
+// it runs from the SD card).
 static void menu_load_failed(unsigned err) {
+  // The game never ran: its SRAM must not be saved on the next boot.
+  program_sram_dump(NULL, 0);
+
   const uint32_t end = load_sdram_end;
-  load_sdram_end = 0;
-  if (end > ROM_OFF_FONTS_BASE) {
+  const bool lost = load_sdram_lost;
+  load_sdram_reset();
+  if (lost) {
     uint8_t e = err;
     if (flash_fw_is_self())
       load_error_file(&e, FA_WRITE);
@@ -3475,7 +3490,7 @@ static void keypress_popup_loadgba(unsigned newkeys) {
           spop.p.load.l.use_cheats ? spop.p.load.l.cheats_size : 0,
           loadrom_progress);
       }
-      load_sdram_end = 0;
+      load_sdram_reset();
       unsigned err = do_load();
       if (err && !use_slowld) {
         // Fast loading is not reliable with some carts/SD cards, retry slowly.
@@ -3969,11 +3984,12 @@ static void keypress_browse_search(unsigned newkeys) {
 }
 
 static void keypress_menu_browse(unsigned newkeys) {
-  if (!browser_loaded) {
-    // It couldn't be read (ie. SD errors after a failed load): try again.
-    if (newkeys)
-      browser_ensure_loaded();
-    return;
+  if (!browser_loaded && newkeys) {
+    // It couldn't be read (ie. SD errors): try again. If it still can't be,
+    // the keys work on the empty folder (B goes up).
+    browser_ensure_loaded();
+    if (browser_loaded)
+      return;
   }
   if (smenu.browser.qedit) {
     keypress_browse_search(newkeys);

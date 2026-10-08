@@ -80,6 +80,17 @@ int main() {
   buf[17] = 8;                          // 128: the whole table
   assert(unserialize_patch(buf, size, &q));
 
+  // Programs longer than their data, or ops writing a program that doesn't
+  // exist, are refused.
+  write_patch(OP_EEPROM_HD(0x1234), NULL);
+  p.prgs[1].length = sizeof(p.prgs[1].data) + 1;
+  serialize_patch(&p, buf);
+  assert(!unserialize_patch(buf, size, &q));
+  write_patch((0u << 28) | (MAX_PATCH_PRG << 25) | 0x1234, NULL);
+  assert(!unserialize_patch(buf, size, &q));
+  write_patch((0u << 28) | ((MAX_PATCH_PRG - 1) << 25) | 0x1234, NULL);
+  assert(unserialize_patch(buf, size, &q));
+
   // Unknown versions and wrong sizes are refused.
   assert(!unserialize_patch(buf, write_patch(OP_EEPROM_HD(0x1234), "SUPERFWPATCHV03"), &q));
   assert(!unserialize_patch(buf, size - 1, &q));

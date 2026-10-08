@@ -116,7 +116,7 @@
     "MSG_FWUP_ERRPG": "Error d'escriptura!",
     "MSG_FWUP_ERRVR": "La verificació ha fallat!",
     "MSG_ERR_READ": "Error carregant el ROM!",
-    "MSG_ERR_TOOBIG": "L'arxiu GBA és massa gran!",
+    "MSG_ERR_TOOBIG": "L'arxiu és massa gran!",
     "MSG_ERR_SAVERD": "Error de lectura (partida .sav)",
     "MSG_ERR_SAVEWR": "Error de guardat (partida .sav)",
     "MSG_ERR_SAVEPR": "Error preparant l'arxiu .sav",

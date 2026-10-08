@@ -116,7 +116,7 @@
     "MSG_FWUP_ERRPG": "Erreur lors du flash !",
     "MSG_FWUP_ERRVR": "Échec de la vérification !",
     "MSG_ERR_READ": "Impossible de charger la ROM !",
-    "MSG_ERR_TOOBIG": "Le fichier GBA est trop gros !",
+    "MSG_ERR_TOOBIG": "Le fichier est trop gros !",
     "MSG_ERR_SAVERD": "Échec lecture de sauvegarde",
     "MSG_ERR_SAVEWR": "Échec écriture de sauvegarde",
     "MSG_ERR_SAVEPR": "Échec prép. de la sauvegarde",

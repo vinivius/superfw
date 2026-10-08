@@ -259,6 +259,8 @@ struct struct_t_patch;
 #define ERR_LOAD_NOEMU          0x4
 #define ERR_FLASH_OP            0x5
 #define ERR_LOAD_VERIFY         0x6
+#define ERR_LOAD_EMUERR         0x7     // The emulator can't be read or unpacked
+#define ERR_LOAD_TOOBIG         0x8
 
 // Prepares the save game files, readin and writing files in some cases.
 unsigned prepare_savegame(t_sram_load_policy loadp, t_sram_save_policy savep, EnumSavetype stype, t_dirsave_info *dsinfo, const char *savefn);
@@ -280,10 +282,14 @@ unsigned launch_gba_nor(
   const t_rtc_info *rtcinfo, bool ingame_menu, unsigned cheats);
 
 unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo, progress_fn progress);
-// How far the loads (that failed) wrote into SDRAM, as an offset from
-// 0x08000000: the menu data kept below it is gone. The loaders only raise it,
-// the menu resets it.
+// What the loads (that failed) wrote into SDRAM: load_sdram_end is how far the
+// menu data below the fonts is gone (an offset from 0x08000000), and
+// load_sdram_lost tells whether what a reboot restores was overwritten (the
+// fonts and cheats, the patch databases or the bundled emulators). The
+// loaders only add to them, load_sdram_reset() clears them.
 extern uint32_t load_sdram_end;
+extern bool load_sdram_lost;
+void load_sdram_reset(void);
 bool validate_gba_header(const uint8_t *header);
 bool validate_gb_header(const uint8_t *header);
 
