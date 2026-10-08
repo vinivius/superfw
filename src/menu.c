@@ -2406,8 +2406,8 @@ static void keypress_popup_loadgba(unsigned newkeys) {
         .rtcts = spop.p.load.l.rtcval
       };
 
-      save_rom_settings(spop.p.load.i.romfn, &ld_sett, &lh_sett);
-      spop.alert_msg = msgs[lang_id][MSG_REMEMB_CFG_OK];
+      bool ok = save_rom_settings(spop.p.load.i.romfn, &ld_sett, &lh_sett);
+      spop.alert_msg = msgs[lang_id][ok ? MSG_REMEMB_CFG_OK : MSG_ERR_SETSAVE];
     }
     else if (GbaLoadPopInfo == spop.submenu) {
       // Insert the ROM into the recent list (or move it around). Flush to disk!
@@ -2722,8 +2722,8 @@ static void keypress_popup_norload(unsigned newkeys) {
 
       // We load the loading settings to ensure we do not overwrite them.
       load_rom_settings(e->game_name, &ld_sett, NULL);
-      save_rom_settings(e->game_name, &ld_sett, &lh_sett);
-      spop.alert_msg = msgs[lang_id][MSG_REMEMB_CFG_OK];
+      bool ok = save_rom_settings(e->game_name, &ld_sett, &lh_sett);
+      spop.alert_msg = msgs[lang_id][ok ? MSG_REMEMB_CFG_OK : MSG_ERR_SETSAVE];
     }
     else if (spop.selector == GBALdSetRTC) {
       void accept_rtc() {
