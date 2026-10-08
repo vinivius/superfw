@@ -53,7 +53,7 @@ static int write_patch(uint32_t save_op, const char *magic) {
 }
 
 int main() {
-  // Written as V02 and read back.
+  // Written (flagged) and read back.
   const uint32_t v1table[] = { OP_FLASH_HD(FLASH_CLRC, 0x100), OP_FLASH_HD(FLASH_CLRS, 0x200),
                                OP_FLASH_HD(FLASH_WRTS, 0x300) };
   const uint32_t v2table[] = { OP_FLASH_HD(FLASH_CLRC, 0x100), OP_FLASH_HD(FLASH_CLRS, 0x200),
@@ -73,6 +73,17 @@ int main() {
   write_patch_ops(v2table, 4, NULL);
   buf[21] = 0;
   assert(unserialize_patch(buf, size, &q));
+  {
+    // A ROM with both: the v1 table's handlers are wrong.
+    uint32_t both[7];
+    memcpy(both, v2table, sizeof(v2table));
+    memcpy(&both[4], v1table, sizeof(v1table));
+    write_patch_ops(both, 7, NULL);
+    buf[21] = 0;
+    assert(!unserialize_patch(buf, size, &q));
+    write_patch_ops(both, 7, NULL);
+    assert(unserialize_patch(buf, size, &q));
+  }
   write_patch(OP_FLASH_HD(5, 0x1234), NULL);
   buf[21] = 0;
   assert(unserialize_patch(buf, size, &q));
@@ -112,6 +123,11 @@ int main() {
     assert(unserialize_patch(buf, size, &q));
     write_patch_ops(copy, 1, NULL);       // Its data word missing
     assert(!unserialize_patch(buf, size, &q));
+    // Ops groups are applied on their own: the data must be in the op's group.
+    write_patch_ops(&copy[1], 1, NULL);
+    p.op[1] = copy[0];                    // The last WAITCNT op, its data a save op
+    serialize_patch(&p, buf);
+    assert(!unserialize_patch(buf, size, &q));
   }
 
   // A hole (where payloads go) past the 32 MiB of ROM is refused.
@@ -126,6 +142,8 @@ int main() {
 
   // Unknown versions and wrong sizes are refused.
   assert(!unserialize_patch(buf, write_patch(OP_EEPROM_HD(0x1234), "SUPERFWPATCHV02"), &q));
+  write_patch(OP_EEPROM_HD(0x1234), NULL);
+  assert(unserialize_patch(buf, size, &q));
   assert(!unserialize_patch(buf, size - 1, &q));
 
   puts("Patch file tests OK");

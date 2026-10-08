@@ -30,6 +30,7 @@
 #include "fonts/font_render.h"
 #include "supercard_driver.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
 #include "directsave.h"
 #include "common.h"
 #include "util.h"
@@ -282,6 +283,14 @@ static unsigned pad_to_word(void *buf, unsigned len) {
   return padded;
 }
 
+// The cart's registers are in the ROM space: the SD card's from 16 MiB, the
+// mode one in the last half word. While SDRAM is writable, the writes to them
+// reach it too: ROM loads use the SD card with SDRAM read-only, and the ROM's
+// last word is checked as copied (mode changes overwrite its upper half; the
+// game sees the last mode set).
+#define ROM_MODEREG_WORD    (MAX_GBA_ROM_SIZE - 4)
+static uint32_t rom_modereg_word;       // The ROM's data there
+
 // Copies a loaded chunk to SDRAM at offset (from GBA_ROM_ADDR) as whole words
 // (src is padded with zeros up to a word boundary) and reads it back,
 // rewriting it as needed. ck is the running checksum of the data loaded so
@@ -320,6 +329,8 @@ static int copy_chunk_verified(uint32_t offset, uint32_t *src, unsigned bytes, u
   }
   set_supercard_mode(MAPPED_SDRAM, true, true);
 
+  if (offset + bytes > ROM_MODEREG_WORD)
+    rom_modereg_word = src[(ROM_MODEREG_WORD - offset) / 4];
   ck[0] = ck_src[0];
   ck[1] = ck_src[1];
   chunk_rewritten(offset, ret);
@@ -328,13 +339,16 @@ static int copy_chunk_verified(uint32_t offset, uint32_t *src, unsigned bytes, u
 
 // Checksums ROM data already loaded in SDRAM (used to verify the load).
 static void checksum_loaded_rom(uint32_t start, uint32_t end, uint32_t *st) {
-  if (end <= start)
-    return;
-  // The SD interface overlaps the upper ROM area, unmap it while reading.
   // Whole words: the end of the file is padded with zeros in SDRAM.
-  set_supercard_mode(MAPPED_SDRAM, true, false);
-  checksum_words((const void*)(GBA_ROM_ADDR + start), (end - start + 3) / 4, st);
-  set_supercard_mode(MAPPED_SDRAM, true, true);
+  const uint32_t vend = MIN(ROUND_UP2(end, 4), ROM_MODEREG_WORD);
+  if (vend > start) {
+    // The SD interface overlaps the upper ROM area, unmap it while reading.
+    set_supercard_mode(MAPPED_SDRAM, true, false);
+    checksum_words((const void*)(GBA_ROM_ADDR + start), (vend - start) / 4, st);
+    set_supercard_mode(MAPPED_SDRAM, true, true);
+  }
+  if (end > ROM_MODEREG_WORD && start <= ROM_MODEREG_WORD)
+    checksum_words(&rom_modereg_word, 1, st);     // As copied (see above)
 }
 
 // Loads the file region [start, end) to the same offsets in SDRAM, adding it
@@ -344,9 +358,10 @@ static unsigned load_rom_region(FIL *fd, uint32_t start, uint32_t end, uint32_t 
                                 progress_fn progress, uint32_t *steps, uint32_t nsteps) {
   if (start >= end)
     return 0;
-  if (FR_OK != f_lseek(fd, start))
-    return ERR_LOAD_BADROM;
-  for (uint32_t offset = start; offset < end; offset += LOAD_BS) {
+  // ROM data may be where the SD card's registers are (see ROM_MODEREG_WORD).
+  set_supercard_mode(MAPPED_SDRAM, false, true);
+  unsigned err = FR_OK == f_lseek(fd, start) ? 0 : ERR_LOAD_BADROM;
+  for (uint32_t offset = start; offset < end && !err; offset += LOAD_BS) {
     if (progress && (*steps & 31) == 0)
       progress(*steps, nsteps);
     (*steps)++;
@@ -355,15 +370,41 @@ static unsigned load_rom_region(FIL *fd, uint32_t start, uint32_t end, uint32_t 
     UINT rdbytes;
     uint32_t tmp[LOAD_BS/4];
     if (FR_OK != f_read(fd, tmp, toread, &rdbytes) || rdbytes != toread)
-      return ERR_LOAD_BADROM;
-    if (dry)
+      err = ERR_LOAD_BADROM;
+    else if (dry)
       checksum_words(tmp, pad_to_word(tmp, toread) / 4, ck);
-    else if (copy_chunk_verified(offset, tmp, toread, ck) < 0) {
-      WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", offset);
-      return ERR_LOAD_VERIFY;
+    else {
+      if (copy_chunk_verified(offset, tmp, toread, ck) < 0) {
+        WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", offset);
+        err = ERR_LOAD_VERIFY;
+      }
+      set_supercard_mode(MAPPED_SDRAM, false, true);
     }
   }
-  return 0;
+  set_supercard_mode(MAPPED_SDRAM, true, true);
+  return err;
+}
+
+// The DirectSave payload (if ds) and the in-game menu (if igm) go after the
+// ROM (and 1 KiB kept for patches, but games that reach 32MiB cannot generate
+// patches beyond the end), or else in the patch's hole. False if they don't
+// fit.
+bool gba_payload_space(uint32_t fs, const t_patch *ptch, bool ds, bool igm, unsigned cheats, t_payload_space *ps) {
+  const unsigned ds_size = ds ? DIRSAVE_REQ_SPACE : 0;
+  ps->igm_size = igm ? ROUND_UP2(ingame_menu_payload.menu_rsize + font_block_size() + cheats, 1024) : 0;
+  const unsigned req = ds_size + ps->igm_size;
+  uint32_t start = MIN(ROUND_UP2(fs, 1024) + 1024, MAX_GBA_ROM_SIZE), end = MAX_GBA_ROM_SIZE;
+  if (start + req > end) {
+    // Holes are KiB aligned, and must be in the ROM.
+    if (!ptch || ptch->hole_size < req || ptch->hole_addr + ptch->hole_size > fs)
+      return false;
+    start = ptch->hole_addr;
+    end = start + ptch->hole_size;
+  }
+  ps->ds_addr = start;
+  ps->igm_addr = start + ds_size;
+  ps->end = end;
+  return true;
 }
 
 unsigned load_gba_rom(
@@ -382,47 +423,24 @@ unsigned load_gba_rom(
 
   chunk_stats_reset();
 
-  // Determine how much ROM space we need for the IGM (with its fonts and
-  // cheats) and DirSav payloads
-  const unsigned igm_reqsz = ROUND_UP2(ingame_menu_payload.menu_rsize + font_block_size() + cheats, 1024);
+  // Where the IGM (with its fonts and cheats) and DirSav payloads go. The
+  // menu checks they fit.
   WRITE_LOG("Load sizes: rom %lu, igm %u, fonts %u", fs, ingame_menu_payload.menu_rsize, font_block_size());
-  // Round it up, reserve ~1KB after the ROM for patches.
-  // 32MiB games cannot generate patches beyond the end.
-  const unsigned romrsize = ROUND_UP2(fs, 1024) + (fs < MAX_GBA_ROM_SIZE ? 1024 : 0);
-  // Required size for these payloads. We should always have enough, since menu checks it.
-  const unsigned req_size = (ingame_menu ? igm_reqsz : 0) + (dsinfo ? DIRSAVE_REQ_SPACE : 0);
-
-  uint32_t igm_addr, igm_space, ds_addr;
-  if (romrsize + req_size <= MAX_GBA_ROM_SIZE) {
-    // Allocate the DirSav payload first
-    ds_addr = romrsize;
-    // Now the IGM
-    igm_addr = ds_addr + (dsinfo ? DIRSAVE_REQ_SPACE : 0);
-    // Calculate the total space for the IGM to use
-    igm_space = MAX_GBA_ROM_SIZE - igm_addr;
-  }
-  else {
-    // Cannot append it at the end, it's too big. Check if we have a hole.
-    if (!ptch || ptch->hole_size < req_size)
-      return ERR_NO_PAYLOAD_SPACE;
-
-    ds_addr = ptch->hole_addr;
-    igm_addr = ds_addr + (dsinfo ? DIRSAVE_REQ_SPACE : 0);
-    igm_space = ptch->hole_size - (dsinfo ? DIRSAVE_REQ_SPACE : 0);
-  }
-  // Round it down to a KB boundary
-  igm_space &= ~1023;
+  t_payload_space ps;
+  if (!gba_payload_space(fs, ptch, dsinfo, ingame_menu, cheats, &ps))
+    return ERR_NO_PAYLOAD_SPACE;
+  uint32_t ds_addr = ps.ds_addr, igm_addr = ps.igm_addr;
+  const uint32_t igm_space = ps.end - igm_addr;
 
   // Calculate the "hole" limits
-  uint32_t gap_start = ds_addr;
-  uint32_t gap_end = igm_addr + igm_space;
+  const uint32_t gap_start = ps.ds_addr, gap_end = ps.end;
 
   // keep_igm: a retry of a load that overwrote the fonts and cheats the
   // in-game menu is made from keeps the menu that load installed (the ROM
   // load skips its space).
   const bool install_igm = ingame_menu && !keep_igm;
   if (ingame_menu)
-    load_writes(igm_addr, igm_addr + igm_reqsz);
+    load_writes(igm_addr, igm_addr + ps.igm_size);
 
   // Get aboslute addresses
   ds_addr += GBA_ROM_BASE;
@@ -550,7 +568,8 @@ unsigned flash_gba_nor(
     return ERR_FLASH_OP;
 
   // Determine if the DirSav payload must be flashed in a ROM gap or not.
-  const bool flashmap0 = fs <= MAX_GBA_ROM_SIZE - NOR_BLOCK_SIZE;
+  // (Both need patches: the menu only enables them with some.)
+  const bool flashmap0 = fs <= MAX_GBA_ROM_SIZE - NOR_BLOCK_SIZE || !ptch;
   uint32_t ds_flashoffset  = flashmap0 ? 0 : ptch->hole_addr;
   uint32_t igm_flashoffset = flashmap0 ? 0 : ptch->hole_addr + DIRSAVE_REQ_SPACE;
 
@@ -595,7 +614,8 @@ unsigned flash_gba_nor(
     }
 
     // Patch ROM, don't need WAITCNT patches
-    patch_apply_rom(scratch, ssize, bigoff, false, ptch, rtc_patches, ingame_menu ? igmaddr : 0, dirsaving ? dsaddr : 0);
+    if (ptch)
+      patch_apply_rom(scratch, ssize, bigoff, false, ptch, rtc_patches, ingame_menu ? igmaddr : 0, dirsaving ? dsaddr : 0);
 
     // Copy (partial) DirSav / IGM trampoline payloads if necessary
     if (dirsaving && ds_flashoffset)
@@ -741,7 +761,7 @@ static unsigned stream_file(t_sdram_stream *s, const char *fn, unsigned openerr,
   FIL fd;
   FRESULT res = f_open(&fd, fn, FA_READ);
   if (res != FR_OK)
-    return (res == FR_NO_FILE || res == FR_NO_PATH) ? openerr : readerr;
+    return fr_missing(res) ? openerr : readerr;
 
   unsigned err = 0;
   for (uint32_t offset = 0; !err; offset += LOAD_BS) {

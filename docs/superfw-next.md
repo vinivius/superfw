@@ -86,6 +86,19 @@ SuperFW and SuperFW Next can install each other.
   of overflowing their buffers. File manager paths are checked too.
 - Cheat files next to the ROM (NAME.cht) are loaded; they were found but
   never loaded.
+- DirectSave, the in-game menu and its cheats are offered only when they fit
+  together after the ROM (or in its free space), DirectSave first, instead
+  of the load failing. ROMs just under 32 MiB load without patches too.
+- ROMs over 24 MiB load: the SD card's registers are in the ROM space, and
+  its commands reached the ROM's data in the cart's RAM while it loaded
+  (the ROM check then failed the load).
+- Patches are applied correctly when writing a game to NOR flash, where a
+  patched function can span two of the parts the image is processed in.
+  Patch database entries and patch files that can't be applied are refused,
+  and a game's database patches no longer keep the free space found for the
+  game opened before (where the in-game menu would go over game data).
+- A card error while checking for a save no longer starts the game with a
+  blank save that then replaces it. Hand-edited configs are read whole.
 - Patch files the patch engine made from a v1 flash table before the fix
   for those (upstream f170dfb) are made again. The file format stays the
   same, so SuperFW and SuperFW Next keep reading each other's files.

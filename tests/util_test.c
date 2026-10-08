@@ -24,6 +24,7 @@
 #include "util.h"
 
 #include "fatfs/ff.h"
+#include "fileutil.h"
 
 unsigned mkdir_cnt = 0;
 const char *expected_mkdirs[] = {
@@ -41,8 +42,46 @@ FRESULT f_stat (const TCHAR* path, FILINFO* fno) {
   return FR_OK;
 }
 
+// f_read() serves this text (all that's asked, as FatFs does, unless at its end).
+static const char *rd_text;
+static unsigned rd_off;
+FRESULT f_read (FIL* fp, void* buff, UINT btr, UINT* br) {
+  unsigned n = strlen(&rd_text[rd_off]);
+  *br = n < btr ? n : btr;
+  memcpy(buff, &rd_text[rd_off], *br);
+  rd_off += *br;
+  return FR_OK;
+}
+
+static char rd_lines[256];
+static unsigned rd_count;
+static bool collect_line(char *line, unsigned len, void *usr) {
+  assert(strlen(line) == len);
+  strcat(rd_lines, line);
+  strcat(rd_lines, "|");
+  return ++rd_count < *(unsigned*)usr;
+}
+
+static const char *read_all(const char *text, unsigned bufsize, unsigned maxlines) {
+  char buf[64];
+  rd_text = text;
+  rd_off = rd_count = 0;
+  rd_lines[0] = 0;
+  assert(read_lines(NULL, buf, bufsize, collect_line, &maxlines));
+  return rd_lines;
+}
+
 int main() {
   char tmp[1024];
+
+  // Lines (CRLF too) without their newline, the last one with or without
+  // one; lines that don't fit the buffer (9 bytes, a newline included) are
+  // skipped whole; the callback can stop it.
+  assert(!strcmp(read_all("a=1\nbb=2\r\n\nlast", 10, 99), "a=1|bb=2||last|"));
+  assert(!strcmp(read_all("12345678\n123456789\nx\n1234567890123456789012\ny", 10, 99), "12345678|x|y|"));
+  assert(!strcmp(read_all("toolongforit", 10, 99), ""));
+  assert(!strcmp(read_all("a\nb\nc\n", 10, 2), "a|b|"));
+  assert(!strcmp(read_all("", 10, 99), ""));
 
   assert(0 == parseuint("0"));
   assert(1 == parseuint("1"));

@@ -21,6 +21,7 @@
 
 #include "settings.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
 #include "common.h"
 #include "nanoprintf.h"
 #include "util.h"
@@ -345,29 +346,31 @@ static bool rom_config_open(FIL *fd, const char *romfn, BYTE mode) {
   return FR_OK == f_open(fd, cfgfn, mode);
 }
 
+typedef struct {
+  t_rom_load_settings *rld;
+  t_rom_launch_settings *rlh;
+} t_rom_settings;
+
+static bool parse_rom_settings_line(char *line, unsigned len, void *usr) {
+  const t_rom_settings *rs = (t_rom_settings*)usr;
+  if (rs->rld)
+    parse_file(line, parse_rom_load_settings, rs->rld);
+  if (rs->rlh)
+    parse_file(line, parse_rom_launch_settings, rs->rlh);
+  return true;
+}
+
 bool load_rom_settings(const char *fn, t_rom_load_settings *rld, t_rom_launch_settings *rlh) {
   // Attempt to open and read the file.
   FIL fd;
   if (!rom_config_open(&fd, fn, FA_READ))
     return false;
 
-  {
-    // The firmware writes configs of under 80 bytes.
-    char buf[128];
-    UINT rdbytes;
-    if (FR_OK == f_read(&fd, buf, sizeof(buf) - 1, &rdbytes)) {
-      buf[rdbytes] = 0;
-      // A longer (hand edited) file: drop the line cut short.
-      if (f_size(&fd) > rdbytes) {
-        char *nl = strrchr(buf, '\n');
-        *(nl ? &nl[1] : buf) = 0;
-      }
-      if (rld)
-        parse_file(buf, parse_rom_load_settings, rld);
-      if (rlh)
-        parse_file(buf, parse_rom_launch_settings, rlh);
-    }
-  }
+  // Line by line, however long the (hand edited) file is: lines appended by
+  // save_rom_patchmode() come last. Lines too long for a setting are skipped.
+  char buf[64];
+  t_rom_settings rs = { rld, rlh };
+  read_lines(&fd, buf, sizeof(buf), parse_rom_settings_line, &rs);
   f_close(&fd);
 
   return true;

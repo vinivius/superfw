@@ -23,6 +23,7 @@
 #include "gbahw.h"
 #include "patchengine.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
 #include "common.h"
 #include "settings.h"
 #include "util.h"
@@ -677,23 +678,18 @@ static const t_patch * get_game_patch(const t_load_gba_info *info) {
          info->patch_type == PatchEngine   && info->patches_cache_found ? &info->patches_cache : NULL;
 }
 
+// Whether the payloads fit an SDRAM load of the game (as load_gba_rom()
+// places them). DirectSave goes first (it keeps the saves safe), the in-game
+// menu gets the space it leaves, and the menu's cheats what's left then.
+static bool payloads_fit_sdram(const t_load_gba_info *info, bool ds, bool igm, unsigned cheats) {
+  t_payload_space ps;
+  return gba_payload_space(info->romfs, get_game_patch(info), ds, igm, cheats, &ps);
+}
+
 bool ingame_menu_avail_sdram(const t_load_gba_info *info) {
-  const t_patch *p = get_game_patch(info);
-  // Necessary size to load the IGM (+fonts +cheats), and the DirectSave
-  // payload that may go with it (as load_gba_rom() places them).
-  const unsigned req_size = ROUND_UP2(ingame_menu_payload.menu_rsize + font_block_size() + spop.p.load.l.cheats_size, 1024) +
-                            DIRSAVE_REQ_SPACE;
-  const unsigned romrsize = ROUND_UP2(info->romfs, 1024) + (info->romfs < MAX_GBA_ROM_SIZE ? 1024 : 0);
-
-  // If the ROM is too big, must use some hole to load the menu.
-  if (romrsize + req_size > MAX_GBA_ROM_SIZE) {
-    // Discard holes that are too small, or not well formed.
-    if (!p || p->hole_size < req_size || p->hole_addr + p->hole_size > info->romfs)
-      return false;   // Too big to fit the menu!
-  }
-
   // Check if the patches exist and have proper IRQ support.
-  return p && p->irqh_ops > 0;
+  const t_patch *p = get_game_patch(info);
+  return p && p->irqh_ops > 0 && payloads_fit_sdram(info, info->use_dsaving, true, 0);
 }
 
 bool ingame_menu_avail_flash(const t_load_gba_info *info) {
@@ -713,14 +709,7 @@ bool ingame_menu_avail_flash(const t_load_gba_info *info) {
 // Calculates whether DirectSaving can be used given some information.
 bool dirsav_avail_sdram(const t_load_gba_info *info) {
   const t_patch *p = get_game_patch(info);
-
-  // Check if there's enough space for it! (Placing it at the end).
-  if (info->romfs > MAX_GBA_ROM_SIZE - DIRSAVE_REQ_SPACE) {
-    if (!p || p->hole_size < DIRSAVE_REQ_SPACE || p->hole_addr + p->hole_size > info->romfs)
-      return false;   // Too big to fit!
-  }
-
-  return (p && supports_directsave(p->save_mode));
+  return p && supports_directsave(p->save_mode) && payloads_fit_sdram(info, true, false, 0);
 }
 
 bool dirsav_avail_flash(const t_load_gba_info *info) {
@@ -802,13 +791,11 @@ static bool prepare_gba_info(
       info->patch_type = PatchNone;
   }
 
-  // Fill defaults as requested if possible.
-  bool allowds = load_sdram ? dirsav_avail_sdram(info) : dirsav_avail_flash(info);
-  bool allowigm = load_sdram ? ingame_menu_avail_sdram(info) : ingame_menu_avail_flash(info);
-
+  // Fill defaults as requested if possible (DirectSave first: the in-game
+  // menu gets the space it leaves).
   info->rtc_patch_enabled = st->use_rtc && rtcemu_avail(info);
-  info->use_dsaving = st->use_dsaving && allowds;
-  info->ingame_menu_enabled = st->use_igm && allowigm;
+  info->use_dsaving = st->use_dsaving && (load_sdram ? dirsav_avail_sdram(info) : dirsav_avail_flash(info));
+  info->ingame_menu_enabled = st->use_igm && (load_sdram ? ingame_menu_avail_sdram(info) : ingame_menu_avail_flash(info));
 
   return true;
 }
@@ -842,8 +829,10 @@ static void prepare_gba_cheats(const char *gcode, uint8_t ver, t_load_gba_lcfg *
 }
 
 static void prepare_gba_settings(t_load_gba_lcfg *data, bool uses_dsaving, uint32_t rtcts, bool game_no_save) {
-  // Calculate the .sav file name, and check its existance.
-  data->savefile_found = check_file_exists(data->savefn);
+  // Calculate the .sav file name, and check its existance. A card error
+  // counts as found: loading it then fails with an error, instead of the game
+  // starting with a blank save that replaces it.
+  data->savefile_found = !fr_missing(f_stat(data->savefn, NULL));
   if (data->savefile_found)
     WRITE_LOG("Savefile found at '%s'", data->savefn);
   else
@@ -1035,8 +1024,10 @@ static void browser_save_position();
 static void browser_ensure_loaded();
 
 static bool recent_unread;       // recent.txt couldn't be read: don't write it over
+static uint8_t art_list_gen;     // Counts browser and Recent list changes (art prefetch)
 
 static void recent_reload() {
+  art_list_gen++;
   smenu.recent.selector = 0;
   smenu.recent.seloff = 0;
   smenu.anim_state = 0;
@@ -1056,6 +1047,7 @@ static bool insert_recent_flush(const char *fn, unsigned flags) {
   // Insert element: it becomes the first one, the cursor goes with it.
   smenu.recent.maxentries = insert_recent_fn(sdr_state->rentries, smenu.recent.maxentries, fn, flags);
   smenu.recent.selector = smenu.recent.seloff = 0;
+  art_list_gen++;
   return recent_flush(sdr_state->rentries, smenu.recent.maxentries);
 }
 
@@ -1086,7 +1078,8 @@ static void menu_load_failed(unsigned err);
 void start_emu_game(const t_emu_loader *ldinfo, const char *fn, uint32_t fs) {
   // Load: Sav/Reset Save: Reboot/Disable
   sram_filename_calc(fn, spop.p.load.l.savefn, save_path_default);
-  t_sram_load_policy lp = check_file_exists(spop.p.load.l.savefn) ? SaveLoadSav : SaveLoadReset;
+  // (A card error is not a missing save, see prepare_gba_settings().)
+  t_sram_load_policy lp = fr_missing(f_stat(spop.p.load.l.savefn, NULL)) ? SaveLoadReset : SaveLoadSav;
   unsigned errsave = prepare_sram_based_savegame(lp, SaveReboot, spop.p.load.l.savefn);
   if (errsave) {
     unsigned errmsg = (errsave == ERR_SAVE_BADSAVE)   ? MSG_ERR_SAVERD :
@@ -1248,8 +1241,6 @@ static bool search_match(const char *fname, const char *q) {
   }
   return false;
 }
-
-static uint8_t art_list_gen;    // Counts browser list changes (art prefetch)
 
 // Fills the visible list (fileorder) with the sorted entries matching the search.
 static void browser_apply_search() {
@@ -2037,8 +2028,7 @@ static bool load_error_file(uint8_t *err, BYTE mode) {
   if (FR_OK != f_open(&fd, LOAD_ERROR_FILEPATH, mode | (mode & FA_WRITE ? FA_CREATE_ALWAYS : 0)))
     return false;
   FRESULT res = (mode & FA_WRITE) ? f_write(&fd, err, 1, &n) : f_read(&fd, err, 1, &n);
-  f_close(&fd);
-  return FR_OK == res && n == 1;
+  return FR_OK == f_close(&fd) && FR_OK == res && n == 1;
 }
 
 // A ROM load failed with err, after overwriting SDRAM (load_sdram_end and
@@ -3095,7 +3085,8 @@ bool menu_tick() {
   // smooth): prefetch the art of the entries around the cursor, one per frame,
   // mostly ahead in the direction it moves: 4 ahead and 2 behind, which with
   // the current entry and the one shown fill the cache without evicting each
-  // other. A new list (another tab or folder, a search) starts going down.
+  // other. A new list (another tab or folder, a search, a Recent list change)
+  // starts going down.
   int sel = art_selector();
   unsigned list = smenu.menu_tab | (art_list_gen << 4);
   if (list != art_last_list) {
@@ -3419,8 +3410,10 @@ static void keypress_popup_loadgba(unsigned newkeys) {
   if (!rtcemu_avail(&spop.p.load.i))
     spop.p.load.i.rtc_patch_enabled = false;
 
-  // Disable cheat loading if no cheats are avail, or IGM is disabled
-  if (!spop.p.load.l.cheats_found || !spop.p.load.i.ingame_menu_enabled)
+  // Disable cheat loading if no cheats are avail, or IGM is disabled (or
+  // has no room for them).
+  if (!spop.p.load.l.cheats_found || !spop.p.load.i.ingame_menu_enabled ||
+      !payloads_fit_sdram(&spop.p.load.i, spop.p.load.i.use_dsaving, true, spop.p.load.l.cheats_size))
     spop.p.load.l.use_cheats = false;
 
   if (newkeys & KEY_BUTTA) {

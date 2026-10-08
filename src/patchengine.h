@@ -81,6 +81,7 @@ bool write_patches_cache(const char *romfn, const t_patch *patches);
 
 int serialize_patch(const t_patch *patch, uint8_t *buffer);
 bool unserialize_patch(const uint8_t *buffer, unsigned size, t_patch *patch);
+bool patch_check(const t_patch *patch, int *v1tables);
 
 
 #endif

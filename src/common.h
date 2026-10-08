@@ -268,6 +268,14 @@ unsigned prepare_savegame(t_sram_load_policy loadp, t_sram_save_policy savep, En
 unsigned prepare_sram_based_savegame(t_sram_load_policy loadp, t_sram_save_policy savep, const char *savefn);
 // Loads ROM header
 unsigned preload_gba_rom(const char *fn, uint32_t fs, t_rom_header *romh);
+// Where load_gba_rom() places the DirectSave payload and the in-game menu
+// (ROM offsets): the ROM isn't loaded in [ds_addr, end).
+typedef struct {
+  uint32_t ds_addr, igm_addr, end;
+  uint32_t igm_size;              // The menu, with its fonts and cheats
+} t_payload_space;
+bool gba_payload_space(uint32_t fs, const struct struct_t_patch *ptch, bool ds, bool igm, unsigned cheats,
+                       t_payload_space *ps);
 // Loads a ROM file and launches it.
 unsigned load_gba_rom(const char *fn, uint32_t fs, const char *savefn,
                       const struct struct_t_patch *ptch,

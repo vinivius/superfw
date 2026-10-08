@@ -25,6 +25,7 @@
 #include "gbahw.h"
 #include "util.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
 
 #pragma GCC optimize ("Os")
 
@@ -117,67 +118,41 @@ NOINLINE unsigned delete_recent(t_rentry *rentries, unsigned rcount, unsigned en
   return rcount - 1;
 }
 
+typedef struct {
+  t_rentry *rentries;
+  unsigned cnt;
+} t_recent_read;
+
+// A line of the list: a path (or "nor:" and a path).
+static bool recent_line(char *line, unsigned len, void *usr) {
+  t_recent_read *rd = (t_recent_read*)usr;
+  bool nor = len >= 4 && !memcmp(line, "nor:", 4);
+  const char *path = nor ? &line[4] : line;
+  unsigned plen = nor ? len - 4 : len;
+  // Skip empty lines, and paths that don't fit an entry.
+  if (plen && plen < MAX_FN_LEN) {
+    t_rentry *e = &rd->rentries[rd->cnt++];
+    e->flags = nor ? FLAG_RECENT_NOR : 0;
+    dma_memcpy16(e->fpath, path, (plen + 2) / 2);
+    e->fname_offset = file_basename(e->fpath) - e->fpath;
+  }
+  return rd->cnt < RECENT_MAXFN_CNT;
+}
+
 NOINLINE int recent_load(const char *fpath, t_rentry *rentries) {
   FIL fi;
   FRESULT res = f_open(&fi, fpath, FA_READ);
   if (res != FR_OK)
-    return (res == FR_NO_FILE || res == FR_NO_PATH) ? 0 : -1;
+    return fr_missing(res) ? 0 : -1;
 
-  // Read data block by block. Each line is a path (or "nor:" and a path),
-  // lines that can't be one (too long) are skipped.
-  char tmp[1024 + 4];
-  unsigned bcount = 0, nentries = 0;
-  bool eof = false, skipping = false;
-  while (nentries < RECENT_MAXFN_CNT) {
-    if (bcount <= 512 && !eof) {
-      UINT rdbytes;
-      if (FR_OK != f_read(&fi, &tmp[bcount], 512, &rdbytes)) {
-        f_close(&fi);
-        return -1;
-      }
-      eof = rdbytes < 512;
-      bcount += rdbytes;
-    }
-
-    if (!bcount)
-      break;
-
-    // Find the end of the line. Without a newline in the buffer, it is
-    // either the last line of the file or a line too long to be a path,
-    // which is skipped up to its newline (that can come in later blocks).
-    char *nl = memchr(tmp, '\n', bcount);
-    unsigned len = nl ? (unsigned)(nl - tmp) : bcount;
-    unsigned cnt = nl ? len + 1 : bcount;      // Bytes consumed
-
-    if (!nl && !eof)
-      skipping = true;
-    else if (skipping)
-      skipping = false;                        // End of a skipped line
-    else {
-      tmp[len] = 0;
-      if (len && tmp[len - 1] == '\r')
-        tmp[--len] = 0;                        // Edited on Windows
-      bool nor = len >= 4 && !memcmp(tmp, "nor:", 4);
-      const char *path = nor ? &tmp[4] : tmp;
-      unsigned plen = nor ? len - 4 : len;
-      // Skip empty lines, and paths that don't fit an entry.
-      if (plen && plen < MAX_FN_LEN) {
-        rentries[nentries].flags = nor ? FLAG_RECENT_NOR : 0;
-        dma_memcpy16(rentries[nentries].fpath, path, (plen + 2) / 2);
-        rentries[nentries].fname_offset = file_basename(rentries[nentries].fpath) - rentries[nentries].fpath;
-        nentries++;
-      }
-    }
-
-    // Consume the bytes
-    memmove(&tmp[0], &tmp[cnt], bcount - cnt);
-    bcount -= cnt;
-  }
-
-  WRITE_LOG("Loaded recently played games. %d entries found", nentries);
-
+  // Lines too long to be a path ("nor:", its path and "\r\n") are skipped.
+  uint32_t buf[(MAX_FN_LEN + 8) / 4];      // Aligned for dma_memcpy16()
+  t_recent_read rd = { rentries, 0 };
+  bool ok = read_lines(&fi, (char*)buf, sizeof(buf), recent_line, &rd);
   f_close(&fi);
-  return nentries;
+
+  WRITE_LOG("Loaded recently played games. %d entries found", rd.cnt);
+  return ok ? (int)rd.cnt : -1;
 }
 
 

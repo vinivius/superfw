@@ -26,6 +26,7 @@
 #include "settings.h"
 #include "supercard_driver.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
 #include "common.h"
 #include "save.h"
 #include "nanoprintf.h"
@@ -245,7 +246,7 @@ bool write_save_sram_rotate(const char *templ_fn, unsigned max_backups) {
 unsigned flush_pending_sram() {
   FIL fd;
   FRESULT res = f_open(&fd, PENDING_SAVE_FILEPATH, FA_READ);
-  if (res == FR_NO_FILE || res == FR_NO_PATH)
+  if (fr_missing(res))
     return ERR_SAVE_FLUSH_NOSENTINEL;
   if (res != FR_OK)
     return ERR_SAVE_FLUSH_READFAIL;      // ie. an SD card error, retry later
@@ -310,30 +311,27 @@ unsigned flush_pending_sram() {
 // options (ie. backup_count=N)
 bool program_sram_dump(const char *save_filename, unsigned backup_cnt) {
   if (!save_filename) {
-    if (check_file_exists(PENDING_SAVE_FILEPATH)) {
-      if (FR_OK != f_unlink(PENDING_SAVE_FILEPATH))
-        return false;
-    }
-  } else {
-    // Create the directory (just in case it doesn't exist
-    f_mkdir(SUPERFW_DIR);
-    // Make it hidden
-    f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
-
-    // Write filename along with backup count.
-    char content[512];
-    npf_snprintf(content, sizeof(content), "%s\nbackup_count=%u", save_filename, backup_cnt);
-
-    FIL fd;
-    if (FR_OK != f_open(&fd, PENDING_SAVE_FILEPATH, FA_WRITE | FA_CREATE_ALWAYS))
-      return false;
-    UINT wrbytes;
-    FRESULT res = f_write(&fd, content, strlen(content), &wrbytes);
-    f_close(&fd);
-
-    return FR_OK == res && wrbytes == strlen(content);
+    // Nothing pending is fine, an SD card error isn't.
+    FRESULT res = f_unlink(PENDING_SAVE_FILEPATH);
+    return FR_OK == res || fr_missing(res);
   }
-  return true;
+
+  // Create the directory (just in case it doesn't exist
+  f_mkdir(SUPERFW_DIR);
+  // Make it hidden
+  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
+
+  // Write filename along with backup count.
+  char content[512];
+  npf_snprintf(content, sizeof(content), "%s\nbackup_count=%u", save_filename, backup_cnt);
+
+  FIL fd;
+  if (FR_OK != f_open(&fd, PENDING_SAVE_FILEPATH, FA_WRITE | FA_CREATE_ALWAYS))
+    return false;
+  UINT wrbytes;
+  FRESULT res = f_write(&fd, content, strlen(content), &wrbytes);
+  // The data reaches the card when it's closed.
+  return FR_OK == f_close(&fd) && FR_OK == res && wrbytes == strlen(content);
 }
 
 // Erases the SRAM (using ones since it seems to be the most common mem type)
@@ -440,7 +438,7 @@ NOINLINE
 // or the sentinel, and fail (keeping both) if it still can't be written.
 static bool flush_failed_pending_save() {
   FRESULT res = f_stat(PENDING_SAVE_FILEPATH, NULL);
-  if (res == FR_NO_FILE || res == FR_NO_PATH)
+  if (fr_missing(res))
     return true;                          // Nothing pending
   if (res != FR_OK)
     return false;                         // Can't tell (ie. SD error), don't risk it

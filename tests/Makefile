@@ -26,8 +26,12 @@ all:
 		-ffunction-sections -fdata-sections -Wl,--gc-sections
 	./patchcache_test.bin
 	lcov -c -d . -o patchcache_test.info
+	$(CC) $(CFLAGS) $(MEMCHK_FLAGS) -o patcher_test.bin patcher_test.c ../src/patcher.c ../src/patchengine.c ../src/util.c -I../ \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections
+	./patcher_test.bin
+	lcov -c -d . -o patcher_test.info
 
-	lcov -a cimpl_test.info -a util_test.info -a utf_util_test.info -a crc_test.info -a sha256_test.info -a cheats_test.info -a patchcache_test.info -o total.info
+	lcov -a cimpl_test.info -a util_test.info -a utf_util_test.info -a crc_test.info -a sha256_test.info -a cheats_test.info -a patchcache_test.info -a patcher_test.info -o total.info
 	rm -rf coverage/
 	genhtml -o coverage/ total.info
 

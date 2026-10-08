@@ -21,14 +21,49 @@
 #include <string.h>
 
 #include "fatfs/ff.h"
+#include "fileutil.h"
 #include "config.h"
 
 #pragma GCC optimize ("Os")
 
 bool check_file_exists(const char *fn) {
-  FILINFO info;
-  FRESULT res = f_stat(fn, &info);
-  return res == FR_OK;
+  return FR_OK == f_stat(fn, NULL);
+}
+
+bool read_lines(FIL *fd, char *buf, unsigned bufsize, line_fn cb, void *usr) {
+  unsigned cnt = 0;           // Bytes in buf
+  bool skipping = false;      // In a line too long for buf
+  while (true) {
+    // Fill the buffer: a short read is the end of the file.
+    UINT rdbytes;
+    if (FR_OK != f_read(fd, &buf[cnt], bufsize - 1 - cnt, &rdbytes))
+      return false;
+    cnt += rdbytes;
+    if (!cnt)
+      return true;
+
+    char *nl = memchr(buf, '\n', cnt);
+    unsigned len = nl ? (unsigned)(nl - buf) : cnt;
+    if (!nl && cnt == bufsize - 1) {
+      skipping = true;        // Too long, skipped up to its newline
+      cnt = 0;
+      continue;
+    }
+    if (skipping)
+      skipping = false;       // Its end
+    else {
+      buf[len] = 0;
+      if (len && buf[len - 1] == '\r')
+        buf[--len] = 0;       // Edited on Windows
+      if (!cb(buf, len, usr))
+        return true;
+    }
+
+    // Consume the line
+    unsigned used = nl ? (unsigned)(nl - buf) + 1 : cnt;
+    memmove(buf, &buf[used], cnt - used);
+    cnt -= used;
+  }
 }
 
 // Creates the path for a given file name.

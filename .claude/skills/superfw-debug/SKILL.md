@@ -28,7 +28,7 @@ and commit it as its own commit. Push only when the user asks.
 
 - Always `make clean` when changing build flags.
 - The SD board firmware must fit 512 KiB (enforced at link time). UART builds
-  are within ~200 bytes of the limit (v0.2), keep debug features small.
+  are within ~600 bytes of the limit (v0.2), keep debug features small.
   `superfw.gba` is padded to the next 512 byte block (`tools/fw-fixer.py`),
   so `stat` doesn't show the free space;
   measure where the content ends with `tools/debug/flash-free.sh superfw.gba`
@@ -249,7 +249,7 @@ expose the UART as a pty and to keep SD image writes.
   write it with a space). Check sizes after every change: the UART build had
   dropped to a few dozen bytes free; sha256.c (always) and nanoprintf.c
   (UART builds only, `#ifdef ENABLE_UART_LOGGING`) went -Os to get ~1.1 KiB
-  back. In v0.2 the release has ~650 bytes free and the UART build ~200;
+  back. In v0.2 the release has ~900 bytes free and the UART build ~600;
   code compresses poorly (a byte of code costs about a byte of flash).
   nanoprintf.c and utf_util.c are built for size in UART builds only. To
   fit, the UART build also lost the diagnostic that listed where SDRAM
@@ -285,6 +285,15 @@ expose the UART as a pty and to keep SD image writes.
   the whole ROM (`loader.c`, "Verify ROM loading" setting).
 - Fast ROM loading through the 0x0A000000 mirror is unreliable on some
   carts: there is an automatic fallback to slow loading.
+- The cart's registers are in the ROM space: the SD card's at offsets 16 MiB
+  (write data), 17 MiB (read data) and 24 MiB (commands), the mode register
+  in the last half word (0x09FFFFFE). In the emulator every write made while
+  SDRAM is writable reaches SDRAM, these too: SD commands overwrite ROM data
+  at 24 MiB, mode changes the last half word. ROM loads use the SD card with
+  SDRAM read-only (`load_rom_region()`) and check the last word as copied
+  (v0.2 failed every ROM over 24 MiB). The in-game menu and DirectSave still
+  use it with SDRAM writable (that bit also selects the SRAM bank): check on
+  hardware before changing them.
 - ROMs modified by the old SCFW firmware can be misdetected by the patch
   engine; the patch database handles them.
 - Box art lives in `/.superfw/art/XX/<ROM file name>.img`, XX = FNV-1a of the
