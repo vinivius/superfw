@@ -93,8 +93,9 @@ SuperFW and SuperFW Next can install each other.
   its commands reached the ROM's data (or the in-game menu's) in the cart's
   RAM while it loaded; the ROM check then failed the load. The data there
   is put back after the load's last SD card access.
-- The in-game menu, the patches and the DirectSave payload are checked
-  after they're written to the cart's RAM, like the ROM.
+- The in-game menu, the patches, the DirectSave payload and the cheats are
+  checked after they're written to the cart's RAM, like the ROM; so is
+  what a NOR write flashes.
 - Built with -fno-ipa-ra: the compiler (GCC 14) otherwise assumed some
   registers survive calls they don't, and miscompiled the DLDI patching of
   NDS homebrew (a header byte was written into the firmware instead).

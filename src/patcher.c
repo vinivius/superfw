@@ -70,11 +70,12 @@ bool patchmem_lookup(const uint8_t *gamecode, const uint8_t *dbptr, t_patch *pda
       dbh->dbversion != 0x00010000)        // Version check
     return false;
 
-  // A database loaded from the SD card may be corrupted: its index must be in
-  // its space (the entries' contents are checked).
-  if (dbh->idxcnt > (ROM_OFF_ASSETS_BASE - ROM_OFF_PATCH_DB - 1024) / 512 ||
-      dbh->patchcnt > dbh->idxcnt * (512 / sizeof(t_db_idx)))
+  // A database loaded from the SD card may be corrupted: what's read must be
+  // in its space (the entries' contents are checked too).
+  const unsigned dbspace = ROM_OFF_ASSETS_BASE - ROM_OFF_PATCH_DB;
+  if (dbh->idxcnt > (dbspace - 1024) / 512 || dbh->patchcnt > dbh->idxcnt * (512 / sizeof(t_db_idx)))
     return false;
+  const unsigned maxwords = (dbspace - 1024 - 512 * dbh->idxcnt) / 4;
 
   // Skip header and program block.
   const t_db_idx *dbidx = (t_db_idx*)&dbptr[1024];
@@ -102,6 +103,8 @@ bool patchmem_lookup(const uint8_t *gamecode, const uint8_t *dbptr, t_patch *pda
   for (unsigned i = 0; i < dbh->patchcnt; i++) {
     if (!gcodecmp(dbidx[i].gcode, gamecode)) {
       uint32_t offset = dbidx[i].offset >> 8;
+      if (offset >= maxwords)
+        return false;
       const uint32_t *p = &entries[offset];
       const uint32_t pheader = *p++;
 
@@ -113,7 +116,7 @@ bool patchmem_lookup(const uint8_t *gamecode, const uint8_t *dbptr, t_patch *pda
       pdata->save_mode = (pheader >> 13) & 0x7;    // 3 bits
 
       const unsigned numops = pdata->wcnt_ops + pdata->save_ops + pdata->irqh_ops + pdata->rtc_ops;
-      if (numops > MAX_PATCH_OPS)
+      if (numops > MAX_PATCH_OPS || offset + numops + 2 > maxwords)
         return false;         // A corrupted database (ie. loaded from the SD card)
 
       pdata->hole_addr = pdata->hole_size = 0;

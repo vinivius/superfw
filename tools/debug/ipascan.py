@@ -2,7 +2,11 @@
 # ipascan.py DISASM: finds call sites that read a low register (r0-r3) right
 # after calling a function whose epilogue clobbers it (pop {rN}; bx rN). GCC's
 # -fipa-ra assumes such registers preserved across Thumb-1 interworking
-# returns (the build uses -fno-ipa-ra for this). DISASM is the output of
+# returns: the build uses -fno-ipa-ra, which is the fix. This is a smoke check
+# of the usual shape, not a proof: it follows the straight-line code after the
+# call (past conditional branches) up to the next call, jump or return, so a
+# register passed to the next call, read on a branch target or returned isn't
+# seen. DISASM is the output of
 #   arm-none-eabi-objdump -d --no-show-raw-insn firmware.ewram.elf
 import re, sys
 lines = open(sys.argv[1]).read().splitlines()
@@ -27,13 +31,16 @@ for f, ins in funcs.items():
         if not m or m.group(1) not in clob:
             continue
         for reg in clob[m.group(1)]:
-            for a2, t2 in ins[i + 1:i + 12]:
+            for a2, t2 in ins[i + 1:i + 24]:
                 parts = t2.split(None, 1)
                 if len(parts) < 2: break
                 mn, args = parts
                 regs = re.findall(r"\b(r\d+|ip|lr|sp|pc|fp|sl)\b", args)
                 if reg not in regs:
-                    if mn.startswith("b") and not mn.startswith("bic"): break
+                    # Follow the fall-through of conditional branches; stop at
+                    # calls, jumps and returns.
+                    if mn in ("b", "b.n", "b.w", "bl", "blx", "bx") or (mn == "pop" and "pc" in args):
+                        break
                     continue
                 if mn.startswith(("ldm", "stm")):
                     # The base register is read; the list is written (ldm) or read (stm).

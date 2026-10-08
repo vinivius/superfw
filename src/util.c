@@ -255,6 +255,17 @@ void memmove32(void *dst, void *src, unsigned count) {
   }
 }
 
+// Copies count bytes (whole words) to the cart's SDRAM, checked (see
+// SDRAM_WRITE_TRIES).
+bool memcpy32_checked(void *dst, const void *src, unsigned count) {
+  for (unsigned t = 0; t < SDRAM_WRITE_TRIES; t++) {
+    memcpy32(dst, src, count);
+    if (!memcmp(dst, src, count))
+      return true;
+  }
+  return false;
+}
+
 // Writes a half word to the cart's SDRAM, checked (see SDRAM_WRITE_TRIES).
 bool write16_checked(volatile uint16_t *p, uint16_t v) {
   for (unsigned t = 0; t < SDRAM_WRITE_TRIES; t++) {

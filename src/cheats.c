@@ -112,26 +112,23 @@ int parse_cheat_codes(const char *s, uint32_t *codes) {
 
 // Reads a cheat file into a temp buffer (usually in SDRAM) and returns the size in bytes
 // Returns -1 if the file is not found or the cheats cannot be loaded.
-int open_read_cheats(uint8_t *buffer, unsigned buffsize, const char *fn) {
-  FIL fd;
-  FRESULT res = f_open(&fd, fn, FA_READ);
-  if (res != FR_OK)
-    return -1;
-
+// Parses the cheat file fd into buffer, returns its size (-1 on errors).
+static int read_cheats(FIL *fd, uint8_t *buffer, unsigned buffsize) {
   bool parse_name = true;
   unsigned bcount = 0;
   char tmp[1024 + 4];
 
+  // The cheats go to the cart's SDRAM: writes are checked. Their count goes
+  // first, written once they're all parsed.
   t_cheathdr_ext chdr;
-  uint32_t *bufhd = (uint32_t*)buffer;
-  *bufhd = 0;
+  uint32_t count = 0;
   unsigned bufsz = 4;
 
   // Parse the file line by line, using a temp buffer.
   do {
     if (bcount <= 512) {
       UINT rdbytes;
-      if (FR_OK != f_read(&fd, &tmp[bcount], 512, &rdbytes))
+      if (FR_OK != f_read(fd, &tmp[bcount], 512, &rdbytes))
         return -1;
       bcount += rdbytes;
       tmp[bcount] = 0;
@@ -178,11 +175,11 @@ int open_read_cheats(uint8_t *buffer, unsigned buffsize, const char *fn) {
 
         { // Copy the data to the actual buffer.
           unsigned pheadl = sizeof(t_cheathdr) + chdr.h.slen;
-          memcpy32(&buffer[bufsz], &chdr, pheadl);
-          memcpy32(&buffer[bufsz + pheadl], codes, chdr.h.codelen);
-
+          if (!memcpy32_checked(&buffer[bufsz], &chdr, pheadl) ||
+              !memcpy32_checked(&buffer[bufsz + pheadl], codes, chdr.h.codelen))
+            return -1;
           bufsz += pheadl + chdr.h.codelen;
-          (*bufhd)++;
+          count++;
         }
       }
 
@@ -195,8 +192,16 @@ int open_read_cheats(uint8_t *buffer, unsigned buffsize, const char *fn) {
     bcount -= cnt;
   } while (bcount);
 
+  return memcpy32_checked(buffer, &count, 4) ? (int)bufsz : -1;
+}
+
+int open_read_cheats(uint8_t *buffer, unsigned buffsize, const char *fn) {
+  FIL fd;
+  if (FR_OK != f_open(&fd, fn, FA_READ))
+    return -1;
+  int ret = read_cheats(&fd, buffer, buffsize);
   f_close(&fd);
-  return bufsz;
+  return ret;
 }
 
 

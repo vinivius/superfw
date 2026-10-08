@@ -28,7 +28,7 @@ and commit it as its own commit. Push only when the user asks.
 
 - Always `make clean` when changing build flags.
 - The SD board firmware must fit 512 KiB (enforced at link time). UART builds
-  are within ~150 bytes of the limit (v0.2), keep debug features small.
+  are within ~180 bytes of the limit (v0.2), keep debug features small.
   `superfw.gba` is padded to the next 512 byte block (`tools/fw-fixer.py`),
   so `stat` doesn't show the free space;
   measure where the content ends with `tools/debug/flash-free.sh superfw.gba`
@@ -249,7 +249,7 @@ expose the UART as a pty and to keep SD image writes.
   write it with a space). Check sizes after every change: the UART build had
   dropped to a few dozen bytes free; sha256.c (always) and nanoprintf.c
   (UART builds only, `#ifdef ENABLE_UART_LOGGING`) went -Os to get ~1.1 KiB
-  back. In v0.2 the release has ~480 bytes free and the UART build ~150;
+  back. In v0.2 the release has ~480 bytes free and the UART build ~180;
   code compresses poorly (a byte of code costs about a byte of flash).
   nanoprintf.c and utf_util.c are built for size in UART builds only. To
   fit, the UART build also lost the diagnostic that listed where SDRAM
@@ -282,7 +282,11 @@ expose the UART as a pty and to keep SD image writes.
   the start bit is scanned for (`supercard_io.S`, `directsaver.S`).
 - SDRAM writes are occasionally dropped (seen at 0x200000, 0x800000,
   0x1000000): ROM loading verifies and rewrites each chunk, then checksums
-  the whole ROM (`loader.c`, "Verify ROM loading" setting).
+  the whole ROM (`loader.c`, "Verify ROM loading" setting). The in-game menu,
+  patches, payloads, cheats and NOR flashing's scratch copies are checked
+  too (`write16_checked()`, `memcpy32_checked()`, `copy_chunk_verified()`);
+  UART builds log each chunk rewrite ("Chunk at 0x... needed N extra
+  writes").
 - Fast ROM loading through the 0x0A000000 mirror is unreliable on some
   carts: there is an automatic fallback to slow loading.
 - The cart's registers are in the ROM space: the SD card's at offsets 16 MiB

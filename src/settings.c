@@ -107,15 +107,24 @@ uint8_t rtcspeed_default = 3;
 uint32_t rtcvalue_default = 45568800U;
 
 // Setting loading/saving routines
-bool save_ui_settings() {
-  // Create the directory (just in case it doesn't exist
-  f_mkdir(SUPERFW_DIR);
-  // Make it hidden
-  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
 
-  // Proceed to create the file
+// The settings files couldn't be read (SD card errors): they aren't written
+// over with the defaults.
+static bool settings_unread;
+
+// Creates a settings file (in SUPERFW_DIR, made if needed).
+static bool settings_create(FIL *fd, const char *fn) {
+  if (settings_unread)
+    return false;
+  // Create the directory (just in case it doesn't exist), hidden.
+  f_mkdir(SUPERFW_DIR);
+  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
+  return FR_OK == f_open(fd, fn, FA_WRITE | FA_CREATE_ALWAYS);
+}
+
+bool save_ui_settings() {
   FIL fd;
-  if (FR_OK != f_open(&fd, UISETTINGS_FILEPATH, FA_WRITE | FA_CREATE_ALWAYS))
+  if (!settings_create(&fd, UISETTINGS_FILEPATH))
     return false;
 
   // Serialize the settings
@@ -135,14 +144,8 @@ bool save_ui_settings() {
 }
 
 bool save_settings() {
-  // Create the directory (just in case it doesn't exist
-  f_mkdir(SUPERFW_DIR);
-  // Make it hidden
-  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
-
-  // Proceed to create the file
   FIL fd;
-  if (FR_OK != f_open(&fd, SETTINGS_FILEPATH, FA_WRITE | FA_CREATE_ALWAYS))
+  if (!settings_create(&fd, SETTINGS_FILEPATH))
     return false;
 
   // Serialize the settings
@@ -283,19 +286,22 @@ static bool parse_setting_line(char *line, unsigned len, void *usr) {
 }
 
 // Settings files are read line by line, however long (hand edited) they are.
-// Lines too long for a setting are skipped.
-static void load_settings_file(const char *fn, setting_fn parse_cb) {
+// Lines too long for a setting are skipped. False on SD card errors.
+static bool load_settings_file(const char *fn, setting_fn parse_cb) {
   FIL fd;
-  if (FR_OK == f_open(&fd, fn, FA_READ)) {
-    char buf[64];
-    read_lines(&fd, buf, sizeof(buf), parse_setting_line, &parse_cb);
-    f_close(&fd);
-  }
+  FRESULT res = f_open(&fd, fn, FA_READ);
+  if (res != FR_OK)
+    return fr_missing(res);
+  char buf[64];
+  bool ok = read_lines(&fd, buf, sizeof(buf), parse_setting_line, &parse_cb);
+  f_close(&fd);
+  return ok;
 }
 
 void load_settings() {
-  load_settings_file(SETTINGS_FILEPATH, parse_settings);
-  load_settings_file(UISETTINGS_FILEPATH, parse_ui_settings);
+  // (Both are read: "|", not "||".)
+  settings_unread = !load_settings_file(SETTINGS_FILEPATH, parse_settings) |
+                    !load_settings_file(UISETTINGS_FILEPATH, parse_ui_settings);
 }
 
 void sram_filename_calc(const char *rom, char *savefn, unsigned save_path) {

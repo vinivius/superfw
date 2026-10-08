@@ -858,9 +858,8 @@ static void browser_open_gba(const char *fn, uint32_t fs, bool prompt_patchgen) 
     };
     // Check for any game-specific config file, so we don't have to guess the config.
     // The config file can be partial, hence the defaults.
-    load_rom_settings(fn, &ld_sett, &lh_sett);
-
-    if (!prepare_gba_info(&spop.p.load.i, &ld_sett, fn, fs, true))
+    if (!load_rom_settings(fn, &ld_sett, &lh_sett) ||
+        !prepare_gba_info(&spop.p.load.i, &ld_sett, fn, fs, true))
       spop.alert_msg = msgs[lang_id][MSG_ERR_READ];
     else {
       const t_rom_header *rmh = &spop.p.load.i.romh;
@@ -914,7 +913,10 @@ static void browser_open_nor(const t_flash_game_entry * e) {
     .use_cheats = true,              // Defaults to true (just preferred, might be disabled/N/A)
     .rtcts = rtcvalue_default
   };
-  load_rom_settings(e->game_name, NULL, &lh_sett);
+  if (!load_rom_settings(e->game_name, NULL, &lh_sett)) {
+    spop.alert_msg = msgs[lang_id][MSG_ERR_READ];
+    return;
+  }
 
   // Attempt to find a cheat file if cheats are enabled.
   prepare_gba_cheats((char*)&e->gamecode, e->gamever, &spop.p.norld.l, e->game_name, lh_sett.use_cheats);
@@ -3480,7 +3482,7 @@ static void keypress_popup_loadgba(unsigned newkeys) {
       }
       load_sdram_reset();
       unsigned err = do_load(false);
-      if (err && !use_slowld) {
+      if (err && err != ERR_NO_PAYLOAD_SPACE && !use_slowld) {
         // Fast loading is not reliable with some carts/SD cards, retry slowly.
         // If the first try overwrote the fonts and cheats the in-game menu is
         // made from, the retry keeps the menu it installed.
@@ -3843,9 +3845,8 @@ static void keypress_popup_filemgr(unsigned newkeys) {
             .use_rtc = rtcpatch_default,
             .use_dsaving = autosave_prefer_ds
           };
-          load_rom_settings(path, &ld_sett, NULL);
-
-          if (!prepare_gba_info(&spop.p.norwr.i, &ld_sett, path, e->filesize, false))
+          if (!load_rom_settings(path, &ld_sett, NULL) ||
+              !prepare_gba_info(&spop.p.norwr.i, &ld_sett, path, e->filesize, false))
             spop.alert_msg = msgs[lang_id][MSG_ERR_READ];
           else {
             spop.pop_num = POPUP_GBA_NORWRITE;

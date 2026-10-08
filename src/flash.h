@@ -35,6 +35,7 @@ typedef struct {
   uint32_t sectorcount;
   uint32_t currsect;
   uint32_t timeout;
+  bool failed;          // A sector erase timed out: the erase can't complete
 } t_flash_erase_state;
 
 bool flash_identify(t_flash_info *info);
