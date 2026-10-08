@@ -2013,8 +2013,11 @@ static bool load_error_file(uint8_t *err, BYTE mode) {
   UINT n;
   if (FR_OK != f_open(&fd, LOAD_ERROR_FILEPATH, mode | (mode & FA_WRITE ? FA_CREATE_ALWAYS : 0)))
     return false;
-  FRESULT res = (mode & FA_WRITE) ? f_write(&fd, err, 1, &n) : f_read(&fd, err, 1, &n);
-  return FR_OK == f_close(&fd) && FR_OK == res && n == 1;
+  if (mode & FA_WRITE)
+    return write_close(&fd, err, 1);
+  FRESULT res = f_read(&fd, err, 1, &n);
+  f_close(&fd);
+  return FR_OK == res && n == 1;
 }
 
 // A ROM load failed with err, after overwriting SDRAM (load_sdram_end and
@@ -3765,9 +3768,10 @@ static void keypress_popup_norload(unsigned newkeys) {
         .rtcts = spop.p.norld.l.rtcval
       };
 
-      // We load the loading settings to ensure we do not overwrite them.
-      load_rom_settings(e->game_name, &ld_sett, NULL);
-      bool ok = save_rom_settings(e->game_name, &ld_sett, &lh_sett);
+      // We load the loading settings to ensure we do not overwrite them (not
+      // if they can't be read).
+      bool ok = load_rom_settings(e->game_name, &ld_sett, NULL) &&
+                save_rom_settings(e->game_name, &ld_sett, &lh_sett);
       spop.alert_msg = msgs[lang_id][ok ? MSG_REMEMB_CFG_OK : MSG_ERR_SETSAVE];
     }
     else if (spop.selector == GBALdSetRTC) {

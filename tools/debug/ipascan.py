@@ -35,9 +35,15 @@ for f, ins in funcs.items():
                 if reg not in regs:
                     if mn.startswith("b") and not mn.startswith("bic"): break
                     continue
-                writes = mn.startswith(("pop", "ldm")) or (regs[0] == reg and not mn.startswith(("str", "cmp", "cmn", "tst", "push", "bx", "blx")))
-                if mn.startswith(("pop", "ldm")):
+                if mn.startswith(("ldm", "stm")):
+                    # The base register is read; the list is written (ldm) or read (stm).
+                    base = re.match(r"(r\d+|ip|lr|sp|fp|sl)", args).group(1)
+                    if base == reg or mn.startswith("stm"):
+                        bad.append((f, hex(a), m.group(1), reg, t2))
+                    break
+                if mn.startswith("pop"):
                     break                       # Loads it: a write
+                writes = regs[0] == reg and not mn.startswith(("str", "cmp", "cmn", "tst", "push", "bx", "blx"))
                 if not writes or reg in regs[1:]:
                     bad.append((f, hex(a), m.group(1), reg, t2))
                 break

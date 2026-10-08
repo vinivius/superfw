@@ -36,6 +36,7 @@
 #include "common.h"
 #include "util.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
 #include "patchengine.h"
 
 #define WAITCNT_VALUE_EXACT  0x04000204
@@ -628,10 +629,7 @@ bool write_patches_cache(const char *romfn, const t_patch *patches) {
   uint8_t buf[1024];
   unsigned fs = serialize_patch(patches, buf);
 
-  UINT wrbytes;
-  FRESULT res = f_write(&fd, buf, fs, &wrbytes);
-  // The data reaches the card in f_close (f_write only buffers it).
-  bool ok = FR_OK == f_close(&fd) && FR_OK == res && wrbytes == fs;
+  bool ok = write_close(&fd, buf, fs);
   if (!ok)
     f_unlink(fn);     // Never leave a partial file behind
   return ok;

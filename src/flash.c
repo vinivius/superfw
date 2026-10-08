@@ -254,6 +254,8 @@ int flash_erase_fsm_step(t_flash_erase_state *st) {
       return flash_erase_fsm_step(st);     // Start the next erase operation!
     }
     else if (systime() > st->timeout) {
+      for (unsigned i = 0; i < 32; i++)
+        SLOT2_BASE_U16[0] = 0x00F0;            // Back to read mode (if it gave up)
       set_supercard_mode(MAPPED_SDRAM, true, true);
       return -1;   // Error timeout.
     }
@@ -294,7 +296,8 @@ int flash_erase_fsm_step(t_flash_erase_state *st) {
 }
 
 // Stops an erase (ie. on errors): the sector being erased, if any, finishes
-// (or times out), and no other one is started, so the flash can be read.
+// (or times out, see above), and no other one is started, so the flash can be
+// read.
 void flash_erase_fsm_stop(t_flash_erase_state *st) {
   if (st->currsect & 0x80000000) {
     st->sectorcount = (st->currsect & 0x7FFFFFFF) + 1;

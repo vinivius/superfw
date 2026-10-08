@@ -66,6 +66,12 @@ bool read_lines(FIL *fd, char *buf, unsigned bufsize, line_fn cb, void *usr) {
   }
 }
 
+bool write_close(FIL *fd, const void *buf, unsigned len) {
+  UINT wrbytes;
+  FRESULT res = f_write(fd, buf, len, &wrbytes);
+  return FR_OK == f_close(fd) && FR_OK == res && wrbytes == len;
+}
+
 // Creates the path for a given file name.
 void create_basepath(const char *fn) {
   if (!fn || !*fn)

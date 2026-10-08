@@ -53,6 +53,17 @@ FRESULT f_read (FIL* fp, void* buff, UINT btr, UINT* br) {
   return FR_OK;
 }
 
+// f_write() takes up to wr_room bytes, f_close() returns cl_res.
+static unsigned wr_room;
+static FRESULT cl_res;
+FRESULT f_write (FIL* fp, const void* buff, UINT btw, UINT* bw) {
+  *bw = btw < wr_room ? btw : wr_room;
+  return FR_OK;
+}
+FRESULT f_close (FIL* fp) {
+  return cl_res;
+}
+
 static char rd_lines[256];
 static unsigned rd_count;
 static bool collect_line(char *line, unsigned len, void *usr) {
@@ -82,6 +93,14 @@ int main() {
   assert(!strcmp(read_all("toolongforit", 10, 99), ""));
   assert(!strcmp(read_all("a\nb\nc\n", 10, 2), "a|b|"));
   assert(!strcmp(read_all("", 10, 99), ""));
+
+  // write_close(): the data must be all written and the file closed.
+  wr_room = 100; cl_res = FR_OK;
+  assert(write_close(NULL, "abc", 3));
+  cl_res = FR_DISK_ERR;
+  assert(!write_close(NULL, "abc", 3));
+  wr_room = 2; cl_res = FR_OK;
+  assert(!write_close(NULL, "abc", 3));
 
   assert(0 == parseuint("0"));
   assert(1 == parseuint("1"));

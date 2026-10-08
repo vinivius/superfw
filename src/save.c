@@ -255,8 +255,10 @@ static bool sentinel_line(char *line, unsigned len, void *usr) {
   t_sentinel *st = (t_sentinel*)usr;
   if (!st->lines++)
     memcpy(st->fn, line, len + 1);    // read_lines() keeps it under sizeof(fn)
-  else if (!strncmp(line, "backup_count=", 13))
-    st->backups = parseuint(&line[13]);
+  else if (!strncmp(line, "backup_count=", 13)) {
+    const unsigned n = parseuint(&line[13]);
+    st->backups = MIN(n, MAX_BACKUP_CNT);     // A damaged one can't loop for ages
+  }
   return true;
 }
 
@@ -327,10 +329,7 @@ bool program_sram_dump(const char *save_filename, unsigned backup_cnt) {
   FIL fd;
   if (FR_OK != f_open(&fd, PENDING_SAVE_FILEPATH, FA_WRITE | FA_CREATE_ALWAYS))
     return false;
-  UINT wrbytes;
-  FRESULT res = f_write(&fd, content, strlen(content), &wrbytes);
-  // The data reaches the card when it's closed.
-  return FR_OK == f_close(&fd) && FR_OK == res && wrbytes == strlen(content);
+  return write_close(&fd, content, strlen(content));
 }
 
 // Erases the SRAM (using ones since it seems to be the most common mem type)

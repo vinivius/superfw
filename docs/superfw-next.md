@@ -109,7 +109,8 @@ SuperFW and SuperFW Next can install each other.
   game opened before (where the in-game menu would go over game data).
 - A card error while checking for a save no longer starts the game with a
   blank save that then replaces it. Hand-edited configs and settings files
-  are read whole. A damaged pending save file no longer crashes the boot.
+  are read whole. A damaged pending save file no longer crashes or hangs
+  the boot.
 - Patch files the patch engine made from a v1 flash table before the fix
   for those (upstream f170dfb) are made again. The file format stays the
   same, so SuperFW and SuperFW Next keep reading each other's files.

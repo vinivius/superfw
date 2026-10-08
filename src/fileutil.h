@@ -34,4 +34,8 @@ static inline bool fr_missing(FRESULT res) {
 typedef bool (*line_fn)(char *line, unsigned len, void *usr);
 bool read_lines(FIL *fd, char *buf, unsigned bufsize, line_fn cb, void *usr);
 
+// Writes len bytes to the open file fd and closes it (the data reaches the
+// card then). False if they weren't all written.
+bool write_close(FIL *fd, const void *buf, unsigned len);
+
 #endif
