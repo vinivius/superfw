@@ -121,20 +121,22 @@ jobs:
       - name: Build and run the tests
         run: cd tests && make
 
-  release:
-    name: Publish the release
+  # Releases are published in merge order: when merges come quickly, each run
+  # waits here for the earlier ones (lower run number) to finish. This keeps
+  # the release lock's queue short (GitHub keeps one pending job per group and
+  # cancels the older one; a run cancelled that way can be rerun). It runs
+  # outside the lock: waiting inside it would deadlock with a rerun of an
+  # older run, which keeps its run number.
+  order:
+    name: Wait for the earlier releases
     needs: [build, tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/superfw-next'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
-      contents: write
       actions: read
     steps:
-      # Releases are published in merge order, one at a time: when merges
-      # come quickly, each run waits for the earlier ones (lower run number)
-      # to finish, so the release list can't change while it publishes.
-      - name: Wait for the earlier releases
+      - name: Wait for the earlier runs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -145,6 +147,20 @@ jobs:
             echo "Waiting for $n earlier run(s) to finish..."
             sleep 20
           done
+
+  release:
+    name: Publish the release
+    needs: [build, order]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/superfw-next'
+    runs-on: ubuntu-latest
+    # The release lock: one release job at a time (reruns of old runs too),
+    # so the release list can't change while a job publishes.
+    concurrency:
+      group: superfw-next-release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
       - name: Download the firmware
         uses: actions/download-artifact@v4
         with:
@@ -171,6 +187,7 @@ jobs:
             # An earlier version can still be published after a later one (ie.
             # rerunning an old run): notes start at the highest existing
             # version below this one, and only the highest one is the latest.
+            # The release lock keeps this list current until it's published.
             tags=$( { gh release list --limit 200 --json tagName --jq '.[].tagName' | grep '^next-v' || true; echo "$tag"; } | sort -V -u)
             prev=$(echo "$tags" | grep -x -B1 "$tag" | grep -v -x "$tag" || true)
             latest=$([ "$(echo "$tags" | tail -n1)" = "$tag" ] && echo true || echo false)
