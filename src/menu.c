@@ -3488,7 +3488,7 @@ static void keypress_popup_loadgba(unsigned newkeys) {
         // made from, the retry keeps the menu it installed.
         WRITE_LOG("Fast ROM load failed (%u), retrying in slow mode", err);
         use_slowld = 1;
-        err = do_load(load_sdram_lost);
+        err = do_load(load_fonts_lost);
         use_slowld = 0;
       }
       if (err) {

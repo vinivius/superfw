@@ -27,6 +27,7 @@
 #pragma GCC optimize ("Os")
 
 // Preprocessing cheats, includes a proper header and pre-formats some payloads.
+// False if a code takes more values than there are.
 bool predecode_cheats(uint32_t *codes, unsigned cnt) {
   for (unsigned i = 0; i < cnt; i++) {
     t_cheat_predec h = {
@@ -41,6 +42,10 @@ bool predecode_cheats(uint32_t *codes, unsigned cnt) {
     // Overwrite buffer with the new format
     memcpy(&codes[2*i], &h, sizeof(h));
 
+    // The values codes 4 and 5 take follow them.
+    const unsigned extra = (h.opcode == 4 * 2) ? 1 : (h.opcode == 5 * 2) ? h.value : 0;
+    if (i + extra >= cnt)
+      return false;
     if (h.opcode == 4 * 2)
       i++;                    // Extra addr + value for opc4
     else if (h.opcode == 5 * 2) {
@@ -76,7 +81,8 @@ static bool parse_hex(const char *s, uint32_t *val, unsigned nibcnt) {
   return true;
 }
 
-// Parses RAW codes into a uint32 buffer
+// Parses RAW codes into a uint32 buffer (two words a code), up to
+// MAX_CHEAT_CODES of them (-1 if there are more).
 int parse_cheat_codes(const char *s, uint32_t *codes) {
   // Codes are in the format:
   // 0123ABCD+67EF 125634AB+78CD ....
@@ -87,7 +93,7 @@ int parse_cheat_codes(const char *s, uint32_t *codes) {
 
   while (*s) {
     uint32_t addr, val;
-    if (!parse_hex(s, &addr, 8))
+    if (cnt == MAX_CHEAT_CODES || !parse_hex(s, &addr, 8))
       return -1;
 
     s += 8;  // Consume the hex32
@@ -155,14 +161,20 @@ static int read_cheats(FIL *fd, uint8_t *buffer, unsigned buffsize) {
 
       // Fill entry, string or cheat codes.
       if (parse_name) {
-        // Fill title and header.
-        strcpy(chdr.title, s);
-        chdr.h.slen = (strlen(chdr.title) + 1 + 3) & ~3U;  // Word aligned!
+        // Fill title and header. Long titles are cut (at a character start).
+        unsigned len = strlen(s);
+        if (len > MAX_CHEAT_TITLE)
+          len = MAX_CHEAT_TITLE;
+        while (len && (s[len] & 0xC0) == 0x80)
+          len--;
+        memcpy(chdr.title, s, len);
+        chdr.title[len] = 0;
+        chdr.h.slen = (len + 1 + 3) & ~3U;  // Word aligned!
         chdr.h.enabled = 0;
         chdr.h.codelen = 0;
       } else {
         // Parse the cheat codes (in hex), and generate the respective code.
-        uint32_t codes[74];  // Enough codes for a 1024 byte cheat line.
+        uint32_t codes[2 * (MAX_CHEAT_CODES + 1)];  // And the end one
         memset(codes, 0, sizeof(codes));
         int numcodes = parse_cheat_codes(tmp, codes);
         if (numcodes < 0)

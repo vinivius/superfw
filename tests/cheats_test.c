@@ -69,6 +69,19 @@ int main() {
   assert(open_read_cheats(tmp, sizeof(tmp), "data/bad2.cht") < 0);
   assert(open_read_cheats(tmp, sizeof(tmp), "data/bad3.cht") < 0);
   assert(open_read_cheats(tmp, sizeof(tmp), "data/bad4.cht") < 0);
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/bad5.cht") < 0);    // Over MAX_CHEAT_CODES codes
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/bad6.cht") < 0);    // A slide code's values missing
+
+  // The limits: MAX_CHEAT_CODES codes, titles cut to MAX_CHEAT_TITLE bytes
+  // (at a character start: the 2 byte one that would be cut is left out).
+  {
+    assert(open_read_cheats(tmp, sizeof(tmp), "data/limits.cht") > 0 && *(uint32_t*)tmp == 2);
+    const t_cheathdr *e = (t_cheathdr*)&tmp[4];
+    assert(strlen((char*)e->data) == MAX_CHEAT_TITLE && e->slen == 252);
+    assert(e->codelen == (MAX_CHEAT_CODES + 1) * 8);
+    e = (t_cheathdr*)&e->data[e->slen + e->codelen];
+    assert(strlen((char*)e->data) == 250 && e->codelen == 16);
+  }
 
   int ret = open_read_cheats(tmp, sizeof(tmp), "data/test.cht");
   assert(ret >= 0);

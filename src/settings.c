@@ -108,13 +108,14 @@ uint32_t rtcvalue_default = 45568800U;
 
 // Setting loading/saving routines
 
-// The settings files couldn't be read (SD card errors): they aren't written
-// over with the defaults.
-static bool settings_unread;
+// The settings files that couldn't be read (SD card errors; bit 0: settings,
+// bit 1: UI settings): they aren't written over with the defaults (a reboot
+// reads them again).
+static unsigned settings_unread;
 
-// Creates a settings file (in SUPERFW_DIR, made if needed).
-static bool settings_create(FIL *fd, const char *fn) {
-  if (settings_unread)
+// Creates a settings file (in SUPERFW_DIR, made if needed), unless unread.
+static bool settings_create(FIL *fd, const char *fn, unsigned unread_bit) {
+  if (settings_unread & unread_bit)
     return false;
   // Create the directory (just in case it doesn't exist), hidden.
   f_mkdir(SUPERFW_DIR);
@@ -124,7 +125,7 @@ static bool settings_create(FIL *fd, const char *fn) {
 
 bool save_ui_settings() {
   FIL fd;
-  if (!settings_create(&fd, UISETTINGS_FILEPATH))
+  if (!settings_create(&fd, UISETTINGS_FILEPATH, 2))
     return false;
 
   // Serialize the settings
@@ -145,7 +146,7 @@ bool save_ui_settings() {
 
 bool save_settings() {
   FIL fd;
-  if (!settings_create(&fd, SETTINGS_FILEPATH))
+  if (!settings_create(&fd, SETTINGS_FILEPATH, 1))
     return false;
 
   // Serialize the settings
@@ -299,9 +300,8 @@ static bool load_settings_file(const char *fn, setting_fn parse_cb) {
 }
 
 void load_settings() {
-  // (Both are read: "|", not "||".)
-  settings_unread = !load_settings_file(SETTINGS_FILEPATH, parse_settings) |
-                    !load_settings_file(UISETTINGS_FILEPATH, parse_ui_settings);
+  settings_unread = (load_settings_file(SETTINGS_FILEPATH, parse_settings) ? 0 : 1) |
+                    (load_settings_file(UISETTINGS_FILEPATH, parse_ui_settings) ? 0 : 2);
 }
 
 void sram_filename_calc(const char *rom, char *savefn, unsigned save_path) {

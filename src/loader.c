@@ -191,11 +191,11 @@ unsigned preload_gba_rom(const char *fn, uint32_t fs, t_rom_header *romh) {
 }
 
 uint32_t load_sdram_end = 0;
-bool load_sdram_lost = false;
+bool load_sdram_lost = false, load_fonts_lost = false;
 
 void load_sdram_reset(void) {
   load_sdram_end = 0;
-  load_sdram_lost = false;
+  load_sdram_lost = load_fonts_lost = false;
   sdcmd_word_recorded = false;
 }
 
@@ -207,15 +207,15 @@ static void load_writes(uint32_t start, uint32_t end) {
     load_sdram_end = MAX(load_sdram_end, end);
   // The fonts and cheats, then (above the high scratch area) the patch
   // databases and the bundled emulators.
-  if ((start < ROM_OFF_HISCRATCH && end > ROM_OFF_FONTS_BASE) || end > ROM_OFF_USRPATCH_DB)
-    load_sdram_lost = true;
+  load_fonts_lost |= start < ROM_OFF_HISCRATCH && end > ROM_OFF_FONTS_BASE;
+  load_sdram_lost |= load_fonts_lost || end > ROM_OFF_USRPATCH_DB;
 }
 
 // Chunks that needed rewriting (see SDRAM_WRITE_TRIES) are logged for
 // diagnostics (the callers log those that never verified).
-static void chunk_rewritten(uint32_t offset, int extra) {
+static void chunk_rewritten(uint32_t addr, int extra) {
   if (extra > 0)
-    WRITE_LOG("Chunk at 0x%06lx needed %d extra writes", offset, extra);
+    WRITE_LOG("Chunk at 0x%08lx needed %d extra writes", addr, extra);
 }
 
 // Pads buf with zeros from len up to a word boundary, returns the new length.
@@ -225,17 +225,15 @@ static unsigned pad_to_word(void *buf, unsigned len) {
   return padded;
 }
 
-// Copies a loaded chunk to SDRAM at offset (from GBA_ROM_ADDR), whole words
-// (bytes, a multiple of 4), and reads it back,
+// Copies a chunk to SDRAM at dst, whole words (bytes, a multiple of 4), and
+// reads it back,
 // rewriting it as needed. ck is the running checksum of the data loaded so
 // far (checksum_words()): the chunk is checked against it and added to it.
 // Returns the number of extra writes needed, or -1 if it never verified.
 NOINLINE
-static int copy_chunk_verified(uint32_t offset, uint32_t *src, unsigned bytes, uint32_t *ck) {
-  uint8_t *dst = &GBA_ROM_ADDR[offset];
+static int copy_verified(uint8_t *dst, uint32_t *src, unsigned bytes, uint32_t *ck) {
   if (!bytes)
     return 0;         // Nothing to copy (a DMA count of 0 would copy 64K words)
-  load_writes(offset, offset + bytes);
   uint32_t ck_src[2] = {ck[0], ck[1]};
   checksum_words(src, bytes / 4, ck_src);
 
@@ -262,11 +260,18 @@ static int copy_chunk_verified(uint32_t offset, uint32_t *src, unsigned bytes, u
   }
   set_supercard_mode(MAPPED_SDRAM, true, true);
 
-  reg_words_record(offset, src, bytes);
   ck[0] = ck_src[0];
   ck[1] = ck_src[1];
-  chunk_rewritten(offset, ret);
+  chunk_rewritten((uintptr_t)dst, ret);
   return ret;
+}
+
+// A chunk a load copies to SDRAM at offset (from GBA_ROM_ADDR): recorded
+// (load_writes(), reg_words) and checked (copy_verified()).
+static int copy_chunk_verified(uint32_t offset, uint32_t *src, unsigned bytes, uint32_t *ck) {
+  load_writes(offset, offset + bytes);
+  reg_words_record(offset, src, bytes);
+  return copy_verified(&GBA_ROM_ADDR[offset], src, bytes, ck);
 }
 
 // Checksums ROM data already loaded in SDRAM (used to verify the load).
@@ -346,6 +351,8 @@ static bool load_ingame_menu(
     memmove32(&ptr[menu_size], (uint8_t*)ROM_FONTBASE_U8, fcsize);
     reg_words_record(base_addr - GBA_ROM_BASE + menu_size, (uint32_t*)&ptr[menu_size], fcsize);
   }
+  else
+    sdcmd_word_restore();     // The first try may have failed before it did
   checksum_words(&ptr[menu_size], fcsize / 4, ck_dst);
   set_supercard_mode(MAPPED_SDRAM, true, true);
 
@@ -640,7 +647,7 @@ unsigned flash_gba_nor(
       // Whole words: the end of the file is padded with zeros. Checked: what's
       // in scratch is what's flashed and verified.
       uint32_t ck[2] = {0, 0};
-      if (copy_chunk_verified(&scratch[offset] - GBA_ROM_ADDR, tmp, pad_to_word(tmp, toread), ck) < 0) {
+      if (copy_verified(&scratch[offset], tmp, pad_to_word(tmp, toread), ck) < 0) {
         flash_erase_fsm_stop(&erst);
         f_close(&fd);
         reset_superchis_normap();

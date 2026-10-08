@@ -255,12 +255,17 @@ void memmove32(void *dst, void *src, unsigned count) {
   }
 }
 
-// Copies count bytes (whole words) to the cart's SDRAM, checked (see
-// SDRAM_WRITE_TRIES).
+// Copies count bytes (whole words, a multiple of 4) to the cart's SDRAM,
+// checked (see SDRAM_WRITE_TRIES).
 bool memcpy32_checked(void *dst, const void *src, unsigned count) {
+  volatile uint32_t *d = (uint32_t*)dst;
+  const uint32_t *s = (const uint32_t*)src;
   for (unsigned t = 0; t < SDRAM_WRITE_TRIES; t++) {
-    memcpy32(dst, src, count);
-    if (!memcmp(dst, src, count))
+    unsigned i;
+    for (i = 0; i < count / 4; i++)
+      d[i] = s[i];
+    for (i = 0; i < count / 4 && d[i] == s[i]; i++);
+    if (i == count / 4)
       return true;
   }
   return false;

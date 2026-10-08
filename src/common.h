@@ -294,10 +294,11 @@ unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo
 // What the loads (that failed) wrote into SDRAM: load_sdram_end is how far the
 // menu data below the fonts is gone (an offset from 0x08000000), and
 // load_sdram_lost tells whether what a reboot restores was overwritten (the
-// fonts and cheats, the patch databases or the bundled emulators). The
-// loaders only add to them, load_sdram_reset() clears them.
+// fonts and cheats, the patch databases or the bundled emulators);
+// load_fonts_lost, whether the fonts and cheats were. The loaders only add to
+// them, load_sdram_reset() clears them.
 extern uint32_t load_sdram_end;
-extern bool load_sdram_lost;
+extern bool load_sdram_lost, load_fonts_lost;
 void load_sdram_reset(void);
 bool validate_gba_header(const uint8_t *header);
 bool validate_gb_header(const uint8_t *header);

@@ -85,7 +85,8 @@ SuperFW and SuperFW Next can install each other.
   (ending in "~" and a hash of the full name, so they stay unique) instead
   of overflowing their buffers. File manager paths are checked too.
 - Cheat files next to the ROM (NAME.cht) are loaded; they were found but
-  never loaded.
+  never loaded. Damaged or oversized cheat files no longer crash the menu
+  (a cheat takes up to 30 codes; long titles are cut).
 - DirectSave, the in-game menu and its cheats are offered only when they fit
   together after the ROM (or in its free space), DirectSave first, instead
   of the load failing. ROMs just under 32 MiB load without patches too.
