@@ -1,13 +1,13 @@
 # superfw-next
 
 Changes on the `superfw-next` branch, on top of upstream SuperFW (up to
-5ecb841) and the `search-boxart` branch (ROM search, box art, SD write and
+e2614ab) and the `search-boxart` branch (ROM search, box art, SD write and
 ROM loading fixes). Everything was tested in the gpsp emulator and on a
 Supercard SD with a 2245/1237/653 ROM card.
 
 ## Name
 
-SuperFW Next, version 0.1: an unofficial fork, SuperFW is by davidgf. The
+SuperFW Next, version 0.2: an unofficial fork, SuperFW is by davidgf. The
 boot screen and the About tab show the unchanged SUPERFW logo with "NEXT"
 under it (original 80s arcade style lettering, `res/next/make_next.py`,
 converted by `res/next/next2c.py`). The firmware header is unchanged, so
@@ -26,8 +26,9 @@ SuperFW and SuperFW Next can install each other.
   cut, the font code runs from IWRAM).
 - Box art loads between frames once the cursor rests, never while
   scrolling, and no longer flashes with the wrong colors. The last 8
-  images stay in memory and the ones around the cursor are preloaded, so
-  going back and forth through a list shows them instantly.
+  images stay in memory and the ones around the cursor are preloaded
+  between key presses (more of them ahead of the cursor), so stepping
+  through a list or going back and forth shows them instantly.
 - Big folders show a "Loading folder... N" counter while they load.
 - Search (START in the browser): the wheel always shows a letter, starting
   at A, and the list always matches what the search bar shows. Up/Down pick
@@ -64,6 +65,11 @@ SuperFW and SuperFW Next can install each other.
 - A save that could not be written at boot is retried before the next game
   is launched; if it still fails, the launch stops with an error instead of
   erasing it (the save is kept in SRAM and retried on the next boot).
+- GB, GBC and NES games (and emulators loaded from the SD card) are read
+  back after being copied to the cart's RAM and rewritten when a write was
+  dropped, like GBA ROMs, instead of starting a corrupted game.
+- "Remember config" says when the config could not be saved (ie. a ROM
+  name over 231 characters) instead of "Config saved!".
 - A damaged or hand-edited recent.txt (no final newline, overlong lines,
   Windows line endings) no longer crashes or hangs the boot.
 - Firmware updates retry (up to 3 times) when erasing, writing or

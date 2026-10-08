@@ -13,7 +13,7 @@
   <img src="docs/screenshots/recent.png" width="32%" alt="Recent games">
 </p>
 
-SuperFW Next (version 0.1) builds on [SuperFW](https://github.com/davidgfnet/superfw),
+SuperFW Next (version 0.2) builds on [SuperFW](https://github.com/davidgfnet/superfw),
 the open source firmware for Supercard GBA flash carts written by David Guillen
 Fandos (davidgf). All the credit for SuperFW goes to him. This fork adds a
 redesigned menu, box art, search, responsiveness and reliability fixes, a ROM
@@ -24,7 +24,7 @@ SuperFW, it is free software under the GNU GPL version 3 or later.
 
 ## Download
 
-Get the `.fw` file (ie. `superfw-next-v0.1-sd.fw`) from the
+Get the `.fw` file (ie. `superfw-next-v0.2-sd.fw`) from the
 [latest release](https://github.com/vinivius/superfw_next/releases/latest),
 then follow [Installing or updating](#installing-or-updating). Only the
 Supercard SD build is published: it is the one tested on real hardware. The
@@ -161,7 +161,7 @@ Use fresh batteries or a power adapter: an update interrupted by a power
 loss can leave the cart unbootable (see the NDS flasher in
 [Installation](#installation) below to recover it).
 
-1. **Try it first.** Copy the `.fw` file (ie. `superfw-next-v0.1-sd.fw`) to
+1. **Try it first.** Copy the `.fw` file (ie. `superfw-next-v0.2-sd.fw`) to
    the SD card renamed to `superfw-next.gba`, and launch it from the browser
    like a game. It runs
    from memory without touching the cart's flash: turning the console off
