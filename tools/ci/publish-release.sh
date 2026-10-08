@@ -43,6 +43,12 @@ fi
 # this commit. Broken or missing files are uploaded again, but never from
 # another commit's build.
 gh release view "$tag" >/dev/null 2>&1 || { echo "::error::$tag could not be published"; exit 1; }
+# Releases made by hand (ie. next-v0.1, from before CI) have other files.
+author=$(gh release view "$tag" --json author --jq .author.login)
+if [ "$author" != "github-actions[bot]" ]; then
+  echo "$tag was published by hand ($author): left as it is."
+  exit 0
+fi
 target=$(gh release view "$tag" --json targetCommitish --jq .targetCommitish)
 check() {
   local assets f n a

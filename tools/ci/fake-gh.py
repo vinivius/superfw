@@ -75,7 +75,8 @@ elif cmd == "create":
     assets = [uploaded(f) for f in files]
     if mode == "partial":
         assets = [assets[0], dict(assets[1], state="starter", digest=None)]
-    rel[tag] = {"targetCommitish": opt("--target"), "latest": opt("--latest"),
+    rel[tag] = {"author": {"login": "github-actions[bot]"},
+                "targetCommitish": opt("--target"), "latest": opt("--latest"),
                 "notesStartTag": opt("--notes-start-tag"), "assets": assets}
     save("releases.json", rel)
     sys.exit(1 if mode == "partial" else 0)

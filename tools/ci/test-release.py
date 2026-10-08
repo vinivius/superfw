@@ -18,13 +18,13 @@ def build(v, sha):
                                 for n, c in out.items()).encode()
     return out
 
-def release(v, sha, starter=None):
+def release(v, sha, starter=None, author="github-actions[bot]"):
     assets = [{"name": n, "state": "uploaded", "digest": "sha256:" + hashlib.sha256(c).hexdigest()}
               for n, c in build(v, sha).items()]
     if starter:
         assets = [dict(x, state="starter", digest=None) if x["name"].endswith(starter) else x
                   for x in assets]
-    return {"targetCommitish": sha, "assets": assets}
+    return {"author": {"login": author}, "targetCommitish": sha, "assets": assets}
 
 def run(script, env, releases=None, runs=None, out=None):
     d = tempfile.mkdtemp()
@@ -93,6 +93,11 @@ publish("this commit's release with a wrong file: replaced", V2, "aaa1",
         {"next-v0.2": dict(release(V2, "zzz9"), targetCommitish="aaa1")}, True, test=lambda r, c: complete(r, V2, "aaa1"))
 publish("another commit's release with a starter asset: error, untouched", V2, "bbb2",
         {"next-v0.2": release(V2, "aaa1", starter="sd.fw")}, False, test=lambda r, c: not writes(c))
+# ie. next-v0.1, published before CI with only the .fw and SHA256SUMS
+hand = release(V2, "aaa1", author="vinivius")
+hand["assets"] = [x for x in hand["assets"] if x["name"].endswith((".fw", "SHA256SUMS"))]
+publish("a release made by hand: left as it is", V2, "bbb2", {"next-v0.2": hand}, True,
+        test=lambda r, c: not writes(c))
 publish("a build file is missing: error", V2, "aaa1", {}, False,
         out={n: c for n, c in build(V2, "aaa1").items() if not n.endswith("sd.gba")},
         test=lambda r, c: not writes(c))
