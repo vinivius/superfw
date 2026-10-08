@@ -473,9 +473,6 @@ unsigned prepare_sram_based_savegame(t_sram_load_policy loadp, t_sram_save_polic
 NOINLINE
 unsigned prepare_savegame(t_sram_load_policy loadp, t_sram_save_policy savep, EnumSavetype stype, t_dirsave_info *dsinfo, const char *savefn) {
 
-  // Ensure the main superfw dir exists
-  f_mkdir(SUPERFW_DIR);
-
   WRITE_LOG("Preparing save game. LdPol: %d SvPol: %d SavType: %d Uses DirSav: %d Save file: '%s'",
             loadp, savep, stype, dsinfo ? 1 : 0, savefn);
 

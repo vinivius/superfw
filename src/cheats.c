@@ -146,10 +146,7 @@ static bool cheat_line(char *line, unsigned len, void *usr) {
   if (line[strspn(line, "0123456789abcdefABCDEF +\t")] || !strpbrk(line, "0123456789")) {
     // A title: long ones are cut (at a character start).
     len = strlen(line);
-    if (len > MAX_CHEAT_TITLE)
-      len = MAX_CHEAT_TITLE;
-    while (len && (line[len] & 0xC0) == 0x80)
-      len--;
+    len = utf8_cut(line, len > MAX_CHEAT_TITLE ? MAX_CHEAT_TITLE : len);
     memcpy(cr->chdr.title, line, len);
     cr->chdr.title[len] = 0;
     cr->chdr.h.slen = (len + 1 + 3) & ~3U;  // Word aligned!

@@ -1025,9 +1025,12 @@ static void recent_reload() {
   smenu.recent.maxentries = MAX(n, 0);
 }
 
-static bool insert_recent_flush(const char *fn, unsigned flags) {
-  // Remember where the browser was, it reopens there next time.
+// A game launch: the browser reopens where it was next time, and the game
+// goes first in the Recent list (if in use).
+static bool launch_record(const char *fn, unsigned flags) {
   browser_save_position();
+  if (!recent_menu)
+    return true;
   // A list that couldn't be read (ie. SD errors) is read again first.
   if (recent_unread)
     recent_reload();
@@ -1085,8 +1088,7 @@ void start_emu_game(const t_emu_loader *ldinfo, const char *fn, uint32_t fs) {
     // fn may be a recent list entry, which inserting it moves.
     char romfn[MAX_FN_LEN];
     strcpy(romfn, fn);
-    if (recent_menu)
-      insert_recent_flush(romfn, FLAG_RECENT_SD);
+    launch_record(romfn, FLAG_RECENT_SD);
 
     // Try the emulators in turn (a successful load launches the game): one
     // that is missing or can't be read gives way to the next one.
@@ -3310,6 +3312,18 @@ static void patch_type_normalize(t_load_gba_info *i, bool right) {
     i->patch_type = PatchNone;
 }
 
+// Left/Right (dir) on a patch page: cycle (or toggle) the option.
+static void patch_page_cycle(t_load_gba_info *i, int dir) {
+  if (spop.selector == GBALoadPatch)
+    i->patch_type = (i->patch_type + PatchOptCNT + dir) % PatchOptCNT;
+  else if (spop.selector == GBAInGameMen)
+    i->ingame_menu_enabled = !i->ingame_menu_enabled;
+  else if (spop.selector == GBASavePatch)
+    i->use_dsaving = !i->use_dsaving;
+  else if (spop.selector == GBARTCPatch)
+    i->rtc_patch_enabled = !i->rtc_patch_enabled;
+}
+
 // Left/Right (dir) on a load settings page: cycle (or toggle) the option.
 static void load_settings_cycle(t_load_gba_lcfg *l, bool ds, int dir) {
   if (spop.selector == GBALdSetCheats)
@@ -3380,16 +3394,8 @@ static void keypress_popup_loadgba(unsigned newkeys) {
   const int dir = (newkeys & KEY_BUTTRIGHT) ? 1 : (newkeys & KEY_BUTTLEFT) ? -1 : 0;
   if (dir && spop.submenu == GbaLoadPopLoadS)
     load_settings_cycle(&spop.p.load.l, spop.p.load.i.use_dsaving, dir);
-  else if (dir && spop.submenu == GbaLoadPopPatch) {
-    if (spop.selector == GBALoadPatch)
-      spop.p.load.i.patch_type = (spop.p.load.i.patch_type + PatchOptCNT + dir) % PatchOptCNT;
-    else if (spop.selector == GBAInGameMen)
-      spop.p.load.i.ingame_menu_enabled = !spop.p.load.i.ingame_menu_enabled;
-    else if (spop.selector == GBASavePatch)
-      spop.p.load.i.use_dsaving = !spop.p.load.i.use_dsaving;
-    else if (spop.selector == GBARTCPatch)
-      spop.p.load.i.rtc_patch_enabled = !spop.p.load.i.rtc_patch_enabled;
-  }
+  else if (dir && spop.submenu == GbaLoadPopPatch)
+    patch_page_cycle(&spop.p.load.i, dir);
   loadgba_normalize(newkeys);
 
   if (newkeys & KEY_BUTTA) {
@@ -3427,8 +3433,7 @@ static void keypress_popup_loadgba(unsigned newkeys) {
     }
     else if (GbaLoadPopInfo == spop.submenu) {
       // Insert the ROM into the recent list (or move it around). Flush to disk!
-      if (recent_menu)
-        insert_recent_flush(spop.p.load.i.romfn, FLAG_RECENT_SD);
+      launch_record(spop.p.load.i.romfn, FLAG_RECENT_SD);
 
       // Honor load.patch_type.
       const t_patch *p = get_game_patch(&spop.p.load.i);
@@ -3544,17 +3549,9 @@ static void keypress_popup_norwrite(unsigned newkeys) {
     spop.selector = MIN(GBAPatchCNT - 1, spop.selector + 1);
 
   if (spop.submenu == GbaNorWrPatch) {
-    if (newkeys & (KEY_BUTTLEFT|KEY_BUTTRIGHT)) {
-      if (spop.selector == GBALoadPatch)
-        spop.p.norwr.i.patch_type = (spop.p.norwr.i.patch_type +
-                                     ((newkeys & KEY_BUTTRIGHT) ? 1 : PatchOptCNT - 1)) % PatchOptCNT;
-      else if (spop.selector == GBAInGameMen)
-        spop.p.norwr.i.ingame_menu_enabled = !spop.p.norwr.i.ingame_menu_enabled;
-      else if (spop.selector == GBASavePatch)
-        spop.p.norwr.i.use_dsaving = !spop.p.norwr.i.use_dsaving;
-      else if (spop.selector == GBARTCPatch)
-        spop.p.norwr.i.rtc_patch_enabled = !spop.p.norwr.i.rtc_patch_enabled;
-    }
+    const int dir = (newkeys & KEY_BUTTRIGHT) ? 1 : (newkeys & KEY_BUTTLEFT) ? -1 : 0;
+    if (dir)
+      patch_page_cycle(&spop.p.norwr.i, dir);
 
     if ((newkeys & KEY_BUTTA) && spop.selector == GBAPatchGen) {
       bool ok = generate_patches_progress(spop.p.norwr.i.romfn, spop.p.norwr.i.romfs);
@@ -3665,8 +3662,7 @@ static void keypress_popup_norload(unsigned newkeys) {
         .ts_step = rtcspeed_default
       };
 
-      if (recent_menu)
-        insert_recent_flush(e->game_name, FLAG_RECENT_NOR);
+      launch_record(e->game_name, FLAG_RECENT_NOR);
 
       load_sdram_reset();
       unsigned err = launch_gba_nor(

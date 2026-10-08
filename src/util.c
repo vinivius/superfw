@@ -96,9 +96,7 @@ bool derived_fn(char *out, unsigned maxlen, const char *dir, const char *path, c
       return false;
     }
     h = fnv1a(name, nlen, true);          // Of the whole name, case aside (FAT)
-    nlen = maxlen - dlen - 9 - elen;
-    while (nlen && (name[nlen] & 0xC0) == 0x80)   // Don't split a character
-      nlen--;
+    nlen = utf8_cut(name, maxlen - dlen - 9 - elen);   // Don't split a character
   }
 
   memcpy(out, dir ? dir : path, dlen);

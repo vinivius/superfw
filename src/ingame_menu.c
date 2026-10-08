@@ -27,6 +27,7 @@
 #include "menu_messages.h"
 #include "res/logo.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
 #include "supercard_driver.h"
 #include "res/icons-menu.h"
 #include "ingame.h"
@@ -1005,8 +1006,11 @@ void del_diskstate() {
   set_supercard_mode(MAPPED_SDRAM, true, true);
   char tmp[256];
   npf_snprintf(tmp, sizeof(tmp), "%s.%d.state", savestate_pattern, -state_slot);
-  f_unlink(tmp);
-  diskslot_valid[-state_slot - 1] = 0;
+  const FRESULT res = f_unlink(tmp);
+  if (FR_OK == res || fr_missing(res))
+    diskslot_valid[-state_slot - 1] = 0;
+  else
+    popup.msg = msgs[ingame_menu_lang][IMENU_WSTAF_ERR];
 }
 
 // Deletes persistent slots or converts a slot into persistent.
