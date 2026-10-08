@@ -198,8 +198,7 @@ expose the UART as a pty and to keep SD image writes.
   open a prompt: a press meant for a prompt that didn't appear lands on the
   next screen (and may launch a game). RetroArch sometimes segfaults at
   startup (empty log, often right after another instance was killed):
-  check its window exists (`pad.py` says "no RetroArch window") and start
-  it again.
+  `pad.py` then stops with "RetroArch is not running"; start it again.
 - RetroArch itself may segfault when killed (`timeout`, `pkill`), which
   raises a "Process crashed: retroarch" notification: if
   `coredumpctl info PID` shows frames in `retroarch`, not in
