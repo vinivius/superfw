@@ -335,16 +335,25 @@ static void parse_rom_launch_settings(void *usr, const char *var, const char *va
     rs->rtcts = valu;
 }
 
+// Builds the path of a ROM's config file: ROMCONFIG_PATH + ROM name + .config
+// Returns false if it does not fit in MAX_FN_LEN (very long ROM names).
+static bool rom_config_fn(char *cfgfn, const char *romfn) {
+  const char *bn = file_basename(romfn);
+  if (sizeof(ROMCONFIG_PATH) + strlen(bn) + sizeof(".config") - 1 > MAX_FN_LEN)
+    return false;
+
+  strcpy(cfgfn, ROMCONFIG_PATH);
+  strcat(cfgfn, bn);
+  replace_extension(cfgfn, ".config");
+  return true;
+}
+
 bool load_rom_settings(const char *fn, t_rom_load_settings *rld, t_rom_launch_settings *rlh) {
   FIL fd;
   {
-    char fn[MAX_FN_LEN];
-    strcpy(fn, ROMCONFIG_PATH);
-    strcat(fn, file_basename(fn));
-    replace_extension(fn, ".config");
-
+    char cfgfn[MAX_FN_LEN];
     // Attempt to open and read the file.
-    if (FR_OK != f_open(&fd, fn, FA_READ))
+    if (!rom_config_fn(cfgfn, fn) || FR_OK != f_open(&fd, cfgfn, FA_READ))
       return false;
   }
 
@@ -374,12 +383,8 @@ bool save_rom_settings(const char *fn, const t_rom_load_settings *rld, const t_r
   // Proceed to create the file
   FIL fd;
   {
-    char fn[MAX_FN_LEN];
-    strcpy(fn, ROMCONFIG_PATH);
-    strcat(fn, file_basename(fn));
-    replace_extension(fn, ".config");
-
-    if (FR_OK != f_open(&fd, fn, FA_WRITE | FA_CREATE_ALWAYS))
+    char cfgfn[MAX_FN_LEN];
+    if (!rom_config_fn(cfgfn, fn) || FR_OK != f_open(&fd, cfgfn, FA_WRITE | FA_CREATE_ALWAYS))
       return false;
   }
 
