@@ -806,13 +806,17 @@ bool action_sstate_menu() {
   bool havess = num_mem_savestates || num_dsk_savestates;
   if (havess) {
     if (num_dsk_savestates && !diskst_init) {
-      // Check if the files actually exist
+      // Check if the files actually exist. A card error isn't a missing file:
+      // the slot counts as used (saving over it asks first), and the slots
+      // are checked again next time.
+      diskst_init = true;
       for (unsigned i = 0; i < num_dsk_savestates; i++) {
         char tmp[256];
         npf_snprintf(tmp, sizeof(tmp), "%s.%d.state", savestate_pattern, i + 1);
-        diskslot_valid[i] = check_file_exists(tmp);
+        const FRESULT res = f_stat(tmp, NULL);
+        diskslot_valid[i] = !fr_missing(res);
+        diskst_init &= FR_OK == res || fr_missing(res);
       }
-      diskst_init = true;
     }
 
     makepers = -1;
@@ -932,13 +936,14 @@ void save_diskstate() {
   if (FR_OK == f_open(&fd, fn, FA_WRITE | FA_CREATE_ALWAYS)) {
     bool success = (makepers >= 0) ? writefd_mem_snapshot_clone(&fd, get_memslot_addr(makepers), sizeof(t_savestate_snapshot))
                                    : writefd_mem_snapshot(&fd);
+    // The data reaches the card when it's closed.
+    success = FR_OK == f_close(&fd) && success;
     if (success) {
       popup.msg = msgs[ingame_menu_lang][IMENU_WSTAF_OK];
       diskslot_valid[-state_slot - 1] = 1;
     } else {
       popup.msg = msgs[ingame_menu_lang][IMENU_WSTAF_ERR];
     }
-    f_close(&fd);
   } else {
     popup.msg = msgs[ingame_menu_lang][IMENU_WSTAF_ERR];
   }

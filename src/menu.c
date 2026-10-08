@@ -642,7 +642,9 @@ bool dump_flashmem_backup() {
     loadrom_progress(i >> 10, fsize >> 10);
   }
 
-  f_close(&fd);
+  // The data reaches the card when it's closed.
+  if (FR_OK != f_close(&fd))
+    return false;
 
   // Calculate the final hash, use a hash prefix as the filename.
   uint8_t h256[32];
@@ -651,9 +653,9 @@ bool dump_flashmem_backup() {
   char finalfn[64];
   npf_snprintf(finalfn, sizeof(finalfn), FLASHBACKUP_FILEPTRN,
                h256[0], h256[1], h256[2], h256[3]);
-  f_rename(FLASHBACKUPTMP_FILEPATH, finalfn);
-
-  return true;
+  // The same firmware backed up before keeps its file.
+  const FRESULT res = f_rename(FLASHBACKUPTMP_FILEPATH, finalfn);
+  return FR_OK == res || (FR_EXIST == res && FR_OK == f_unlink(FLASHBACKUPTMP_FILEPATH));
 }
 
 void patch_gen_callback(bool confirm);
@@ -663,9 +665,7 @@ void sram_battery_test_callback(bool confirm) {
     // Fill SRAM with some pseudorandom data to test later.
     sram_pseudo_fill();
     // Program a check on the next reboot!
-    program_sram_check();
-
-    spop.alert_msg = msgs[lang_id][MSG_SRAMTST_RDY];
+    spop.alert_msg = msgs[lang_id][program_sram_check() ? MSG_SRAMTST_RDY : MSG_ERR_GENERIC];
   }
 }
 
@@ -1025,22 +1025,23 @@ static void recent_reload() {
   smenu.recent.maxentries = MAX(n, 0);
 }
 
-// A game launch: the browser reopens where it was next time, and the game
-// goes first in the Recent list (if in use).
-static bool launch_record(const char *fn, unsigned flags) {
+// A game launch (its save prepared): the browser reopens where it was next
+// time, and the game goes first in the Recent list (if in use). Best effort:
+// the game starts either way.
+static void launch_record(const char *fn, unsigned flags) {
   browser_save_position();
   if (!recent_menu)
-    return true;
+    return;
   // A list that couldn't be read (ie. SD errors) is read again first.
   if (recent_unread)
     recent_reload();
   if (recent_unread)
-    return false;
+    return;
   // Insert element: it becomes the first one, the cursor goes with it.
   smenu.recent.maxentries = insert_recent_fn(sdr_state->rentries, smenu.recent.maxentries, fn, flags);
   smenu.recent.selector = smenu.recent.seloff = 0;
   art_list_gen++;
-  return recent_flush(sdr_state->rentries, smenu.recent.maxentries);
+  recent_flush(sdr_state->rentries, smenu.recent.maxentries);
 }
 
 static bool delete_recent_flush(unsigned entry_num) {
@@ -3190,8 +3191,9 @@ void menu_init(int sram_testres) {
   REG_BLDCNT = 0x1F40;
   REG_BLDALPHA = 0x0808;  // 50% alpha
 
-  // If there's a test result to report, create a popup
-  if (sram_testres >= 0)
+  // If there's a test result to report, create a popup (unless there's a
+  // load error: that load wrote SRAM, so the test isn't valid).
+  if (sram_testres >= 0 && !spop.alert_msg)
     spop.alert_msg = sram_testres ? msgs[lang_id][MSG_SRAMTST_FAIL] :
                                     msgs[lang_id][MSG_SRAMTST_OK];
 }
@@ -3432,9 +3434,6 @@ static void keypress_popup_loadgba(unsigned newkeys) {
       spop.alert_msg = msgs[lang_id][ok ? MSG_REMEMB_CFG_OK : MSG_ERR_SETSAVE];
     }
     else if (GbaLoadPopInfo == spop.submenu) {
-      // Insert the ROM into the recent list (or move it around). Flush to disk!
-      launch_record(spop.p.load.i.romfn, FLAG_RECENT_SD);
-
       // Honor load.patch_type.
       const t_patch *p = get_game_patch(&spop.p.load.i);
       EnumSavetype st = p ? p->save_mode : SaveTypeNone;
@@ -3450,6 +3449,7 @@ static void keypress_popup_loadgba(unsigned newkeys) {
         spop.alert_msg = msgs[lang_id][save_error_msg(errsave)];
         return;
       }
+      launch_record(spop.p.load.i.romfn, FLAG_RECENT_SD);
 
       t_rtc_info rtci = {
         .timestamp = spop.p.load.l.rtcval,

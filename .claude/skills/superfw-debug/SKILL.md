@@ -28,7 +28,7 @@ and commit it as its own commit. Push only when the user asks.
 
 - Always `make clean` when changing build flags.
 - The SD board firmware must fit 512 KiB (enforced at link time). UART builds
-  are within ~250 bytes of the limit (v0.2), keep debug features small.
+  are within ~150 bytes of the limit (v0.2), keep debug features small.
   `superfw.gba` is padded to the next 512 byte block (`tools/fw-fixer.py`),
   so `stat` doesn't show the free space;
   measure where the content ends with `tools/debug/flash-free.sh superfw.gba`
@@ -237,7 +237,8 @@ expose the UART as a pty and to keep SD image writes.
   the card keeps failing until K reads failed. A K larger than what the
   test reads leaves the card failing afterwards, which looks like the
   firmware never recovers: use a small K (2 covers a fast and a slow load
-  attempt).
+  attempt). Keys injected during that timeout are lost: wait ~3 s after the
+  action that hits the fault before the next key.
 - Counting reads to place a fault: a read command covers at most one FAT
   cluster, and `mkfs.fat` gives a 128 MiB FAT32 image 512-byte clusters
   (an 8 KiB ROM chunk is 16 reads). Format a 4 GiB sparse image with
@@ -260,7 +261,7 @@ expose the UART as a pty and to keep SD image writes.
   write it with a space). Check sizes after every change: the UART build had
   dropped to a few dozen bytes free; sha256.c (always) and nanoprintf.c
   (UART builds only, `#ifdef ENABLE_UART_LOGGING`) went -Os to get ~1.1 KiB
-  back. In v0.2 the release has ~270 bytes free and the UART build ~250;
+  back. In v0.2 the release has ~230 bytes free and the UART build ~150;
   code compresses poorly (a byte of code costs about a byte of flash).
   nanoprintf.c and utf_util.c are built for size in UART builds only. To
   fit, the UART build also lost the diagnostic that listed where SDRAM

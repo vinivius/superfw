@@ -327,7 +327,7 @@ int sdram_test(progress_abort_fn progcb);
 void sram_pseudo_fill();
 unsigned sram_pseudo_check();
 int check_peding_sram_test();
-void program_sram_check();
+bool program_sram_check();
 int sdbench_read(progress_abort_fn progcb);
 
 // Logging

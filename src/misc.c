@@ -118,11 +118,10 @@ unsigned sram_test() {
   return sram_pseudo_check();
 }
 
-void program_sram_check() {
+bool program_sram_check() {
   // Just drop a file to schedule an SRAM test next boot.
   FIL fout;
-  if (superfw_file_open(&fout, NULL, PENDING_SRAM_TEST, FA_CREATE_ALWAYS))
-    f_close(&fout);
+  return superfw_file_open(&fout, NULL, PENDING_SRAM_TEST, FA_CREATE_ALWAYS) && FR_OK == f_close(&fout);
 }
 
 int check_peding_sram_test() {
