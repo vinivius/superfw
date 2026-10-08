@@ -441,6 +441,16 @@ typedef struct {
   uint8_t  magic[16];        // SUPERFW~DAVIDGF
 } t_superfw_header;
 
+// True if the firmware in flash is this build (same version and commit): a
+// reboot comes back to it (it isn't when this one runs from the SD card).
+bool flash_fw_is_self() {
+  const volatile t_superfw_header *h = (const volatile t_superfw_header*)ROM_FLASHFIRMW_ADDR;
+  set_supercard_mode(MAPPED_FIRMWARE, false, false);
+  bool self = h->version == VERSION_WORD && h->git_version == VERSION_SLUG_WORD;
+  set_supercard_mode(MAPPED_SDRAM, true, true);
+  return self;
+}
+
 // Validates a superFW image header
 bool check_superfw(const uint8_t *h, uint32_t *ver) {
   const t_superfw_header *header = (t_superfw_header*)h;

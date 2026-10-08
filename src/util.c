@@ -62,6 +62,14 @@ void replace_extension(char *fn, const char *newext) {
   strcat(fn, newext);
 }
 
+// FNV-1a (32 bit) hash of s, up to len chars (~0U: the whole string).
+uint32_t fnv1a(const char *s, unsigned len) {
+  uint32_t h = 0x811C9DC5;
+  for (; len && *s; len--)
+    h = (h ^ (uint8_t)*s++) * 0x01000193;
+  return h;
+}
+
 // Builds dir + the name of path without its extension + ext into out, at
 // most maxlen chars (plus the terminator). A NULL dir keeps the directory of
 // path. A name that doesn't fit is cut short (at a UTF-8 character boundary)
@@ -74,15 +82,14 @@ bool derived_fn(char *out, unsigned maxlen, const char *dir, const char *path, c
   const char *e = find_extension(name);
   unsigned nlen = e ? (unsigned)(e - 1 - name) : strlen(name);
 
-  uint32_t h = 0x811C9DC5;                // FNV-1a of the whole name
+  uint32_t h = 0;
   const bool cut = dlen + nlen + elen > maxlen;
   if (cut) {
     if (dlen + 9 + elen > maxlen) {       // "~" and 8 hex digits
       out[0] = 0;
       return false;
     }
-    for (unsigned i = 0; i < nlen; i++)
-      h = (h ^ (uint8_t)name[i]) * 0x01000193;
+    h = fnv1a(name, nlen);                // Of the whole name
     nlen = maxlen - dlen - 9 - elen;
     while (nlen && (name[nlen] & 0xC0) == 0x80)   // Don't split a character
       nlen--;

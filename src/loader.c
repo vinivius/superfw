@@ -257,12 +257,17 @@ static void log_chunk_rewrites(const char *what) {
   #define log_chunk_rewrites(what)
 #endif
 
-// Copies a loaded chunk into SDRAM and reads it back, rewriting it as needed.
-// ck is the running checksum of the data loaded so far (checksum_words()):
-// the chunk is checked against it and added to it. Returns the number of
-// extra writes needed, or -1 if it never verified.
+// Copies a loaded chunk into SDRAM as whole words (src is padded with zeros
+// up to a word boundary) and reads it back, rewriting it as needed. ck is the
+// running checksum of the data loaded so far (checksum_words()): the chunk is
+// checked against it and added to it. Returns the number of extra writes
+// needed, or -1 if it never verified.
 NOINLINE
-static int copy_chunk_verified(uint8_t *dst, const uint32_t *src, unsigned bytes, uint32_t offset, uint32_t *ck) {
+static int copy_chunk_verified(uint8_t *dst, uint32_t *src, unsigned bytes, uint32_t offset, uint32_t *ck) {
+  memset((uint8_t*)src + bytes, 0, ROUND_UP2(bytes, 4) - bytes);
+  bytes = ROUND_UP2(bytes, 4);
+  if (!bytes)
+    return 0;         // Nothing to copy (a DMA count of 0 would copy 64K words)
   load_sdram_end = MAX(load_sdram_end, offset + bytes);
   uint32_t ck_src[2] = {ck[0], ck[1]};
   checksum_words(src, bytes / 4, ck_src);
@@ -295,8 +300,9 @@ static void checksum_loaded_rom(uint32_t start, uint32_t end, uint32_t *st) {
   if (end <= start)
     return;
   // The SD interface overlaps the upper ROM area, unmap it while reading.
+  // Whole words: the end of the file is padded with zeros in SDRAM.
   set_supercard_mode(MAPPED_SDRAM, true, false);
-  checksum_words((const void*)(GBA_ROM_ADDR + start), (end - start) / 4, st);
+  checksum_words((const void*)(GBA_ROM_ADDR + start), (end - start + 3) / 4, st);
   set_supercard_mode(MAPPED_SDRAM, true, true);
 }
 
@@ -341,9 +347,10 @@ static bool checksum_file_region(FIL *fd, uint32_t start, uint32_t end, uint32_t
     unsigned toread = MIN(LOAD_BS, end - offset);
     UINT rdbytes;
     uint32_t tmp[LOAD_BS/4];
-    if (FR_OK != f_read(fd, tmp, toread, &rdbytes))
+    if (FR_OK != f_read(fd, tmp, toread, &rdbytes) || rdbytes != toread)
       return false;
-    checksum_words(tmp, rdbytes / 4, st);
+    memset((uint8_t*)tmp + toread, 0, ROUND_UP2(toread, 4) - toread);
+    checksum_words(tmp, ROUND_UP2(toread, 4) / 4, st);
   }
   return true;
 }
@@ -397,6 +404,9 @@ unsigned load_gba_rom(
   uint32_t gap_start = ds_addr;
   uint32_t gap_end = igm_addr + igm_space;
 
+  // A retry of a load that overwrote the fonts and cheats the in-game menu is
+  // made from keeps the menu that load installed (the ROM load skips it).
+  const bool install_igm = ingame_menu && load_sdram_end <= ROM_OFF_FONTS_BASE;
   // The in-game menu (with its fonts and cheats) overwrites this SDRAM.
   const uint32_t igm_end = ingame_menu ? igm_addr + igm_reqsz + cheats : 0;
   load_sdram_end = MAX(load_sdram_end, igm_end);
@@ -406,7 +416,7 @@ unsigned load_gba_rom(
   igm_addr += GBA_ROM_BASE;
 
   // Install the menu before loading the ROM, otherwise we overwrite relevant assets.
-  if (ingame_menu) {
+  if (install_igm) {
     char sfn[MAX_FN_LEN];
     savestate_filename_calc(fn, sfn);
     load_ingame_menu(igm_addr, igm_space, dsinfo, savefn, sfn, use_rtc_patches, cheats);
@@ -488,8 +498,7 @@ unsigned load_gba_rom(
     checksum_loaded_rom(0, seg1_end, ck_mem);
     checksum_loaded_rom(gap_end, fs, ck_mem);
     if (ck_mem[0] != ck_load[0] || ck_mem[1] != ck_load[1]) {
-      WRITE_LOG("ROM verify: SDRAM copy mismatch (%08lx:%08lx vs %08lx:%08lx)",
-                ck_mem[0], ck_mem[1], ck_load[0], ck_load[1]);
+      WRITE_LOG("ROM verify: SDRAM copy mismatch");
       #ifdef HAVE_LOGGING
         log_rom_mismatches(&fd, 0, seg1_end);
         log_rom_mismatches(&fd, gap_end, fs);
@@ -506,8 +515,7 @@ unsigned load_gba_rom(
     bool ok = checksum_file_region(&fd, 0, seg1_end, ck_file) &&
               checksum_file_region(&fd, gap_end, fs, ck_file);
     if (!ok || ck_file[0] != ck_load[0] || ck_file[1] != ck_load[1]) {
-      WRITE_LOG("ROM verify: SD re-read mismatch (ok %d, %08lx:%08lx vs %08lx:%08lx)",
-                ok, ck_file[0], ck_file[1], ck_load[0], ck_load[1]);
+      WRITE_LOG("ROM verify: SD re-read mismatch (read ok %d)", ok);
       slowsd = true;
       f_close(&fd);
       return ERR_LOAD_VERIFY;
@@ -736,7 +744,7 @@ static unsigned stream_write(t_sdram_stream *s, uint32_t *buf, unsigned len) {
   if (s->off + wlen > s->lim)
     return ERR_LOAD_BADROM;     // Too big
   if (copy_chunk_verified(&GBA_ROM_ADDR[s->off], buf, wlen, s->off, s->ck) < 0) {
-    WRITE_LOG("Chunk at 0x%06lx never verified in SDRAM", s->off);
+    WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", s->off);
     return ERR_LOAD_VERIFY;
   }
   s->off += wlen;
@@ -786,7 +794,7 @@ unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo
       return ERR_LOAD_NOEMU;    // Not bundled in
     chunk_rewritten(0, t < CHUNK_WRITE_TRIES ? t : -1);
     if (t == CHUNK_WRITE_TRIES) {
-      WRITE_LOG("Bundled emulator never unpacked correctly");
+      WRITE_LOG("Emulator unpack mismatch");
       return ERR_LOAD_VERIFY;
     }
   }

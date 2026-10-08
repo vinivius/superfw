@@ -480,8 +480,12 @@ bool patchengine_process_rom(const uint32_t *rom, unsigned romsize, t_patch_buil
   return true;
 }
 
-// Patch file format. V02 files come after the fix for v1 flash handlers
-// (f170dfb): V01 files are only valid without flash handlers.
+// Patch files (cold code, built for size).
+#pragma GCC push_options
+#pragma GCC optimize("Os")
+
+// Patch file format. V02 files come after the fix for v1 flash tables
+// (f170dfb): V01 files made from one are not valid.
 #define PATCH_MAGIC     "SUPERFWPATCHV02"
 #define PATCH_MAGIC_V01 "SUPERFWPATCHV01"
 
@@ -538,11 +542,21 @@ bool unserialize_patch(const uint8_t *buffer, unsigned size, t_patch *patch) {
   buffer += sizeof(patch->prgs);
   memcpy(patch->op, buffer, sizeof(patch->op));
 
-  // V01 files may hold wrong v1 flash handlers (regenerate them).
-  if (v01)
-    for (unsigned i = 0; i < patch->save_ops; i++)
-      if ((patch->op[patch->wcnt_ops + i] >> 28) == OPC_FLASH_HD)
-        return false;
+  // V01 files made from a v1 flash table hold wrong handlers (regenerate
+  // them). Those tables give the erase and write handlers but, unlike v2
+  // tables, no byte write one.
+  if (v01) {
+    bool v1table = false, wrbt = false;
+    for (unsigned i = 0; i < patch->save_ops; i++) {
+      uint32_t op = patch->op[patch->wcnt_ops + i];
+      if ((op >> 28) == OPC_FLASH_HD) {
+        v1table |= ((op >> 25) & 7) == FLASH_CLRS_HNDLR;
+        wrbt |= ((op >> 25) & 7) == FLASH_WRBT_HNDLR;
+      }
+    }
+    if (v1table && !wrbt)
+      return false;
+  }
 
   return true;
 }
@@ -600,5 +614,7 @@ bool write_patches_cache(const char *romfn, const t_patch *patches) {
     f_unlink(fn);     // Never leave a partial file behind
   return ok;
 }
+
+#pragma GCC pop_options
 
 

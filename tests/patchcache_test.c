@@ -26,34 +26,49 @@
 #include "patchengine.h"
 
 #define OP_EEPROM_HD(addr)  ((0x8u << 28) | (addr))
-#define OP_FLASH_HD(addr)   ((0x9u << 28) | (addr))
+#define OP_FLASH_HD(h, addr) ((0x9u << 28) | ((h) << 25) | (addr))
+#define FLASH_CLRC 1        // Handlers: chip erase, sector erase,
+#define FLASH_CLRS 2        // sector write, byte write
+#define FLASH_WRTS 3
+#define FLASH_WRBT 4
 
 static t_patch p, q;
 static uint8_t buf[1024];
 
-static int write_patch(uint32_t save_op, const char *magic) {
+// A patch with the given save ops (after 2 WAITCNT ones), with magic if set.
+static int write_patch_ops(const uint32_t *ops, unsigned n, const char *magic) {
   memset(&p, 0, sizeof(p));
-  p.wcnt_ops = 2;                       // Save ops come after the WAITCNT ones
+  p.wcnt_ops = 2;
   p.op[0] = p.op[1] = 0x1000;
-  p.save_ops = 1;
-  p.op[2] = save_op;
+  p.save_ops = n;
+  memcpy(&p.op[2], ops, n * sizeof(ops[0]));
   int size = serialize_patch(&p, buf);
   if (magic)
     memcpy(buf, magic, 16);
   return size;
 }
 
+static int write_patch(uint32_t save_op, const char *magic) {
+  return write_patch_ops(&save_op, 1, magic);
+}
+
 int main() {
   // Written as V02 and read back.
-  int size = write_patch(OP_FLASH_HD(0x1234), NULL);
+  const uint32_t v1table[] = { OP_FLASH_HD(FLASH_CLRC, 0x100), OP_FLASH_HD(FLASH_CLRS, 0x200),
+                               OP_FLASH_HD(FLASH_WRTS, 0x300) };
+  const uint32_t v2table[] = { OP_FLASH_HD(FLASH_CLRC, 0x100), OP_FLASH_HD(FLASH_CLRS, 0x200),
+                               OP_FLASH_HD(FLASH_WRTS, 0x300), OP_FLASH_HD(FLASH_WRBT, 0x400) };
+  int size = write_patch_ops(v1table, 3, NULL);
   assert(size <= (int)sizeof(buf));
   assert(!memcmp(buf, "SUPERFWPATCHV02", 16));
   assert(unserialize_patch(buf, size, &q));
-  assert(q.wcnt_ops == 2 && q.save_ops == 1 && q.op[2] == OP_FLASH_HD(0x1234));
+  assert(q.wcnt_ops == 2 && q.save_ops == 3 && q.op[3] == OP_FLASH_HD(FLASH_CLRS, 0x200));
 
-  // V01 files predate the v1 flash handler fix: refused with flash handlers,
-  // still used without them.
-  assert(!unserialize_patch(buf, write_patch(OP_FLASH_HD(0x1234), "SUPERFWPATCHV01"), &q));
+  // V01 files predate the fix for v1 flash tables: refused if made from one
+  // (erase and write handlers, no byte write one), used otherwise.
+  assert(!unserialize_patch(buf, write_patch_ops(v1table, 3, "SUPERFWPATCHV01"), &q));
+  assert(unserialize_patch(buf, write_patch_ops(v2table, 4, "SUPERFWPATCHV01"), &q));
+  assert(unserialize_patch(buf, write_patch(OP_FLASH_HD(5, 0x1234), "SUPERFWPATCHV01"), &q));
   assert(unserialize_patch(buf, write_patch(OP_EEPROM_HD(0x1234), "SUPERFWPATCHV01"), &q));
   assert(q.op[2] == OP_EEPROM_HD(0x1234));
 
