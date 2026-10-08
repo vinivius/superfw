@@ -101,7 +101,12 @@ jobs:
           tools/debug/flash-free.sh superfw.gba "UART debug" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Checksums
-        run: cd out && sha256sum *.fw *.gba > SHA256SUMS && cat SHA256SUMS
+        run: |
+          # Named one by one: the order of a glob depends on the locale.
+          v=${{ steps.version.outputs.version }}
+          cd out
+          sha256sum "superfw-next-$v-sd.fw" "superfw-next-$v-sd.gba" "superfw-next-$v-sd-uart-debug.gba" > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Upload the firmware
         uses: actions/upload-artifact@v4
@@ -197,22 +202,39 @@ jobs:
               --latest="$latest" "${files[@]}" || echo "Creating $tag failed, checking what was published"
           fi
 
-          # Published (by this run, an earlier attempt or another run): it must
-          # have every file. Missing ones are only uploaded from the commit the
-          # release was made from, never mixed with another build.
+          # Published (by this run, an earlier attempt or another run): every
+          # file must be fully uploaded (GitHub can leave an empty "starter"
+          # asset after a failed upload), and match this build byte for byte
+          # when the release was made from this commit. Broken or missing
+          # files are uploaded again, but never from another commit's build.
           gh release view "$tag" >/dev/null 2>&1 || { echo "::error::$tag could not be published"; exit 1; }
-          have=$(gh release view "$tag" --json assets --jq '.assets[].name')
-          missing=()
-          for f in "${files[@]}"; do
-            grep -qxF "$(basename "$f")" <<< "$have" || missing+=("$f")
-          done
-          if [ ${#missing[@]} -eq 0 ]; then
-            echo "$tag has all its files."
-            exit 0
-          fi
           target=$(gh release view "$tag" --json targetCommitish --jq .targetCommitish)
-          if [ "$target" != "$GITHUB_SHA" ]; then
-            echo "::error::$tag (from $target) is missing ${missing[*]}: fix it by hand, or bump VERSION_WORD."
-            exit 1
+          check() {
+            local assets f n a
+            assets=$(gh release view "$tag" --json assets --jq '.assets[] | "\(.name) \(.state) \(.digest // "")"')
+            redo=()
+            for f in "${files[@]}"; do
+              n=$(basename "$f")
+              a=$(awk -v n="$n" '$1 == n' <<< "$assets")
+              if [ "$target" = "$GITHUB_SHA" ]; then
+                [ "$a" = "$n uploaded sha256:$(sha256sum "$f" | cut -d' ' -f1)" ] || redo+=("$f")
+              else
+                [ "$(cut -d' ' -f2 <<< "$a")" = uploaded ] || redo+=("$f")
+              fi
+            done
+          }
+          check
+          if [ ${#redo[@]} -gt 0 ]; then
+            if [ "$target" != "$GITHUB_SHA" ]; then
+              echo "::error::$tag (from $target) is missing ${redo[*]##*/}: fix it by hand, or bump VERSION_WORD."
+              exit 1
+            fi
+            echo "Uploading again: ${redo[*]##*/}"
+            gh release upload "$tag" --clobber "${redo[@]}"
+            check
+            if [ ${#redo[@]} -gt 0 ]; then
+              echo "::error::$tag is still missing ${redo[*]##*/}"
+              exit 1
+            fi
           fi
-          gh release upload "$tag" "${missing[@]}"
+          echo "$tag has all its files."
