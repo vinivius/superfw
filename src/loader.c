@@ -97,80 +97,64 @@ bool validate_gb_header(const uint8_t *header) {
   return true;
 }
 
-void fix_gba_header(volatile uint16_t *header) {
-  // Fix header checksum unconditionally.
-  header[0xB2 / 2] = 0x0096;     // Device ID/fixed value
-  header[0xB4 / 2] = 0x0000;
-  header[0xB6 / 2] = 0x0000;
-  // 0xB8 and 0xBA are left out (contain IGM information)
-  header[0xBC / 2] = header[0xBC / 2] & 0xFF; // Preserve version num
+// Data written to SDRAM is read back and rewritten if it did not stick (some
+// carts occasionally drop SDRAM writes), up to CHUNK_WRITE_TRIES times.
+#define CHUNK_WRITE_TRIES   8
 
-  uint8_t crc = header[0xBC / 2];
-  for (unsigned i = 0; i < 14; i++) {
-    uint16_t v = header[0xA0 / 2 + i];
-    crc += (v & 0xFF) + (v >> 8);
-  }
+// The cart's registers are in the ROM space: the SD card's command register
+// at 24 MiB, the mode register in the last half word. While SDRAM is writable
+// (as SD card accesses need) writes to them reach it too: SD commands and mode
+// changes overwrite the data there. Loads record the data they write to those
+// words: the command one is put back after each SD card access, the other one
+// (that can't be written: it's the mode register) counts as written. The
+// mode change that runs the game overwrites it: the game sees that mode, as
+// it always did.
+#define REG_WORDS           2
+#define REG_SDCMD           0
+#define REG_MODE            1
+static const uint32_t reg_words[REG_WORDS] = { 0x01800000, MAX_GBA_ROM_SIZE - 4 };
+static uint32_t reg_word_data[REG_WORDS];
 
-  header[0xBC / 2] = (-(0x19+crc)) << 8 | header[0xBC / 2];
+// Records the data written to SDRAM at offset (bytes, from data) that falls
+// on the register words.
+static void reg_words_record(uint32_t offset, const uint32_t *data, unsigned bytes) {
+  for (unsigned i = 0; i < REG_WORDS; i++)
+    if (reg_words[i] - offset < bytes)
+      reg_word_data[i] = data[(reg_words[i] - offset) / 4];
 }
 
-// Loads the in-game menu at the desired address and size (returns success).
-// addr must be 4 byte aligned.
-void load_ingame_menu(
-  uint32_t base_addr, uint32_t total_size, bool useds,
-  const char* savefn, const char* statefn,
-  bool rtc_patches, unsigned cheats
-) {
-  const unsigned menu_size = ingame_menu_payload.menu_rsize;
-  const unsigned fontsz = font_block_size();
+// Puts the data recorded at the SD command register back (SD card unmapped).
+// Where nothing was recorded nothing that's used is there either (SD commands
+// write there all the time). False if it doesn't read back as written.
+static bool sdcmd_word_restore() {
+  volatile uint32_t *w = (uint32_t*)&GBA_ROM_ADDR[reg_words[REG_SDCMD]];
+  for (unsigned t = 0; t < CHUNK_WRITE_TRIES && *w != reg_word_data[REG_SDCMD]; t++)
+    *w = reg_word_data[REG_SDCMD];
+  return *w == reg_word_data[REG_SDCMD];
+}
 
-  set_supercard_mode(MAPPED_SDRAM, true, false);
+// Fixes the header checksum unconditionally (just in case we boot to BIOS).
+// False if it doesn't read back as written. SD card unmapped.
+static bool fix_gba_header(volatile uint16_t *header) {
+  for (unsigned t = 0; t < CHUNK_WRITE_TRIES; t++) {
+    header[0xB2 / 2] = 0x0096;     // Device ID/fixed value
+    header[0xB4 / 2] = 0x0000;
+    header[0xB6 / 2] = 0x0000;
+    // 0xB8 and 0xBA are left out (contain IGM information)
+    const uint8_t version = header[0xBC / 2];
 
-  // Copy the font pack first, using memmove to handle collisions properly.
-  // TODO: Allow partial font copying, to reduce memory usage (ie. in 32MiB ROMs)
-  uint8_t *ptr = (uint8_t*)base_addr;
-  uint8_t *font_ptr = (uint8_t*)ROM_FONTBASE_U8;
-  // Copy fonts, and cheats (appended right after the cheat buffer)
-  memmove32(&ptr[menu_size], font_ptr, fontsz + cheats);
+    uint8_t crc = version;
+    for (unsigned i = 0; i < 14; i++) {
+      uint16_t v = header[0xA0 / 2 + i];
+      crc += (v & 0xFF) + (v >> 8);
+    }
 
-  // Copy the in-game-menu payload from rodata
-  t_igmenu *igm = (t_igmenu*)base_addr;
-  memcpy32(ptr, &ingame_menu_payload, ingame_menu_payload_size);
-
-  // Decode the start instruction, calculate branch target.
-  uint16_t hotk = hotkey_list[hotkey_combo].mask;
-  set_abort_lr(hotk << 16);        // Write key to register as well
-
-  // Patch the menu header to provide necessary data.
-  igm->drv_issdhc = sc_issdhc();              // SD driver data (no init happens)
-  igm->drv_rca = sc_rca();
-  igm->menu_hotkey = hotk;                    // Configured hotkey
-  igm->menu_lang = lang_id;                   // Use the current lang id
-  igm->menu_use_directsave = useds;           // DirectSave in use
-  igm->menu_anim_speed = anim_speed;          // Menu animation speed
-  igm->menu_font_base = base_addr + menu_size;// Base addr where the fonts live
-  igm->menu_cheats_base = cheats ? base_addr + menu_size + fontsz : 0;
-  igm->scratch_space_base = base_addr + menu_size + fontsz + cheats;
-  igm->scratch_space_size = total_size - (menu_size + fontsz + cheats);
-  igm->menu_has_rtc_support = rtc_patches;    // Using RTC patches
-  igm->savefile_backups = backup_sram_default;// Backup count
-  for (unsigned i = 0; i < sizeof(igm->menu_palette) / sizeof(igm->menu_palette[0]); i++)
-    igm->menu_palette[i] = MEM_PALETTE[ING_PALETTE_BASE + i];
-
-  // Calculate the basename, so we can produce proper sav/backup files
-  // Only used if saving is enabled and DirSav is disabled.
-  if (savefn && !useds) {
-    char save_basename[MAX_FN_LEN];
-    strcpy(save_basename, savefn);
-    replace_extension(save_basename, "");
-    memcpy32(igm->savefile_pattern, save_basename, sizeof(igm->savefile_pattern));
+    const uint16_t chk = (uint8_t)-(0x19 + crc) << 8 | version;
+    header[0xBC / 2] = chk;
+    if (header[0xB2 / 2] == 0x0096 && !header[0xB4 / 2] && !header[0xB6 / 2] && header[0xBC / 2] == chk)
+      return true;
   }
-  else
-    memset32(igm->savefile_pattern, 0, sizeof(igm->savefile_pattern));
-
-  memcpy32(igm->statefile_pattern, statefn, sizeof(igm->statefile_pattern));
-
-  set_supercard_mode(MAPPED_SDRAM, true, true);
+  return false;
 }
 
 void load_directsave_config(const t_dirsave_info *dsinfo) {
@@ -231,10 +215,8 @@ static void load_writes(uint32_t start, uint32_t end) {
     load_sdram_lost = true;
 }
 
-// Data written to SDRAM is read back and rewritten if it did not stick (some
-// carts occasionally drop SDRAM writes), up to CHUNK_WRITE_TRIES times. The
-// chunks that needed it are counted (and logged) for diagnostics.
-#define CHUNK_WRITE_TRIES   8
+// The chunks that needed rewriting (CHUNK_WRITE_TRIES) are counted (and
+// logged) for diagnostics.
 static unsigned chunk_rewrites = 0;
 #ifdef HAVE_LOGGING
   static uint32_t chunk_rewrite_off[16];
@@ -283,14 +265,6 @@ static unsigned pad_to_word(void *buf, unsigned len) {
   return padded;
 }
 
-// The cart's registers are in the ROM space: the SD card's from 16 MiB, the
-// mode one in the last half word. While SDRAM is writable, the writes to them
-// reach it too: ROM loads use the SD card with SDRAM read-only, and the ROM's
-// last word is checked as copied (mode changes overwrite its upper half; the
-// game sees the last mode set).
-#define ROM_MODEREG_WORD    (MAX_GBA_ROM_SIZE - 4)
-static uint32_t rom_modereg_word;       // The ROM's data there
-
 // Copies a loaded chunk to SDRAM at offset (from GBA_ROM_ADDR) as whole words
 // (src is padded with zeros up to a word boundary) and reads it back,
 // rewriting it as needed. ck is the running checksum of the data loaded so
@@ -329,8 +303,7 @@ static int copy_chunk_verified(uint32_t offset, uint32_t *src, unsigned bytes, u
   }
   set_supercard_mode(MAPPED_SDRAM, true, true);
 
-  if (offset + bytes > ROM_MODEREG_WORD)
-    rom_modereg_word = src[(ROM_MODEREG_WORD - offset) / 4];
+  reg_words_record(offset, src, bytes);
   ck[0] = ck_src[0];
   ck[1] = ck_src[1];
   chunk_rewritten(offset, ret);
@@ -339,16 +312,92 @@ static int copy_chunk_verified(uint32_t offset, uint32_t *src, unsigned bytes, u
 
 // Checksums ROM data already loaded in SDRAM (used to verify the load).
 static void checksum_loaded_rom(uint32_t start, uint32_t end, uint32_t *st) {
-  // Whole words: the end of the file is padded with zeros in SDRAM.
-  const uint32_t vend = MIN(ROUND_UP2(end, 4), ROM_MODEREG_WORD);
-  if (vend > start) {
-    // The SD interface overlaps the upper ROM area, unmap it while reading.
-    set_supercard_mode(MAPPED_SDRAM, true, false);
-    checksum_words((const void*)(GBA_ROM_ADDR + start), (vend - start) / 4, st);
-    set_supercard_mode(MAPPED_SDRAM, true, true);
+  // Whole words: the end of the file is padded with zeros in SDRAM. The
+  // register words hold the data written to them (see reg_words).
+  const uint32_t mode = reg_words[REG_MODE];
+  end = ROUND_UP2(end, 4);
+  if (end <= start)
+    return;
+  // The SD interface overlaps the upper ROM area, unmap it while reading.
+  set_supercard_mode(MAPPED_SDRAM, true, false);
+  sdcmd_word_restore();
+  checksum_words((const void*)(GBA_ROM_ADDR + start), (MIN(end, mode) - start) / 4, st);
+  if (end > mode)
+    checksum_words(&reg_word_data[REG_MODE], 1, st);
+  set_supercard_mode(MAPPED_SDRAM, true, true);
+}
+
+// Installs the in-game menu at base_addr (total_size bytes for it): the menu,
+// the font pack and the cheats (cheats bytes, loaded after the fonts). False
+// if it doesn't read back as written.
+static bool load_ingame_menu(
+  uint32_t base_addr, uint32_t total_size, bool useds,
+  const char* savefn, const char* statefn,
+  bool rtc_patches, unsigned cheats
+) {
+  const unsigned menu_size = ingame_menu_payload.menu_rsize;
+  const unsigned fontsz = font_block_size();
+  const unsigned fcsize = ROUND_UP2(fontsz + cheats, 4);
+
+  // The menu header, filled in before it's copied.
+  t_igmenu hdr;
+  memcpy(&hdr, &ingame_menu_payload, sizeof(hdr));
+
+  // Decode the start instruction, calculate branch target.
+  uint16_t hotk = hotkey_list[hotkey_combo].mask;
+  set_abort_lr(hotk << 16);        // Write key to register as well
+
+  // Patch the menu header to provide necessary data.
+  hdr.drv_issdhc = sc_issdhc();              // SD driver data (no init happens)
+  hdr.drv_rca = sc_rca();
+  hdr.menu_hotkey = hotk;                    // Configured hotkey
+  hdr.menu_lang = lang_id;                   // Use the current lang id
+  hdr.menu_use_directsave = useds;           // DirectSave in use
+  hdr.menu_anim_speed = anim_speed;          // Menu animation speed
+  hdr.menu_font_base = base_addr + menu_size;// Base addr where the fonts live
+  hdr.menu_cheats_base = cheats ? base_addr + menu_size + fontsz : 0;
+  hdr.scratch_space_base = base_addr + menu_size + fontsz + cheats;
+  hdr.scratch_space_size = total_size - (menu_size + fontsz + cheats);
+  hdr.menu_has_rtc_support = rtc_patches;    // Using RTC patches
+  hdr.savefile_backups = backup_sram_default;// Backup count
+  for (unsigned i = 0; i < sizeof(hdr.menu_palette) / sizeof(hdr.menu_palette[0]); i++)
+    hdr.menu_palette[i] = MEM_PALETTE[ING_PALETTE_BASE + i];
+
+  // Calculate the basename, so we can produce proper sav/backup files
+  // Only used if saving is enabled and DirSav is disabled.
+  memset(hdr.savefile_pattern, 0, sizeof(hdr.savefile_pattern));
+  if (savefn && !useds) {
+    strcpy(hdr.savefile_pattern, savefn);
+    replace_extension(hdr.savefile_pattern, "");
   }
-  if (end > ROM_MODEREG_WORD && start <= ROM_MODEREG_WORD)
-    checksum_words(&rom_modereg_word, 1, st);     // As copied (see above)
+  memcpy(hdr.statefile_pattern, statefn, sizeof(hdr.statefile_pattern));
+
+  set_supercard_mode(MAPPED_SDRAM, true, false);
+
+  // Copy the font pack (and the cheats after it) first, using memmove to
+  // handle collisions properly (overlapping where they go, they can only be
+  // moved once: the load's retry installs the menu again if it can). Their
+  // checksum before the move checks them after it.
+  // TODO: Allow partial font copying, to reduce memory usage (ie. in 32MiB ROMs)
+  uint8_t *ptr = (uint8_t*)base_addr;
+  uint8_t *font_ptr = (uint8_t*)ROM_FONTBASE_U8;
+  uint32_t ck_src[2] = {0, 0}, ck_dst[2] = {0, 0};
+  checksum_words(font_ptr, fcsize / 4, ck_src);
+  memmove32(&ptr[menu_size], font_ptr, fcsize);
+  checksum_words(&ptr[menu_size], fcsize / 4, ck_dst);
+  bool ok = ck_dst[0] == ck_src[0] && ck_dst[1] == ck_src[1];
+
+  reg_words_record(base_addr - GBA_ROM_BASE + menu_size, (uint32_t*)&ptr[menu_size], fcsize);
+  set_supercard_mode(MAPPED_SDRAM, true, true);
+
+  // Then the menu (from rodata), with its header.
+  uint32_t ck[2] = {0, 0};
+  const uint32_t off = base_addr - GBA_ROM_BASE;
+  ok = ok && copy_chunk_verified(off, (uint32_t*)&hdr, sizeof(hdr), ck) >= 0;
+  for (unsigned o = sizeof(hdr); ok && o < ingame_menu_payload_size; o += LOAD_BS)
+    ok = copy_chunk_verified(off + o, (uint32_t*)((uintptr_t)&ingame_menu_payload + o),
+                             MIN(LOAD_BS, ingame_menu_payload_size - o), ck) >= 0;
+  return ok;
 }
 
 // Loads the file region [start, end) to the same offsets in SDRAM, adding it
@@ -358,10 +407,9 @@ static unsigned load_rom_region(FIL *fd, uint32_t start, uint32_t end, uint32_t 
                                 progress_fn progress, uint32_t *steps, uint32_t nsteps) {
   if (start >= end)
     return 0;
-  // ROM data may be where the SD card's registers are (see ROM_MODEREG_WORD).
-  set_supercard_mode(MAPPED_SDRAM, false, true);
-  unsigned err = FR_OK == f_lseek(fd, start) ? 0 : ERR_LOAD_BADROM;
-  for (uint32_t offset = start; offset < end && !err; offset += LOAD_BS) {
+  if (FR_OK != f_lseek(fd, start))
+    return ERR_LOAD_BADROM;
+  for (uint32_t offset = start; offset < end; offset += LOAD_BS) {
     if (progress && (*steps & 31) == 0)
       progress(*steps, nsteps);
     (*steps)++;
@@ -370,19 +418,15 @@ static unsigned load_rom_region(FIL *fd, uint32_t start, uint32_t end, uint32_t 
     UINT rdbytes;
     uint32_t tmp[LOAD_BS/4];
     if (FR_OK != f_read(fd, tmp, toread, &rdbytes) || rdbytes != toread)
-      err = ERR_LOAD_BADROM;
-    else if (dry)
+      return ERR_LOAD_BADROM;
+    if (dry)
       checksum_words(tmp, pad_to_word(tmp, toread) / 4, ck);
-    else {
-      if (copy_chunk_verified(offset, tmp, toread, ck) < 0) {
-        WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", offset);
-        err = ERR_LOAD_VERIFY;
-      }
-      set_supercard_mode(MAPPED_SDRAM, false, true);
+    else if (copy_chunk_verified(offset, tmp, toread, ck) < 0) {
+      WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", offset);
+      return ERR_LOAD_VERIFY;
     }
   }
-  set_supercard_mode(MAPPED_SDRAM, true, true);
-  return err;
+  return 0;
 }
 
 // The DirectSave payload (if ds) and the in-game menu (if igm) go after the
@@ -437,8 +481,8 @@ unsigned load_gba_rom(
 
   // keep_igm: a retry of a load that overwrote the fonts and cheats the
   // in-game menu is made from keeps the menu that load installed (the ROM
-  // load skips its space).
-  const bool install_igm = ingame_menu && !keep_igm;
+  // load skips its space), if it was installed right.
+  static bool igm_installed;
   if (ingame_menu)
     load_writes(igm_addr, igm_addr + ps.igm_size);
 
@@ -447,18 +491,25 @@ unsigned load_gba_rom(
   igm_addr += GBA_ROM_BASE;
 
   // Install the menu before loading the ROM, otherwise we overwrite relevant assets.
-  if (install_igm) {
+  if (ingame_menu && !keep_igm) {
     char sfn[MAX_FN_LEN];
     savestate_filename_calc(fn, sfn);
-    load_ingame_menu(igm_addr, igm_space, dsinfo, savefn, sfn, use_rtc_patches, cheats);
+    igm_installed = load_ingame_menu(igm_addr, igm_space, dsinfo, savefn, sfn, use_rtc_patches, cheats);
+    if (!igm_installed)
+      return ERR_LOAD_VERIFY;
   }
   else if (ingame_menu) {
     // Kept from the first try: the SD card may have been set up again since.
-    t_igmenu *igm = (t_igmenu*)igm_addr;
+    if (!igm_installed)
+      return ERR_LOAD_VERIFY;
+    volatile t_igmenu *igm = (t_igmenu*)igm_addr;
     set_supercard_mode(MAPPED_SDRAM, true, false);
     igm->drv_issdhc = sc_issdhc();
     igm->drv_rca = sc_rca();
+    const bool ok = igm->drv_issdhc == sc_issdhc() && igm->drv_rca == sc_rca();
     set_supercard_mode(MAPPED_SDRAM, true, true);
+    if (!ok)
+      return ERR_LOAD_VERIFY;
   }
 
   // Proceed to load the ROM
@@ -523,20 +574,27 @@ unsigned load_gba_rom(
   // Proceed to patch the ROM
   set_supercard_mode(MAPPED_SDRAM, true, false);
 
+  // That was the last SD card access: put back the data written at its
+  // command register (see reg_words).
+  bool ok = sdcmd_word_restore();
+
   // Load/Patch the DirectSave payload if necessary.
   if (dsinfo)
-    payload_apply_rom(GBA_ROM_ADDR, MAX_GBA_ROM_SIZE, GBA_ROM_BASE, directsave_payload, directsave_payload_size, ds_addr);
+    ok = ok && payload_apply_rom(GBA_ROM_ADDR, MAX_GBA_ROM_SIZE, GBA_ROM_BASE, directsave_payload,
+                                 directsave_payload_size, ds_addr);
 
   // Actually apply patches
   if (ptch) {
-    patch_apply_rom(GBA_ROM_ADDR, MAX_GBA_ROM_SIZE, 0, true, ptch, use_rtc_patches,
-                    ingame_menu ? igm_addr : 0, dsinfo ? ds_addr : 0);
+    ok = ok && patch_apply_rom(GBA_ROM_ADDR, MAX_GBA_ROM_SIZE, 0, true, ptch, use_rtc_patches,
+                               ingame_menu ? igm_addr : 0, dsinfo ? ds_addr : 0);
     if (rtcinfo)
       load_rtcclock_data(rtcinfo);
   }
 
-  // Fix header checksum unconditionally (just in case we boot to BIOS).
-  fix_gba_header((uint16_t*)GBA_ROM_ADDR);
+  if (!ok || !fix_gba_header((uint16_t*)GBA_ROM_ADDR)) {
+    set_supercard_mode(MAPPED_SDRAM, true, true);
+    return ERR_LOAD_VERIFY;
+  }
 
   // Go ahead and load config in SRAM, if applicable.
   if (dsinfo)
@@ -614,15 +672,21 @@ unsigned flash_gba_nor(
     }
 
     // Patch ROM, don't need WAITCNT patches
-    if (ptch)
-      patch_apply_rom(scratch, ssize, bigoff, false, ptch, rtc_patches, ingame_menu ? igmaddr : 0, dirsaving ? dsaddr : 0);
+    bool ok = !ptch || patch_apply_rom(scratch, ssize, bigoff, false, ptch, rtc_patches,
+                                       ingame_menu ? igmaddr : 0, dirsaving ? dsaddr : 0);
 
     // Copy (partial) DirSav / IGM trampoline payloads if necessary
     if (dirsaving && ds_flashoffset)
-      payload_apply_rom(scratch, ssize, bigoff, directsave_payload, directsave_payload_size, ds_flashoffset);
+      ok = ok && payload_apply_rom(scratch, ssize, bigoff, directsave_payload, directsave_payload_size, ds_flashoffset);
 
     if (ingame_menu && igm_flashoffset)
-      payload_apply_rom(scratch, ssize, bigoff, ingame_trampoline_payload, ingame_trampoline_payload_size, igm_flashoffset);
+      ok = ok && payload_apply_rom(scratch, ssize, bigoff, ingame_trampoline_payload,
+                                   ingame_trampoline_payload_size, igm_flashoffset);
+    if (!ok) {
+      f_close(&fd);
+      reset_superchis_normap();
+      return ERR_FLASH_OP;
+    }
 
     // Wait until erasing is complete (if it didn't complete in the meantime)
     while (1) {
@@ -683,7 +747,9 @@ unsigned launch_gba_nor(
   if (ingame_menu) {
     char sfn[MAX_FN_LEN];
     savestate_filename_calc(romfn, sfn);
-    load_ingame_menu(igm_addr, igm_space, dsinfo, savefn, sfn, use_rtc_patches, cheats);
+    load_writes(0, ingame_menu_payload.menu_rsize + font_block_size() + cheats);
+    if (!load_ingame_menu(igm_addr, igm_space, dsinfo, savefn, sfn, use_rtc_patches, cheats))
+      return ERR_LOAD_VERIFY;
   }
 
   if (dsinfo)

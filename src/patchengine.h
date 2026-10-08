@@ -65,7 +65,7 @@ bool patchmem_lookup(const uint8_t *gamecode, const uint8_t *dbptr, t_patch *pda
 bool patch_apply_rom(uint8_t *buffer, unsigned bufsize, uint32_t baseaddr, bool patch_waitcnt, const t_patch *pdata,
                      bool patch_rtc, uint32_t igmenu_addr, uint32_t ds_addr);
 // Payload patching routine
-void payload_apply_rom(uint8_t *buffer, unsigned bufsize, uint32_t baseaddr,
+bool payload_apply_rom(uint8_t *buffer, unsigned bufsize, uint32_t baseaddr,
                        const uint8_t *payload, unsigned payload_size, uint32_t payload_offset);
 
 void patchengine_init(t_patch_builder *patch, unsigned filesize);

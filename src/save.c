@@ -242,6 +242,24 @@ bool write_save_sram_rotate(const char *templ_fn, unsigned max_backups) {
 }
 
 
+// The pending save sentinel: the save file name template, then options (ie.
+// backup_count=N). The template takes up to MAX_FN_LEN - 9 chars (with
+// ".tmp.sav" it fits MAX_FN_LEN): read_lines() reads lines of up to its
+// buffer's size - 2.
+typedef struct {
+  char fn[MAX_FN_LEN - 7];
+  unsigned lines, backups;
+} t_sentinel;
+
+static bool sentinel_line(char *line, unsigned len, void *usr) {
+  t_sentinel *st = (t_sentinel*)usr;
+  if (!st->lines++)
+    memcpy(st->fn, line, len + 1);    // read_lines() keeps it under sizeof(fn)
+  else if (!strncmp(line, "backup_count=", 13))
+    st->backups = parseuint(&line[13]);
+  return true;
+}
+
 // Writes a save game from SRAM using a pending file sentinel as input.
 unsigned flush_pending_sram() {
   FIL fd;
@@ -251,35 +269,16 @@ unsigned flush_pending_sram() {
   if (res != FR_OK)
     return ERR_SAVE_FLUSH_READFAIL;      // ie. an SD card error, retry later
 
-  // The file contains the save filename template, plus options.
-  UINT rdbytes = 0;
-  char content[512];
-  if (FR_OK != f_read(&fd, content, sizeof(content) - 1, &rdbytes)) {
-    f_close(&fd);
-    return ERR_SAVE_FLUSH_READFAIL;
-  }
-  content[rdbytes] = 0;
+  // A name too long for a save (ie. a damaged file) is skipped: the next line
+  // is taken as the name, and isn't one.
+  t_sentinel st = { .fn = "", .lines = 0, .backups = 0 };
+  char buf[sizeof(st.fn)];
+  bool ok = read_lines(&fd, buf, sizeof(buf), sentinel_line, &st);
   f_close(&fd);
-
-  // Separate options using NULL.
-  unsigned l = strlen(content);
-  for (unsigned i = 0; i < l; i++)
-    if (content[i] == '\n')
-      content[i] = 0;
-
-  // Extract the filename and options
-  const char *savefn = content;
-  const char *bkpn = NULL;
-  for (unsigned i = strlen(content) + 1; i < l + 1; ) {
-    if (!strncmp(&content[i], "backup_count=", 13))
-      bkpn = &content[i + 13];
-    i += strlen(&content[i]) + 1;
-  }
-
-  // Parse options.
-  unsigned backup_num = 0;
-  if (bkpn)
-    backup_num = parseuint(bkpn);
+  if (!ok)
+    return ERR_SAVE_FLUSH_READFAIL;
+  const char *savefn = st.fn;
+  const unsigned backup_num = st.backups;
 
   // Validate the filename! Should start with "/". Let the FatFS check it too.
   if (savefn[0] != '/')

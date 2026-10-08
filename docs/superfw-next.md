@@ -90,15 +90,22 @@ SuperFW and SuperFW Next can install each other.
   together after the ROM (or in its free space), DirectSave first, instead
   of the load failing. ROMs just under 32 MiB load without patches too.
 - ROMs over 24 MiB load: the SD card's registers are in the ROM space, and
-  its commands reached the ROM's data in the cart's RAM while it loaded
-  (the ROM check then failed the load).
+  its commands reached the ROM's data (or the in-game menu's) in the cart's
+  RAM while it loaded; the ROM check then failed the load. The data there
+  is put back after the load's last SD card access.
+- The in-game menu, the patches and the DirectSave payload are checked
+  after they're written to the cart's RAM, like the ROM.
+- Built with -fno-ipa-ra: the compiler (GCC 14) otherwise assumed some
+  registers survive calls they don't, and miscompiled the DLDI patching of
+  NDS homebrew (a header byte was written into the firmware instead).
 - Patches are applied correctly when writing a game to NOR flash, where a
   patched function can span two of the parts the image is processed in.
   Patch database entries and patch files that can't be applied are refused,
   and a game's database patches no longer keep the free space found for the
   game opened before (where the in-game menu would go over game data).
 - A card error while checking for a save no longer starts the game with a
-  blank save that then replaces it. Hand-edited configs are read whole.
+  blank save that then replaces it. Hand-edited configs and settings files
+  are read whole. A damaged pending save file no longer crashes the boot.
 - Patch files the patch engine made from a v1 flash table before the fix
   for those (upstream f170dfb) are made again. The file format stays the
   same, so SuperFW and SuperFW Next keep reading each other's files.

@@ -16,6 +16,8 @@ GBA SO (pin 2) to adapter RXD, GBA SI (pin 3) to adapter TXD, and GND (pin
 - `gba-shot.sh`       Sends keys, then takes a screenshot and prints its path.
 - `gba-keys.sh`       Sends keys, then prints the new log lines.
 - `setup-toolchain.sh` Downloads the Arm GNU toolchain.
+- `ipascan.py`       Checks a disassembly for the GCC -fipa-ra miscompile the
+                      build avoids with -fno-ipa-ra (see the skill).
 - `emu/setup.sh`      Builds gpsp with Supercard and UART emulation, plus a
                       headless frontend (`emu/fe.c`); `emu/run.sh` runs it,
                       `emu/keys.sh` injects keys, `emu/shot.sh` saves the

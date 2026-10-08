@@ -73,8 +73,8 @@ NOINLINE bool recent_flush(const t_rentry *rentries, unsigned rcount) {
     }
   }
 
-  f_close(&fo);
-  return true;
+  // The data reaches the card when it's closed.
+  return FR_OK == f_close(&fo);
 }
 
 NOINLINE unsigned insert_recent_fn(t_rentry *rentries, unsigned rcount, const char *fn, unsigned flags) {

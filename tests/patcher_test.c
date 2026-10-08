@@ -105,8 +105,8 @@ static uint16_t payload[512];
 
 static void apply(uint8_t *buf, unsigned size, uint32_t base, const t_patch *p,
                   uint32_t igm, uint32_t ds, uint32_t poff, unsigned psize) {
-  patch_apply_rom(buf, size, base, true, p, true, igm, ds);
-  payload_apply_rom(buf, size, base, (uint8_t*)payload, psize, poff);
+  assert(patch_apply_rom(buf, size, base, true, p, true, igm, ds));
+  assert(payload_apply_rom(buf, size, base, (uint8_t*)payload, psize, poff));
 }
 
 int main() {
@@ -116,6 +116,26 @@ int main() {
   PAYLOADS(FILL_PAYLOAD)
   for (unsigned i = 0; i < sizeof(payload) / 2; i++)
     payload[i] = rnd();
+
+  // The bundled patch database: a game in it is found (its patches pass the
+  // checks); a damaged header (ie. a database from the SD card) is refused,
+  // not searched for billions of entries.
+  {
+    static uint8_t db[1024 * 1024];
+    FILE *f = fopen("../res/patches.db", "rb");
+    assert(f && fread(db, 1, sizeof(db), f) > 1024);
+    fclose(f);
+    t_patch p;
+    assert(patchmem_lookup((const uint8_t*)"A2NE\0", db, &p) && p.irqh_ops == 2);
+    assert(!patchmem_lookup((const uint8_t*)"ZZZZ\0", db, &p));
+    uint32_t *hdr = (uint32_t*)db;
+    hdr[2] = 0xFFFFFFFF;                          // patchcnt
+    assert(!patchmem_lookup((const uint8_t*)"A2NE\0", db, &p));
+    hdr[2] = 64 * hdr[3] + 1;                     // More than the index holds
+    assert(!patchmem_lookup((const uint8_t*)"A2NE\0", db, &p));
+    hdr[3] = 0x10000000;                          // idxcnt
+    assert(!patchmem_lookup((const uint8_t*)"A2NE\0", db, &p));
+  }
 
   // Copy ops write the data that follows them.
   {

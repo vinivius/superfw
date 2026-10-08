@@ -69,6 +69,12 @@ bool patchmem_lookup(const uint8_t *gamecode, const uint8_t *dbptr, t_patch *pda
       dbh->dbversion != 0x00010000)        // Version check
     return false;
 
+  // A database loaded from the SD card may be corrupted: its index must be in
+  // its space (the entries' contents are checked).
+  if (dbh->idxcnt > (ROM_OFF_ASSETS_BASE - ROM_OFF_PATCH_DB - 1024) / 512 ||
+      dbh->patchcnt > dbh->idxcnt * (512 / sizeof(t_db_idx)))
+    return false;
+
   // Skip header and program block.
   const t_db_idx *dbidx = (t_db_idx*)&dbptr[1024];
   // Skip the index block to address data entries.
@@ -133,34 +139,48 @@ typedef struct {
   uint8_t *buf;
   uint32_t base;
   unsigned size;
+  bool failed;          // A write never read back as written
 } t_rom_part;
 
+// Writes are read back and retried if they did not stick (some carts
+// occasionally drop SDRAM writes).
+#define WRITE_TRIES   8
+
+static void put_half(t_rom_part *rp, volatile uint16_t *ptr, uint16_t data) {
+  for (unsigned t = 0; t < WRITE_TRIES; t++) {
+    *ptr = data;
+    if (*ptr == data)
+      return;
+  }
+  rp->failed = true;
+}
+
 // Writes a byte at a ROM address, with 16 bit accesses only.
-static void put8(const t_rom_part *rp, uint32_t addr, uint8_t bytedata) {
+static void put8(t_rom_part *rp, uint32_t addr, uint8_t bytedata) {
   if (addr - rp->base < rp->size) {
     uintptr_t ptraddr = (uintptr_t)&rp->buf[addr - rp->base];
     volatile uint16_t *aptr = (uint16_t*)(ptraddr & ~(uintptr_t)1);
     unsigned sha = (ptraddr & 1) ? 8 : 0;
-    *aptr = (*aptr & ~(0xFF << sha)) | (bytedata << sha);
+    put_half(rp, aptr, (*aptr & ~(0xFF << sha)) | (bytedata << sha));
   }
 }
 
-static void put16(const t_rom_part *rp, uint32_t addr, uint16_t data) {
+static void put16(t_rom_part *rp, uint32_t addr, uint16_t data) {
   put8(rp, addr + 0, data >> 0);
   put8(rp, addr + 1, data >> 8);
 }
 
-static void put32(const t_rom_part *rp, uint32_t addr, uint32_t data) {
+static void put32(t_rom_part *rp, uint32_t addr, uint32_t data) {
   put16(rp, addr + 0, data >>  0);
   put16(rp, addr + 2, data >> 16);
 }
 
 // Copies a function (or payload) to a (half word aligned) ROM address.
-static void copy_func16(const t_rom_part *rp, uint32_t addr, const void *fnptr, unsigned size) {
+static void copy_func16(t_rom_part *rp, uint32_t addr, const void *fnptr, unsigned size) {
   const uint16_t *src = (uint16_t*)((uintptr_t)fnptr & ~(uintptr_t)1);   // Clear thumb addr bit for the symbol
   for (unsigned i = 0; i < size; i += 2)
     if (addr + i - rp->base < rp->size)
-      *(volatile uint16_t*)&rp->buf[addr + i - rp->base] = src[i / 2];
+      put_half(rp, (uint16_t*)&rp->buf[addr + i - rp->base], src[i / 2]);
 }
 
 // Flashing/Eeprom routines flavours:
@@ -242,7 +262,7 @@ static const struct {
 #define FN_ARM_RET1       0xe3a00001
 #define FN_ARM_RETBX      0xe12fff1e
 
-static void apply_patch_ops(const t_rom_part *rp, const uint32_t *ops, unsigned pcount,
+static void apply_patch_ops(t_rom_part *rp, const uint32_t *ops, unsigned pcount,
                             const t_patch_prog *prgs, const t_psave_info *psi) {
   for (unsigned i = 0; i < pcount; i++) {
     uint32_t opc = ops[i] >> 28;
@@ -309,7 +329,8 @@ static void apply_patch_ops(const t_rom_part *rp, const uint32_t *ops, unsigned 
 
 // Applies a patch directly into the ROM memory. The ROM can be a partial image
 // (i.e. half a ROM or similar) but it should always be 4byte aligned (size too).
-// Assuming we do at least 512 byte blocks or so too.
+// Assuming we do at least 512 byte blocks or so too. False if a write never
+// read back as written.
 bool patch_apply_rom(
   // Where the ROM has been loaded.
   uint8_t *buffer, unsigned bufsize,
@@ -322,7 +343,7 @@ bool patch_apply_rom(
   uint32_t igmenu_addr,
   uint32_t ds_addr
 ) {
-  const t_rom_part rp = { buffer, baseaddr, bufsize };
+  t_rom_part rp = { buffer, baseaddr, bufsize, false };
   const uint32_t *ops = &pdata->op[0];
   // Save patch routines vary depending on whether DirectSave is enabled or not.
   const t_psave_info psi = {
@@ -365,11 +386,12 @@ bool patch_apply_rom(
   if (patch_rtc)
     apply_patch_ops(&rp, ops, pdata->rtc_ops, pdata->prgs, &psi);
 
-  return true;
+  return !rp.failed;
 }
 
-// Applies a payload to the ROM memory.
-void payload_apply_rom(
+// Applies a payload to the ROM memory. False if a write never read back as
+// written.
+bool payload_apply_rom(
   // Where the ROM has been loaded.
   uint8_t *buffer, unsigned bufsize,
   // What base address this ROM has.
@@ -380,9 +402,10 @@ void payload_apply_rom(
 ) {
   // Optimize away the copy call if this can't possibly overlap.
   if (payload_offset >= baseaddr + bufsize || baseaddr >= payload_offset + payload_size)
-    return;
+    return true;
 
-  const t_rom_part rp = { buffer, baseaddr, bufsize };
+  t_rom_part rp = { buffer, baseaddr, bufsize, false };
   copy_func16(&rp, payload_offset, payload, payload_size);
+  return !rp.failed;
 }
 

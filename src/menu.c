@@ -1053,6 +1053,7 @@ static bool insert_recent_flush(const char *fn, unsigned flags) {
 
 static bool delete_recent_flush(unsigned entry_num) {
   smenu.recent.maxentries = delete_recent(sdr_state->rentries, smenu.recent.maxentries, entry_num);
+  art_list_gen++;
 
   smenu.recent.selector = MIN(smenu.recent.maxentries - 1, smenu.recent.selector);
   if (!smenu.recent.maxentries) {
@@ -1419,29 +1420,30 @@ static void browser_save_position() {
   f_close(&fd);
 }
 
+// The browser position file: the folder ("/.../"), then the entry to select.
+static bool browser_position_line(char *line, unsigned len, void *usr) {
+  unsigned *n = (unsigned*)usr;
+  if ((*n)++) {
+    strcpy(browser_reselect, line);
+    return false;
+  }
+  if (line[0] != '/' || line[len - 1] != '/')
+    return false;
+  strcpy(smenu.browser.cpath, line);
+  return true;
+}
+
 static void browser_load_position() {
   strcpy(smenu.browser.cpath, "/");
   browser_reselect[0] = 0;
   FIL fd;
   if (FR_OK != f_open(&fd, BROWSER_POS_FILEPATH, FA_READ))
     return;
-  char buf[MAX_FN_LEN * 2 + 2];
-  UINT rd = 0;
-  FRESULT res = f_read(&fd, buf, sizeof(buf) - 1, &rd);
+  // Lines that don't fit a path are skipped.
+  char buf[MAX_FN_LEN + 1];
+  unsigned n = 0;
+  read_lines(&fd, buf, sizeof(buf), browser_position_line, &n);
   f_close(&fd);
-  if (res != FR_OK)
-    return;
-  buf[rd] = 0;
-  char *sel = strchr(buf, '\n');
-  if (!sel)
-    return;
-  *sel++ = 0;
-  // Must be a folder path ("/.../"), and fit.
-  unsigned plen = strlen(buf);
-  if (buf[0] != '/' || buf[plen - 1] != '/' || plen >= MAX_FN_LEN || strlen(sel) >= MAX_FN_LEN)
-    return;
-  strcpy(smenu.browser.cpath, buf);
-  strcpy(browser_reselect, sel);
 }
 
 static void art_cache_clear();
@@ -3754,7 +3756,7 @@ static void keypress_popup_norload(unsigned newkeys) {
       if (recent_menu)
         insert_recent_flush(e->game_name, FLAG_RECENT_NOR);
 
-      // TODO Handle errors, finish missing stuff.
+      load_sdram_reset();
       unsigned err = launch_gba_nor(
         e->game_name,
         spop.p.norld.l.sram_save_type == SaveDisable ? NULL : spop.p.norld.l.savefn,
@@ -3763,6 +3765,8 @@ static void keypress_popup_norload(unsigned newkeys) {
         uses_rtc ? &rtci : NULL,
         uses_igm,
         spop.p.norld.l.use_cheats ? spop.p.norld.l.cheats_size : 0);
+      if (err)
+        menu_load_failed(err);   // Only returns if the in-game menu never verified
     }
     else if (spop.selector == GBALdRemember) {
       // Save settings to disk now!

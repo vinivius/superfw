@@ -107,6 +107,15 @@ uint8_t rtcspeed_default = 3;
 uint32_t rtcvalue_default = 45568800U;
 
 // Setting loading/saving routines
+// Writes buf to the open file fd and closes it (the data reaches the card
+// then). False if it wasn't all written.
+static bool write_close(FIL *fd, const char *buf) {
+  const unsigned len = strlen(buf);
+  UINT wrbytes;
+  FRESULT res = f_write(fd, buf, len, &wrbytes);
+  return FR_OK == f_close(fd) && FR_OK == res && wrbytes == len;
+}
+
 bool save_ui_settings() {
   // Create the directory (just in case it doesn't exist
   f_mkdir(SUPERFW_DIR);
@@ -131,11 +140,7 @@ bool save_ui_settings() {
     "hide_ext=%u\n",
     menu_theme, (lc & 0xFF), (lc >> 8), recent_menu, anim_speed, hide_hidden, boxart_enabled, hide_ext);
 
-  UINT wrbytes;
-  FRESULT res = f_write(&fd, buf, strlen(buf), &wrbytes);
-  f_close(&fd);
-
-  return FR_OK == res;
+  return write_close(&fd, buf);
 }
 
 bool save_settings() {
@@ -177,11 +182,7 @@ bool save_settings() {
     rtcspeed_default, autoload_default, autosave_default, autosave_prefer_ds,
     rtcvalue_default);
 
-  UINT wrbytes;
-  FRESULT res = f_write(&fd, buf, strlen(buf), &wrbytes);
-  f_close(&fd);
-
-  return FR_OK == res;
+  return write_close(&fd, buf);
 }
 
 static void parse_settings(void *usr, const char *var, const char *value) {
@@ -283,25 +284,27 @@ static void parse_file(char *buf, void(*parse_cb)(void *usr, const char*, const 
   }
 }
 
-void load_settings() {
-  FIL fd;
-  UINT rdbytes;
-  char buf[512];
-  if (FR_OK == f_open(&fd, SETTINGS_FILEPATH, FA_READ)) {
-    if (FR_OK == f_read(&fd, buf, sizeof(buf) - 1, &rdbytes)) {
-      buf[rdbytes] = 0;
-      parse_file(buf, parse_settings, NULL);
-    }
-    f_close(&fd);
-  }
+typedef void (*setting_fn)(void *usr, const char *var, const char *value);
 
-  if (FR_OK == f_open(&fd, UISETTINGS_FILEPATH, FA_READ)) {
-    if (FR_OK == f_read(&fd, buf, sizeof(buf) - 1, &rdbytes)) {
-      buf[rdbytes] = 0;
-      parse_file(buf, parse_ui_settings, NULL);
-    }
+static bool parse_setting_line(char *line, unsigned len, void *usr) {
+  parse_file(line, *(setting_fn*)usr, NULL);
+  return true;
+}
+
+// Settings files are read line by line, however long (hand edited) they are.
+// Lines too long for a setting are skipped.
+static void load_settings_file(const char *fn, setting_fn parse_cb) {
+  FIL fd;
+  if (FR_OK == f_open(&fd, fn, FA_READ)) {
+    char buf[64];
+    read_lines(&fd, buf, sizeof(buf), parse_setting_line, &parse_cb);
     f_close(&fd);
   }
+}
+
+void load_settings() {
+  load_settings_file(SETTINGS_FILEPATH, parse_settings);
+  load_settings_file(UISETTINGS_FILEPATH, parse_ui_settings);
 }
 
 void sram_filename_calc(const char *rom, char *savefn, unsigned save_path) {
@@ -387,11 +390,10 @@ bool save_rom_patchmode(const char *fn, unsigned mode) {
   FIL fd;
   if (!rom_config_open(&fd, fn, FA_WRITE | FA_OPEN_APPEND))
     return false;
+  // On a line of its own (a hand-edited file may not end in a newline).
   char buf[32];
-  npf_snprintf(buf, sizeof(buf), "patchmode=%u\n", mode);
-  UINT wrbytes;
-  FRESULT res = f_write(&fd, buf, strlen(buf), &wrbytes);
-  return (FR_OK == f_close(&fd)) && res == FR_OK && wrbytes == strlen(buf);
+  npf_snprintf(buf, sizeof(buf), "\npatchmode=%u\n", mode);
+  return write_close(&fd, buf);
 }
 
 bool save_rom_settings(const char *fn, const t_rom_load_settings *rld, const t_rom_launch_settings *rlh) {
@@ -422,11 +424,7 @@ bool save_rom_settings(const char *fn, const t_rom_load_settings *rld, const t_r
     rlh->use_cheats ? 1 : 0,
     (unsigned int)rlh->rtcts);
 
-  unsigned len = strlen(buf);
-  UINT wrbytes;
-  FRESULT res = f_write(&fd, buf, len, &wrbytes);
-  // The data reaches the card in f_close (f_write only buffers it).
-  return FR_OK == f_close(&fd) && FR_OK == res && wrbytes == len;
+  return write_close(&fd, buf);
 }
 
 
