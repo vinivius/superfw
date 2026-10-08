@@ -41,6 +41,9 @@ FRESULT f_mkdir (const TCHAR* path) {
 FRESULT f_stat (const TCHAR* path, FILINFO* fno) {
   return FR_OK;
 }
+FRESULT f_chmod (const TCHAR* path, BYTE attr, BYTE mask) {
+  return FR_OK;
+}
 
 static const char *rd_text;
 

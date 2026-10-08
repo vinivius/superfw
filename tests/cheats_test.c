@@ -82,6 +82,10 @@ int main() {
   assert(!strcmp((char*)((t_cheathdr*)&tmp[4])->data, "Second"));
   assert(open_read_cheats(tmp, sizeof(tmp), "data/longtitle.cht") > 0 && *(uint32_t*)tmp == 2);
   assert(!strcmp((char*)((t_cheathdr*)&tmp[4])->data, "Second"));
+  // Titles made of hex letters are titles; a code line that can't be used
+  // drops its cheat (the next code line isn't taken for it).
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/hextitle.cht") > 0 && *(uint32_t*)tmp == 1);
+  assert(!strcmp((char*)((t_cheathdr*)&tmp[4])->data, "Face"));
   // Tabs between and after codes.
   assert(open_read_cheats(tmp, sizeof(tmp), "data/tabs.cht") > 0 && *(uint32_t*)tmp == 1 &&
          ((t_cheathdr*)&tmp[4])->codelen == 3 * 8);

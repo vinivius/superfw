@@ -3280,21 +3280,47 @@ void start_flash_update(const char *fn, unsigned fwsize, bool validate_superfw) 
   spop.pop_num = 0;
 }
 
-// DirectSave, only if the patches allow it (and it fits), forces automatic
-// saving, and loading the .sav (or resetting it) over manual loading.
-static void loadgba_check_dsaving() {
-  if (!dirsav_avail_sdram(&spop.p.load.i))
-    spop.p.load.i.use_dsaving = false;
+// An invalid patch type is skipped (in the direction it was cycled: right,
+// or else left).
+static void patch_type_normalize(t_load_gba_info *i, bool right) {
+  if (right && !i->patches_datab_found && i->patch_type == PatchDatabase)
+    i->patch_type = PatchEngine;
+  if (!i->patches_cache_found && i->patch_type == PatchEngine)
+    i->patch_type = right ? PatchNone : PatchDatabase;
+  if (!i->patches_datab_found && i->patch_type == PatchDatabase)
+    i->patch_type = PatchNone;
+}
 
-  // DirSav forces automatic saving
-  if (spop.p.load.i.use_dsaving)
-    spop.p.load.l.sram_save_type = SaveDirect;
-  else if (spop.p.load.l.sram_save_type == SaveDirect)
-    spop.p.load.l.sram_save_type = autosave_default ? SaveReboot : SaveDisable;
+// The load popup's options follow the patches and each other (after every key
+// and patch generation).
+static void loadgba_normalize(unsigned newkeys) {
+  t_load_gba_info *i = &spop.p.load.i;
+  t_load_gba_lcfg *l = &spop.p.load.l;
+  patch_type_normalize(i, newkeys & KEY_BUTTRIGHT);
 
-  // If DS is selected, do not allow manual mode.
-  if (spop.p.load.l.sram_load_type == SaveLoadDisable && spop.p.load.i.use_dsaving)
-    spop.p.load.l.sram_load_type = SaveLoadSav;
+  // DirectSave, only if the patches allow it (and it fits), forces automatic
+  // saving, and loading the .sav (or resetting it) over manual loading.
+  if (!dirsav_avail_sdram(i))
+    i->use_dsaving = false;
+  if (i->use_dsaving)
+    l->sram_save_type = SaveDirect;
+  else if (l->sram_save_type == SaveDirect)
+    l->sram_save_type = autosave_default ? SaveReboot : SaveDisable;
+  if (l->sram_load_type == SaveLoadDisable && i->use_dsaving)
+    l->sram_load_type = SaveLoadSav;
+  // Without a .sav that option is skipped (in the direction it was cycled).
+  if (l->sram_load_type == SaveLoadSav && !l->savefile_found)
+    l->sram_load_type = (newkeys & KEY_BUTTLEFT) && !i->use_dsaving ? SaveLoadDisable : SaveLoadReset;
+
+  // The in-game menu and RTC patches, if available; cheats need the menu (and
+  // room for them with it).
+  if (!ingame_menu_avail_sdram(i))
+    i->ingame_menu_enabled = false;
+  if (!rtcemu_avail(i))
+    i->rtc_patch_enabled = false;
+  if (!l->cheats_found || !i->ingame_menu_enabled ||
+      !payloads_fit_sdram(i, i->use_dsaving, true, l->cheats_size))
+    l->use_cheats = false;
 }
 
 static void keypress_popup_loadgba(unsigned newkeys) {
@@ -3314,92 +3340,29 @@ static void keypress_popup_loadgba(unsigned newkeys) {
   // Limit selector to its max value
   spop.selector %= maxsel;
 
-  if (newkeys & KEY_BUTTLEFT) {
-    if (spop.submenu == GbaLoadPopLoadS) {
-      if (spop.selector == GBALdSetCheats)
-        spop.p.load.l.use_cheats = !spop.p.load.l.use_cheats;
-      if (spop.p.load.i.use_dsaving) {
-        if (spop.selector == GBALdSetLoadP)
-          spop.p.load.l.sram_load_type = (spop.p.load.l.sram_load_type + SaveLoadDSCNT - 1) % SaveLoadDSCNT;
-      } else {
-        if (spop.selector == GBALdSetLoadP)
-          spop.p.load.l.sram_load_type = (spop.p.load.l.sram_load_type + SaveLoadCNT - 1) % SaveLoadCNT;
-        else if (spop.selector == GBALdSetSaveP)
-          spop.p.load.l.sram_save_type = (spop.p.load.l.sram_save_type + SaveCNT - 1) % SaveCNT;
-      }
+  // Left/Right cycle (or toggle) the option.
+  const int dir = (newkeys & KEY_BUTTRIGHT) ? 1 : (newkeys & KEY_BUTTLEFT) ? -1 : 0;
+  if (dir && spop.submenu == GbaLoadPopLoadS) {
+    if (spop.selector == GBALdSetCheats)
+      spop.p.load.l.use_cheats = !spop.p.load.l.use_cheats;
+    else if (spop.selector == GBALdSetLoadP) {
+      const unsigned cnt = spop.p.load.i.use_dsaving ? SaveLoadDSCNT : SaveLoadCNT;
+      spop.p.load.l.sram_load_type = (spop.p.load.l.sram_load_type + cnt + dir) % cnt;
     }
-    else if (spop.submenu == GbaLoadPopPatch) {
-      if (spop.selector == GBALoadPatch)
-        spop.p.load.i.patch_type = (spop.p.load.i.patch_type + PatchOptCNT - 1) % PatchOptCNT;
-      else if (spop.selector == GBAInGameMen)
-        spop.p.load.i.ingame_menu_enabled = !spop.p.load.i.ingame_menu_enabled;
-      else if (spop.selector == GBASavePatch)
-        spop.p.load.i.use_dsaving = !spop.p.load.i.use_dsaving;
-      else if (spop.selector == GBARTCPatch)
-        spop.p.load.i.rtc_patch_enabled = !spop.p.load.i.rtc_patch_enabled;
-    }
-
-    // Handle the different cases where the user attempts to select an invalid option.
-    if (!spop.p.load.i.patches_cache_found && spop.p.load.i.patch_type == PatchEngine)
-      spop.p.load.i.patch_type = PatchDatabase;  // Might be invalid, handled below.
-    if (!spop.p.load.i.patches_datab_found && spop.p.load.i.patch_type == PatchDatabase)
-      spop.p.load.i.patch_type = PatchNone;
-
-    loadgba_check_dsaving();
-    // If no .sav is available, do not allow that option!
-    if (spop.p.load.l.sram_load_type == SaveLoadSav && !spop.p.load.l.savefile_found)
-      spop.p.load.l.sram_load_type = spop.p.load.i.use_dsaving ? SaveLoadReset : SaveLoadDisable;
+    else if (spop.selector == GBALdSetSaveP && !spop.p.load.i.use_dsaving)
+      spop.p.load.l.sram_save_type = (spop.p.load.l.sram_save_type + SaveCNT + dir) % SaveCNT;
   }
-  if (newkeys & KEY_BUTTRIGHT) {
-    if (spop.submenu == GbaLoadPopLoadS) {
-      if (spop.selector == GBALdSetCheats)
-        spop.p.load.l.use_cheats = !spop.p.load.l.use_cheats;
-      if (spop.p.load.i.use_dsaving) {
-        if (spop.selector == GBALdSetLoadP)
-          spop.p.load.l.sram_load_type = (spop.p.load.l.sram_load_type + 1) % SaveLoadDSCNT;
-      } else {
-        if (spop.selector == GBALdSetLoadP)
-          spop.p.load.l.sram_load_type = (spop.p.load.l.sram_load_type + 1) % SaveLoadCNT;
-        else if (spop.selector == GBALdSetSaveP)
-          spop.p.load.l.sram_save_type = (spop.p.load.l.sram_save_type + 1) % SaveCNT;
-      }
-    }
-    else if (spop.submenu == GbaLoadPopPatch) {
-      if (spop.selector == GBALoadPatch)
-        spop.p.load.i.patch_type = (spop.p.load.i.patch_type + 1) % PatchOptCNT;
-      else if (spop.selector == GBAInGameMen)
-        spop.p.load.i.ingame_menu_enabled = !spop.p.load.i.ingame_menu_enabled;
-      else if (spop.selector == GBASavePatch)
-        spop.p.load.i.use_dsaving = !spop.p.load.i.use_dsaving;
-      else if (spop.selector == GBARTCPatch)
-        spop.p.load.i.rtc_patch_enabled = !spop.p.load.i.rtc_patch_enabled;
-    }
-
-    // If the database has no entry, then do not let the user select that mode.
-    if (!spop.p.load.i.patches_datab_found && spop.p.load.i.patch_type == PatchDatabase)
-      spop.p.load.i.patch_type = PatchEngine;  // Might be invalid, handled below.
-    if (!spop.p.load.i.patches_cache_found && spop.p.load.i.patch_type == PatchEngine)
-      spop.p.load.i.patch_type = PatchNone;
-
-    loadgba_check_dsaving();
-    // If no .sav is available, do not allow that option!
-    if (spop.p.load.l.sram_load_type == SaveLoadSav && !spop.p.load.l.savefile_found)
-      spop.p.load.l.sram_load_type = SaveLoadReset;
+  else if (dir && spop.submenu == GbaLoadPopPatch) {
+    if (spop.selector == GBALoadPatch)
+      spop.p.load.i.patch_type = (spop.p.load.i.patch_type + PatchOptCNT + dir) % PatchOptCNT;
+    else if (spop.selector == GBAInGameMen)
+      spop.p.load.i.ingame_menu_enabled = !spop.p.load.i.ingame_menu_enabled;
+    else if (spop.selector == GBASavePatch)
+      spop.p.load.i.use_dsaving = !spop.p.load.i.use_dsaving;
+    else if (spop.selector == GBARTCPatch)
+      spop.p.load.i.rtc_patch_enabled = !spop.p.load.i.rtc_patch_enabled;
   }
-
-  // Disable ingame-menu if not available.
-  if (!ingame_menu_avail_sdram(&spop.p.load.i))
-    spop.p.load.i.ingame_menu_enabled = false;
-
-  // If no RTC patches are available, force them to false.
-  if (!rtcemu_avail(&spop.p.load.i))
-    spop.p.load.i.rtc_patch_enabled = false;
-
-  // Disable cheat loading if no cheats are avail, or IGM is disabled (or
-  // has no room for them).
-  if (!spop.p.load.l.cheats_found || !spop.p.load.i.ingame_menu_enabled ||
-      !payloads_fit_sdram(&spop.p.load.i, spop.p.load.i.use_dsaving, true, spop.p.load.l.cheats_size))
-    spop.p.load.l.use_cheats = false;
+  loadgba_normalize(newkeys);
 
   if (newkeys & KEY_BUTTA) {
     if (spop.submenu == GbaLoadPopLoadS && spop.selector == GBALdSetRTC && spop.p.load.i.rtc_patch_enabled) {
@@ -3416,9 +3379,7 @@ static void keypress_popup_loadgba(unsigned newkeys) {
       spop.alert_msg = msgs[lang_id][ok ? MSG_PATCHGEN_OK : MSG_PATCHGEN_ERR];
       // Try/Load the just-generated patches.
       spop.p.load.i.patches_cache_found = load_cached_patches(spop.p.load.i.romfn, &spop.p.load.i.patches_cache);
-      loadgba_check_dsaving();    // They may not allow DirectSave
-      if (spop.p.load.l.sram_load_type == SaveLoadSav && !spop.p.load.l.savefile_found)
-        spop.p.load.l.sram_load_type = SaveLoadReset;
+      loadgba_normalize(0);       // The options follow the new patches
     }
     else if (spop.submenu == GbaLoadPopLoadS && spop.selector == GBALdRemember) {
       // Save settings to disk now!
@@ -3539,6 +3500,19 @@ static void keypress_popup_flash(unsigned newkeys) {
 }
 
 #ifdef SUPPORT_NORGAMES
+// The NOR write popup's options follow the patches (after every key and patch
+// generation).
+static void norwrite_normalize(unsigned newkeys) {
+  t_load_gba_info *i = &spop.p.norwr.i;
+  patch_type_normalize(i, newkeys & KEY_BUTTRIGHT);
+  if (!dirsav_avail_flash(i))
+    i->use_dsaving = false;
+  if (!ingame_menu_avail_flash(i))
+    i->ingame_menu_enabled = false;
+  if (!rtcemu_avail(i))
+    i->rtc_patch_enabled = false;
+}
+
 static void keypress_popup_norwrite(unsigned newkeys) {
   if (newkeys & KEY_BUTTUP)
     spop.selector = MAX(0, spop.selector - 1);
@@ -3558,36 +3532,16 @@ static void keypress_popup_norwrite(unsigned newkeys) {
         spop.p.norwr.i.rtc_patch_enabled = !spop.p.norwr.i.rtc_patch_enabled;
     }
 
-    if (newkeys & KEY_BUTTLEFT) {
-      // Handle the different cases where the user attempts to select an invalid option.
-      if (!spop.p.norwr.i.patches_cache_found && spop.p.norwr.i.patch_type == PatchEngine)
-        spop.p.norwr.i.patch_type = PatchDatabase;  // Might be invalid, handled below.
-      if (!spop.p.norwr.i.patches_datab_found && spop.p.norwr.i.patch_type == PatchDatabase)
-        spop.p.norwr.i.patch_type = PatchNone;
-    }
-    if (newkeys & KEY_BUTTRIGHT) {
-      // If the database has no entry, then do not let the user select that mode.
-      if (!spop.p.norwr.i.patches_datab_found && spop.p.norwr.i.patch_type == PatchDatabase)
-        spop.p.norwr.i.patch_type = PatchEngine;  // Might be invalid, handled below.
-      if (!spop.p.norwr.i.patches_cache_found && spop.p.norwr.i.patch_type == PatchEngine)
-        spop.p.norwr.i.patch_type = PatchNone;
-    }
-
-    // Disable certain features (depends on patch types)
-    if (!dirsav_avail_flash(&spop.p.norwr.i))
-      spop.p.norwr.i.use_dsaving = false;
-    if (!ingame_menu_avail_flash(&spop.p.norwr.i))
-      spop.p.norwr.i.ingame_menu_enabled = false;
-    if (!rtcemu_avail(&spop.p.norwr.i))
-      spop.p.norwr.i.rtc_patch_enabled = false;
-
     if ((newkeys & KEY_BUTTA) && spop.selector == GBAPatchGen) {
       bool ok = generate_patches_progress(spop.p.norwr.i.romfn, spop.p.norwr.i.romfs);
       spop.alert_msg = msgs[lang_id][ok ? MSG_PATCHGEN_OK : MSG_PATCHGEN_ERR];
       // Try/Load the just-generated patches.
       spop.p.norwr.i.patches_cache_found = load_cached_patches(spop.p.norwr.i.romfn, &spop.p.norwr.i.patches_cache);
     }
-  } else {
+  }
+  norwrite_normalize(newkeys);
+
+  if (spop.submenu != GbaNorWrPatch) {
     if (newkeys & KEY_BUTTA) {
       // Check whether we have enough space.
       unsigned blkcnt = (spop.p.norwr.i.romfs + NOR_BLOCK_SIZE - 1) / NOR_BLOCK_SIZE;

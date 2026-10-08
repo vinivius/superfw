@@ -139,7 +139,7 @@ static bool recent_line(char *line, unsigned len, void *usr) {
     volatile uint16_t *d = (uint16_t*)e->fpath;
     unsigned i;
     for (i = 0; i < plen; i += 2)
-      d[i / 2] = path[i] | (path[i + 1] << 8);
+      d[i / 2] = (uint8_t)path[i] | ((uint8_t)path[i + 1] << 8);
     if (i == plen)
       d[i / 2] = 0;
     e->fname_offset = file_basename(e->fpath) - e->fpath;

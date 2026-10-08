@@ -38,6 +38,10 @@ bool read_lines(FIL *fd, char *buf, unsigned bufsize, line_fn cb, void *usr);
 // Opens fn and reads it so. FR_OK, the f_open() result, or FR_DISK_ERR.
 FRESULT read_lines_file(const char *fn, char *buf, unsigned bufsize, line_fn cb, void *usr);
 
+// Creates the (hidden) SUPERFW_DIR, and subdir if any (in it), and opens fn
+// in them to write it (FA_WRITE | mode).
+bool superfw_file_open(FIL *fd, const char *subdir, const char *fn, BYTE mode);
+
 // Writes len bytes to the open file fd and closes it (the data reaches the
 // card then). False if they weren't all written.
 bool write_close(FIL *fd, const void *buf, unsigned len);

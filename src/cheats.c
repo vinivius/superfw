@@ -128,9 +128,10 @@ typedef struct {
   t_cheathdr_ext chdr;
 } t_cheat_read;
 
-// A line of the cheat file: the codes of the cheat titled by the line before,
-// or else a title (empty lines are skipped). A cheat whose codes can't be
-// used, or a title without codes, is left out.
+// A line of the cheat file: codes (hex digits, some of them numbers, and
+// separators only) of the cheat titled by the line before, or else a title
+// (empty lines are skipped). A cheat whose codes can't be used, or a title
+// without codes, is left out.
 static bool cheat_line(char *line, unsigned len, void *usr) {
   t_cheat_read *cr = (t_cheat_read*)usr;
   if (!line) {
@@ -142,11 +143,7 @@ static bool cheat_line(char *line, unsigned len, void *usr) {
   if (!*line)
     return true;
 
-  // The codes, in hex: generate the predecoded ones.
-  uint32_t codes[2 * (MAX_CHEAT_CODES + 1)];  // And the end one
-  memset(codes, 0, sizeof(codes));
-  int numcodes = parse_cheat_codes(line, codes);
-  if (numcodes <= 0) {
+  if (line[strspn(line, "0123456789abcdefABCDEF +\t")] || !strpbrk(line, "0123456789")) {
     // A title: long ones are cut (at a character start).
     len = strlen(line);
     if (len > MAX_CHEAT_TITLE)
@@ -160,9 +157,15 @@ static bool cheat_line(char *line, unsigned len, void *usr) {
     cr->titled = true;
     return true;
   }
-  if (!cr->titled || !predecode_cheats(codes, numcodes))
-    return true;
+
+  // The codes, in hex: generate the predecoded ones.
+  uint32_t codes[2 * (MAX_CHEAT_CODES + 1)];  // And the end one
+  memset(codes, 0, sizeof(codes));
+  const int numcodes = parse_cheat_codes(line, codes);
+  const bool titled = cr->titled;
   cr->titled = false;
+  if (!titled || numcodes <= 0 || !predecode_cheats(codes, numcodes))
+    return true;
   cr->chdr.h.codelen = 8 * (numcodes + 1);
 
   // The cheats go to the cart's SDRAM: writes are checked.

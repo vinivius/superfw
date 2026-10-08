@@ -83,6 +83,14 @@ FRESULT read_lines_file(const char *fn, char *buf, unsigned bufsize, line_fn cb,
   return res;
 }
 
+bool superfw_file_open(FIL *fd, const char *subdir, const char *fn, BYTE mode) {
+  f_mkdir(SUPERFW_DIR);
+  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
+  if (subdir)
+    f_mkdir(subdir);
+  return FR_OK == f_open(fd, fn, FA_WRITE | mode);
+}
+
 bool write_close(FIL *fd, const void *buf, unsigned len) {
   UINT wrbytes;
   FRESULT res = f_write(fd, buf, len, &wrbytes);

@@ -113,14 +113,9 @@ uint32_t rtcvalue_default = 45568800U;
 // reads them again).
 static unsigned settings_unread;
 
-// Creates a settings file (in SUPERFW_DIR, made if needed), unless unread.
+// Creates a settings file (in SUPERFW_DIR), unless unread.
 static bool settings_create(FIL *fd, const char *fn, unsigned unread_bit) {
-  if (settings_unread & unread_bit)
-    return false;
-  // Create the directory (just in case it doesn't exist), hidden.
-  f_mkdir(SUPERFW_DIR);
-  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
-  return FR_OK == f_open(fd, fn, FA_WRITE | FA_CREATE_ALWAYS);
+  return !(settings_unread & unread_bit) && superfw_file_open(fd, NULL, fn, FA_CREATE_ALWAYS);
 }
 
 bool save_ui_settings() {
@@ -341,15 +336,11 @@ static void rom_config_fn(char *cfgfn, const char *romfn) {
   derived_fn(cfgfn, ROM_CONFIG_FN_SIZE - 1, ROMCONFIG_PATH, romfn, ".config");
 }
 
-// Creates the settings folders (SUPERFW_DIR is hidden), and opens the config
-// file of a ROM to write it.
+// Opens the config file of a ROM to write it (FA_WRITE | mode).
 static bool rom_config_create(FIL *fd, const char *romfn, BYTE mode) {
-  f_mkdir(SUPERFW_DIR);
-  f_mkdir(ROMCONFIG_PATH);
-  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
   char cfgfn[ROM_CONFIG_FN_SIZE];
   rom_config_fn(cfgfn, romfn);
-  return FR_OK == f_open(fd, cfgfn, FA_WRITE | mode);
+  return superfw_file_open(fd, ROMCONFIG_PATH, cfgfn, mode);
 }
 
 typedef struct {

@@ -312,17 +312,12 @@ bool program_sram_dump(const char *save_filename, unsigned backup_cnt) {
     return FR_OK == res || fr_missing(res);
   }
 
-  // Create the directory (just in case it doesn't exist
-  f_mkdir(SUPERFW_DIR);
-  // Make it hidden
-  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
-
   // Write filename along with backup count.
   char content[512];
   npf_snprintf(content, sizeof(content), "%s\nbackup_count=%u", save_filename, backup_cnt);
 
   FIL fd;
-  if (FR_OK != f_open(&fd, PENDING_SAVE_FILEPATH, FA_WRITE | FA_CREATE_ALWAYS))
+  if (!superfw_file_open(&fd, NULL, PENDING_SAVE_FILEPATH, FA_CREATE_ALWAYS))
     return false;
   return write_close(&fd, content, strlen(content));
 }

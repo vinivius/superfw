@@ -617,13 +617,9 @@ bool write_patches_cache(const char *romfn, const t_patch *patches) {
   char fn[PATCH_FN_SIZE];
   derived_fn(fn, sizeof(fn) - 1, PATCHDB_PATH, romfn, ".patch");
 
-  // Attempt to create dirs, should they not exist
-  f_mkdir(SUPERFW_DIR);
-  f_mkdir(PATCHDB_PATH);
-
   // Replace any existing patch file.
   FIL fd;
-  if (FR_OK != f_open(&fd, fn, FA_WRITE | FA_CREATE_ALWAYS))
+  if (!superfw_file_open(&fd, PATCHDB_PATH, fn, FA_CREATE_ALWAYS))
     return false;
 
   uint8_t buf[1024];
