@@ -43,8 +43,9 @@ unsigned insert_recent_fn(t_rentry *rentries, unsigned rcount, const char *fn, u
 // Deletes a recent entry
 unsigned delete_recent(t_rentry *rentries, unsigned rcount, unsigned entry_num);
 
-// Loads entries from disk
-unsigned recent_load(const char *fpath, t_rentry *rentries);
+// Loads entries from disk: their count (0 if there is no file), or -1 if the
+// file couldn't be read.
+int recent_load(const char *fpath, t_rentry *rentries);
 
 #endif
 

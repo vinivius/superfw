@@ -100,16 +100,26 @@ int main() {
   assert(!strcmp(tmp, "/GBA/Game.sav"));
   assert(derived_fn(tmp, 255, "/SAVESTATE/", "Game.v1.gba", ""));
   assert(!strcmp(tmp, "/SAVESTATE/Game.v1"));
-  // Names are cut short to fit, never in the middle of a UTF-8 character.
-  assert(derived_fn(tmp, 20, "/SAVES/", "/x/ABCDEFGHIJKLMNOPQRSTUVWXYZ.gba", ".sav"));
-  assert(!strcmp(tmp, "/SAVES/ABCDEFGHI.sav"));
-  assert(derived_fn(tmp, 3, "/", "a\xc3\xa9.gba", ""));
-  assert(!strcmp(tmp, "/a"));
-  assert(derived_fn(tmp, 4, "/", "a\xc3\xa9.gba", ""));
-  assert(!strcmp(tmp, "/a\xc3\xa9"));
-  // Not even the directory fits.
+  // Names that don't fit are cut short (never in the middle of a UTF-8
+  // character) and end in "~" and a hash of the whole name, so they differ.
+  assert(derived_fn(tmp, 26, "/SAVES/", "/x/ABCDEFGHIJKLMNOPQRSTUVWXYZ.gba", ".sav"));
+  assert(strlen(tmp) == 26 && !memcmp(tmp, "/SAVES/ABCDEF~", 14) && !strcmp(&tmp[22], ".sav"));
+  {
+    char other[64];
+    assert(derived_fn(other, 26, "/SAVES/", "/x/ABCDEFGHIJKLMNOPQRSTUVWXYz.gba", ".sav"));
+    assert(strlen(other) == 26 && !memcmp(other, "/SAVES/ABCDEF~", 14) && strcmp(tmp, other));
+  }
+  #define AE6 "a\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9.gba"    // 13 bytes before .gba
+  assert(derived_fn(tmp, 12, "/", AE6, ""));
+  assert(strlen(tmp) == 11 && !memcmp(tmp, "/a~", 3));
+  assert(derived_fn(tmp, 13, "/", AE6, ""));
+  assert(strlen(tmp) == 13 && !memcmp(tmp, "/a\xc3\xa9~", 5));
+  // Not even the directory, the hash and the extension fit.
   assert(!derived_fn(tmp, 9, "/SAVES/", "/GBA/Game.gba", ".sav"));
   assert(!strcmp(tmp, ""));
+  assert(!derived_fn(tmp, 19, "/SAVES/", "/GBA/LongerGame.gba", ".sav"));
+  assert(derived_fn(tmp, 20, "/SAVES/", "/GBA/LongerGame.gba", ".sav"));
+  assert(!memcmp(tmp, "/SAVES/~", 8) && strlen(tmp) == 20);
   {
     // The longest FAT name, into a buffer of exactly maxlen + 1 bytes.
     char name[257], *out = malloc(256);
@@ -117,7 +127,7 @@ int main() {
     memset(&name[1], 'N', 255);
     name[256] = 0;
     assert(derived_fn(out, 255, "/.superfw/savestate/", name, ""));
-    assert(strlen(out) == 255 && !memcmp(out, "/.superfw/savestate/NNN", 23));
+    assert(strlen(out) == 255 && !memcmp(out, "/.superfw/savestate/NNN", 23) && out[246] == '~');
     free(out);
   }
 

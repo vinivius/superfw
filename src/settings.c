@@ -337,10 +337,10 @@ static void parse_rom_launch_settings(void *usr, const char *var, const char *va
     rs->rtcts = valu;
 }
 
-// Opens the config file of a ROM: ROMCONFIG_PATH + its name + .config. The
-// buffer fits any FAT name (FatFs itself refuses names over 255 chars).
+// Opens the config file of a ROM: ROMCONFIG_PATH + its name + .config, the
+// name shortened if needed to the FAT limit (FF_MAX_LFN).
 static bool rom_config_open(FIL *fd, const char *romfn, BYTE mode) {
-  char cfgfn[sizeof(ROMCONFIG_PATH) + MAX_FN_LEN + 8];
+  char cfgfn[sizeof(ROMCONFIG_PATH) + FF_MAX_LFN];
   derived_fn(cfgfn, sizeof(cfgfn) - 1, ROMCONFIG_PATH, romfn, ".config");
   return FR_OK == f_open(fd, cfgfn, mode);
 }

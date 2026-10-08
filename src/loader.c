@@ -258,11 +258,13 @@ static void log_chunk_rewrites(const char *what) {
 #endif
 
 // Copies a loaded chunk into SDRAM and reads it back, rewriting it as needed.
-// Returns the number of extra writes needed, or -1 if it never verified.
+// ck is the running checksum of the data loaded so far (checksum_words()):
+// the chunk is checked against it and added to it. Returns the number of
+// extra writes needed, or -1 if it never verified.
 NOINLINE
-static int copy_chunk_verified(uint8_t *dst, const uint32_t *src, unsigned bytes, uint32_t offset) {
+static int copy_chunk_verified(uint8_t *dst, const uint32_t *src, unsigned bytes, uint32_t offset, uint32_t *ck) {
   load_sdram_end = MAX(load_sdram_end, offset + bytes);
-  uint32_t ck_src[2] = {0, 0};
+  uint32_t ck_src[2] = {ck[0], ck[1]};
   checksum_words(src, bytes / 4, ck_src);
 
   set_supercard_mode(MAPPED_SDRAM, true, false);
@@ -273,7 +275,7 @@ static int copy_chunk_verified(uint8_t *dst, const uint32_t *src, unsigned bytes
     else
       dma_memcpy32(dst, src, bytes/4);
 
-    uint32_t ck_dst[2] = {0, 0};
+    uint32_t ck_dst[2] = {ck[0], ck[1]};
     checksum_words(dst, bytes / 4, ck_dst);
     if (ck_dst[0] == ck_src[0] && ck_dst[1] == ck_src[1]) {
       ret = t;
@@ -282,6 +284,8 @@ static int copy_chunk_verified(uint8_t *dst, const uint32_t *src, unsigned bytes
   }
   set_supercard_mode(MAPPED_SDRAM, true, true);
 
+  ck[0] = ck_src[0];
+  ck[1] = ck_src[1];
   chunk_rewritten(offset, ret);
   return ret;
 }
@@ -425,23 +429,23 @@ unsigned load_gba_rom(
   // Checksum of the data as read from the SD card, to verify the SDRAM copy.
   uint32_t ck_load[2] = {0, 0};
 
+  // The file data goes to [0, gap_start) and [gap_end, fs).
+  const uint32_t seg1_end = MIN(gap_start, fs);
   uint8_t *ptr = (uint8_t*)(GBA_ROM_ADDR);
-  for (uint32_t offset = 0; offset < gap_start; offset += LOAD_BS, steps++) {
+  for (uint32_t offset = 0; offset < seg1_end; offset += LOAD_BS, steps++) {
     if (progress && (steps & (31)) == 0)
       progress(steps, load_steps);
 
-    unsigned toread = MIN(LOAD_BS, gap_start - offset);
+    unsigned toread = MIN(LOAD_BS, seg1_end - offset);
     UINT rdbytes;
     uint32_t tmp[LOAD_BS/4];
-    if (FR_OK != f_read(&fd, tmp, toread, &rdbytes)) {
+    if (FR_OK != f_read(&fd, tmp, toread, &rdbytes) || rdbytes != toread) {
       slowsd = true;
       f_close(&fd);
       return ERR_LOAD_BADROM;
     }
 
-    checksum_words(tmp, rdbytes / 4, ck_load);
-
-    if (copy_chunk_verified(&ptr[offset], tmp, toread, offset) < 0) {
+    if (copy_chunk_verified(&ptr[offset], tmp, toread, offset, ck_load) < 0) {
       WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", offset);
       slowsd = true;
       f_close(&fd);
@@ -461,15 +465,13 @@ unsigned load_gba_rom(
     unsigned toread = MIN(LOAD_BS, fs - offset);
     UINT rdbytes;
     uint32_t tmp[LOAD_BS/4];
-    if (FR_OK != f_read(&fd, tmp, toread, &rdbytes)) {
+    if (FR_OK != f_read(&fd, tmp, toread, &rdbytes) || rdbytes != toread) {
       slowsd = true;
       f_close(&fd);
       return ERR_LOAD_BADROM;
     }
 
-    checksum_words(tmp, rdbytes / 4, ck_load);
-
-    if (copy_chunk_verified(&ptr[offset], tmp, toread, offset) < 0) {
+    if (copy_chunk_verified(&ptr[offset], tmp, toread, offset, ck_load) < 0) {
       WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", offset);
       slowsd = true;
       f_close(&fd);
@@ -480,9 +482,7 @@ unsigned load_gba_rom(
 
   log_chunk_rewrites("ROM");
 
-  // Verify the load (before patching, which modifies the ROM). The loaded
-  // regions are [0, gap_start) and [gap_end, fs), file data only.
-  const uint32_t seg1_end = MIN(gap_start, fs);
+  // Verify the load (before patching, which modifies the ROM).
   {
     uint32_t ck_mem[2] = {0, 0};
     checksum_loaded_rom(0, seg1_end, ck_mem);
@@ -718,22 +718,24 @@ typedef struct {
 
 // Writes len bytes from buf, which must have 4 spare bytes after them.
 static unsigned stream_write(t_sdram_stream *s, uint32_t *buf, unsigned len) {
-  uint8_t *b = (uint8_t*)buf;
   if (s->ncarry) {
-    memmove(&b[s->ncarry], b, len);
-    memcpy(b, &s->carry, s->ncarry);
+    // Shift the data up by the carried bytes, a word at a time (little
+    // endian), and put them in front.
+    const unsigned sh = s->ncarry * 8;
+    for (unsigned i = (len + s->ncarry - 1) / 4; i; i--)
+      buf[i] = (buf[i] << sh) | (buf[i - 1] >> (32 - sh));
+    buf[0] = (buf[0] << sh) | (s->carry & ((1U << sh) - 1));
     len += s->ncarry;
   }
   unsigned wlen = len & ~3;
   s->ncarry = len & 3;
-  memcpy(&s->carry, &b[wlen], s->ncarry);
+  memcpy(&s->carry, &((uint8_t*)buf)[wlen], s->ncarry);
   if (!wlen)
     return 0;
 
   if (s->off + wlen > s->lim)
     return ERR_LOAD_BADROM;     // Too big
-  checksum_words(buf, wlen / 4, s->ck);
-  if (copy_chunk_verified(&GBA_ROM_ADDR[s->off], buf, wlen, s->off) < 0) {
+  if (copy_chunk_verified(&GBA_ROM_ADDR[s->off], buf, wlen, s->off, s->ck) < 0) {
     WRITE_LOG("Chunk at 0x%06lx never verified in SDRAM", s->off);
     return ERR_LOAD_VERIFY;
   }
@@ -803,7 +805,7 @@ unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo
       uint32_t tmp[LOAD_BS/4 + 1];
       if (FR_OK != f_read(&fd, tmp, LOAD_BS, &rdbytes)) {
         f_close(&fd);
-        return ERR_LOAD_NOEMU;
+        return ERR_LOAD_BADROM;   // It exists: a read error (retried slowly)
       }
       if (!rdbytes)
         break;
@@ -852,8 +854,7 @@ unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo
   uint32_t ck_mem[2] = {0, 0};
   checksum_loaded_rom(0, s.off, ck_mem);
   if (ck_mem[0] != s.ck[0] || ck_mem[1] != s.ck[1]) {
-    WRITE_LOG("Emulator load verify: SDRAM copy mismatch (%08lx:%08lx vs %08lx:%08lx)",
-              ck_mem[0], ck_mem[1], s.ck[0], s.ck[1]);
+    WRITE_LOG("Emulator load: SDRAM copy mismatch");
     return ERR_LOAD_VERIFY;
   }
 

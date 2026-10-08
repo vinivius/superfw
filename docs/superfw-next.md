@@ -77,8 +77,9 @@ SuperFW and SuperFW Next can install each other.
   one file). "Remember config" and the "don't ask again" answer to the
   patch prompt say when they could not be saved, instead of "Config saved!".
 - ROM names up to the FAT limit (255 characters) work: the save, savestate,
-  patch and config names made from them are shortened when needed instead
-  of overflowing their buffers (as are file manager paths).
+  patch and config names made from them are shortened when they don't fit
+  (ending in "~" and a hash of the full name, so they stay unique) instead
+  of overflowing their buffers. File manager paths are checked too.
 - Cheat files next to the ROM (NAME.cht) are loaded; they were found but
   never loaded.
 - Patch files the patch engine made before the v1 flash fix (upstream

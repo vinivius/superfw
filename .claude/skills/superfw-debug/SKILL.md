@@ -28,7 +28,7 @@ and commit it as its own commit. Push only when the user asks.
 
 - Always `make clean` when changing build flags.
 - The SD board firmware must fit 512 KiB (enforced at link time). UART builds
-  are within a few hundred bytes of the limit, keep debug features small.
+  are within ~100 bytes of the limit (v0.2), keep debug features small.
   `superfw.gba` is padded to the next 512 byte block (`tools/fw-fixer.py`),
   so `stat` doesn't show the free space;
   measure where the content ends with `tools/debug/flash-free.sh superfw.gba`
@@ -229,23 +229,29 @@ expose the UART as a pty and to keep SD image writes.
   fixes.
 - Don't rebuild or replace the core while an emulator uses it (SIGBUS).
 - Long names: the browser can't open a path over 255 chars ("could not
-  load ROM!"), and a ROM's config file ("/.superfw/config/NAME.config")
-  must fit MAX_FN_LEN too (the check in rom_config_fn()), so ROM names
-  over 231 chars get no per-game config. Tests of long names must stay under both limits, or they fail
-  for that reason instead.
+  load ROM!"). The names made from a ROM name (config, patch file, save,
+  savestate) are built by derived_fn(): when they don't fit (the FAT limit
+  for config and patch files, MAX_FN_LEN minus the suffixes added later for
+  saves and savestates) they are cut short and end in "~" and a hash.
+- SD read fault injection: each failing read takes ~1 s to time out, and
+  the card keeps failing until K reads failed. A K larger than what the
+  test reads leaves the card failing afterwards, which looks like the
+  firmware never recovers: use a small K (2 covers a fast and a slow load
+  attempt).
 
 ## Firmware memory budgets
 
 - Flash: 512 KiB for the SD board (`stat -c %s superfw.gba` < 524288); the
   UART build is the tight one, so it is compressed at level 9 by default
-  (~65 s per build instead of ~12; pass `COMPRESSION_RATIO=4` for quick
-  emulator iterations, but check the final size at 9). Cold files use
+  (~65 s per build instead of ~12). `COMPRESSION_RATIO=4` no longer fits the
+  UART build; use it for quick release-build iterations only. Cold files use
   `#pragma GCC optimize("Os")` (grep for `optimize *("Os")`, some files
-  write it with a space). Check sizes after every change: the UART build
-  had dropped to a few dozen bytes free; sha256.c (always) and nanoprintf.c
+  write it with a space). Check sizes after every change: the UART build had
+  dropped to a few dozen bytes free; sha256.c (always) and nanoprintf.c
   (UART builds only, `#ifdef ENABLE_UART_LOGGING`) went -Os to get ~1.1 KiB
-  back. The release has ~2 KiB. Measure the overflow with a temporary
-  `MAXFSIZE=600` build instead of guessing.
+  back. In v0.2 the release has ~1.2 KiB free and the UART build ~100 bytes;
+  long WRITE_LOG strings are the cheapest thing to trim there. Measure the
+  overflow with a temporary `MAXFSIZE=600` build instead of guessing.
 - Bootloader (`rom_boot.S`, draws the boot screen and unpacks the firmware):
   3 KiB, asserted at link time; check `arm-none-eabi-nm -n firmware.elf |
   grep _end_bootloader` (< 0x08000c00, it was 0x08000bb0). Bigger data it

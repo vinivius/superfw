@@ -57,6 +57,14 @@ int main() {
   assert(unserialize_patch(buf, write_patch(OP_EEPROM_HD(0x1234), "SUPERFWPATCHV01"), &q));
   assert(q.op[2] == OP_EEPROM_HD(0x1234));
 
+  // Op counts that don't fit the op table are refused (corrupted files).
+  size = write_patch(OP_EEPROM_HD(0x1234), NULL);
+  buf[16] = 120;                        // wcnt_ops
+  buf[17] = 9;                          // save_ops: 129 ops in all
+  assert(!unserialize_patch(buf, size, &q));
+  buf[17] = 8;                          // 128: the whole table
+  assert(unserialize_patch(buf, size, &q));
+
   // Unknown versions and wrong sizes are refused.
   assert(!unserialize_patch(buf, write_patch(OP_EEPROM_HD(0x1234), "SUPERFWPATCHV03"), &q));
   assert(!unserialize_patch(buf, size - 1, &q));

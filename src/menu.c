@@ -810,36 +810,30 @@ static bool prepare_gba_info(
   return true;
 }
 
+// Loads the cheat file data->cheatsfn into the ROM area, just after the font
+// pack (for easier relocation). False if it can't be read or parsed.
+static bool read_gba_cheats(t_load_gba_lcfg *data) {
+  uint8_t *cheat_area = (uint8_t*)(ROM_FONTBASE_U8 + font_block_size());
+  unsigned max_area = 1536*1024 - font_block_size();    // 1.5MB is reserved at the end.
+  int cheatsz = open_read_cheats(cheat_area, max_area, data->cheatsfn);
+  WRITE_LOG("Loading cheats from '%s' returned %d", data->cheatsfn, cheatsz);
+  data->cheats_size = MAX(cheatsz, 0);
+  return cheatsz >= 0;
+}
+
 static void prepare_gba_cheats(const char *gcode, uint8_t ver, t_load_gba_lcfg *data, const char *fn, bool prefer_cheats) {
   // Attempt to find a cheat file if cheats are enabled.
   data->cheats_size = 0;
   data->cheats_found = false;
   if (enable_cheats) {
-    // Next to the ROM (NAME.cht), or by game ID and version in CHEATS_PATH.
+    // Next to the ROM (NAME.cht), or else by game ID and version in CHEATS_PATH.
     data->cheats_found = derived_fn(data->cheatsfn, sizeof(data->cheatsfn) - 1, NULL, fn, ".cht") &&
-                         check_file_exists(data->cheatsfn);
+                         read_gba_cheats(data);
     if (!data->cheats_found) {
-      WRITE_LOG("No cheat file found at '%s'", data->cheatsfn);
       npf_snprintf(data->cheatsfn, sizeof(data->cheatsfn), CHEATS_PATH "%c%c%c%c-%02x.cht",
                    gcode[0], gcode[1], gcode[2], gcode[3], ver);
-      data->cheats_found = check_file_exists(data->cheatsfn);
+      data->cheats_found = read_gba_cheats(data);
     }
-
-    // Load the cheats into memory if enabled.
-    if (data->cheats_found) {
-      // Load the cheats to the ROM area, just after the font pack. This is for easier relocation.
-      uint8_t *cheat_area = (uint8_t*)(ROM_FONTBASE_U8 + font_block_size());
-      unsigned max_area = 1536*1024 - font_block_size();    // 1.5MB is reserved at the end.
-      int cheatsz = open_read_cheats(cheat_area, max_area, data->cheatsfn);
-      if (cheatsz < 0)
-        data->cheats_found = false;
-      else
-        data->cheats_size = cheatsz;
-
-      WRITE_LOG("Loaded cheats returned %d", cheatsz);
-    }
-    else
-      WRITE_LOG("No cheat file found at '%s'", data->cheatsfn);
   }
   data->use_cheats = enable_cheats && data->cheats_found && prefer_cheats;
 }
@@ -1037,9 +1031,25 @@ unsigned guess_file_type(const uint8_t *header) {
 static void browser_save_position();
 static void browser_ensure_loaded();
 
+static bool recent_unread;       // recent.txt couldn't be read: don't write it over
+
+static void recent_reload() {
+  smenu.recent.selector = 0;
+  smenu.recent.seloff = 0;
+  smenu.anim_state = 0;
+  int n = recent_load(RECENT_FILEPATH, sdr_state->rentries);
+  recent_unread = n < 0;
+  smenu.recent.maxentries = MAX(n, 0);
+}
+
 static bool insert_recent_flush(const char *fn, unsigned flags) {
   // Remember where the browser was, it reopens there next time.
   browser_save_position();
+  // A list that couldn't be read (ie. SD errors) is read again first.
+  if (recent_unread)
+    recent_reload();
+  if (recent_unread)
+    return false;
   // Insert element.
   smenu.recent.maxentries = insert_recent_fn(sdr_state->rentries, smenu.recent.maxentries, fn, flags);
   return recent_flush(sdr_state->rentries, smenu.recent.maxentries);
@@ -1057,14 +1067,13 @@ static bool delete_recent_flush(unsigned entry_num) {
   return recent_flush(sdr_state->rentries, smenu.recent.maxentries);
 }
 
-static void recent_reload() {
-  smenu.recent.selector = 0;
-  smenu.recent.seloff = 0;
-  smenu.anim_state = 0;
-  smenu.recent.maxentries = recent_load(RECENT_FILEPATH, sdr_state->rentries);
+// Error message for a ROM load error.
+static unsigned load_error_msg(unsigned err) {
+  return err == ERR_LOAD_NOEMU  ? MSG_ERR_NOEMU :
+         err == ERR_LOAD_VERIFY ? MSG_ERR_VERIFY : MSG_ERR_READ;
 }
 
-static void menu_load_failed();
+static void menu_load_failed(unsigned err);
 
 void start_emu_game(const t_emu_loader *ldinfo, const char *fn, uint32_t fs) {
   // Load: Sav/Reset Save: Reboot/Disable
@@ -1098,11 +1107,7 @@ void start_emu_game(const t_emu_loader *ldinfo, const char *fn, uint32_t fs) {
     }
     WRITE_LOG("Emulator ROM load failed: %u", errcode);
     sdcard_flush_log();
-    unsigned errmsg = (errcode == ERR_LOAD_NOEMU)  ? MSG_ERR_NOEMU :
-                      (errcode == ERR_LOAD_VERIFY) ? MSG_ERR_VERIFY :
-                                                     MSG_ERR_READ;
-    spop.alert_msg = msgs[lang_id][errmsg];
-    menu_load_failed();
+    menu_load_failed(errcode);
   }
 }
 
@@ -1311,7 +1316,13 @@ static bool browser_reload() {
   unsigned start = frame_count, shown = frame_count;
   while (1) {
     FILINFO info;
-    if (f_readdir(&d, &info) != FR_OK || !info.fname[0])
+    if (f_readdir(&d, &info) != FR_OK) {
+      // Unreadable (ie. SD errors): empty, read again on the next key press.
+      smenu.browser.maxentries = smenu.browser.sortentries = smenu.browser.dispentries = 0;
+      browser_loaded = false;
+      return false;
+    }
+    if (!info.fname[0])
       break;
 
     if (fcount >= BROWSER_MAXFN_CNT)
@@ -1419,8 +1430,8 @@ static void browser_load_position() {
   strcpy(browser_reselect, sel);
 }
 
-static void art_cache_clear();
 #ifdef ENABLE_UART_LOGGING
+static void art_cache_clear();
 // Files may have changed over the serial link (uart_xfer.c), reload the lists.
 void browser_refresh_after_xfer() {
   browser_reload();
@@ -1966,39 +1977,62 @@ static unsigned boxart_bucket(const char *fn) {
   return boxart_hash(fn) % 64;
 }
 
-// Empties the box art cache (art files changed, or a load overwrote it).
+#ifdef ENABLE_UART_LOGGING
+// Empties the box art cache (art files changed).
 static void art_cache_clear() {
   memset(bart.len, 0, sizeof(bart.len));
 }
+#endif
 
-// A failed load overwrote the SDRAM up to load_sdram_end: reload the menu
-// data it reached (folder, recent list, NOR games, box art). Past the fonts
-// (and the patch database and emulators above them) only a reboot restores it.
-static void menu_load_failed() {
+// Loads the menu data kept in SDRAM (t_sdram_state, past the scratch area):
+// at boot, and again after a failed ROM load overwrote it. The folder is
+// read when the browser is shown.
+static void sdram_data_load() {
+  memset(&bart, 0, sizeof(bart));
+  bart.shown = bart.pal_slot = -1;
+  smenu.browser.maxentries = smenu.browser.sortentries = smenu.browser.dispentries = 0;
+  browser_loaded = false;
+  flashbrowser_reload();
+  recent_reload();
+}
+
+// Writes or reads (FA_WRITE/FA_READ) the error of a load that rebooted the
+// menu, shown after the reboot.
+static bool load_error_file(uint8_t *err, BYTE mode) {
+  FIL fd;
+  UINT n;
+  if (FR_OK != f_open(&fd, LOAD_ERROR_FILEPATH, mode | (mode & FA_WRITE ? FA_CREATE_ALWAYS : 0)))
+    return false;
+  FRESULT res = (mode & FA_WRITE) ? f_write(&fd, err, 1, &n) : f_read(&fd, err, 1, &n);
+  f_close(&fd);
+  return FR_OK == res && n == 1;
+}
+
+// A ROM load failed with err, after overwriting SDRAM up to load_sdram_end:
+// shows the error and loads the menu data again. Past the fonts (and the
+// patch database and emulators above them) only a reboot restores them, the
+// error is shown after it.
+static void menu_load_failed(unsigned err) {
   const uint32_t end = load_sdram_end;
   load_sdram_end = 0;
   if (end > ROM_OFF_FONTS_BASE) {
+    uint8_t e = err;
+    load_error_file(&e, FA_WRITE);
     set_supercard_mode(MAPPED_FIRMWARE, false, false);
     launch_reset(true, false);
   }
 
-  if (end > offsetof(t_sdram_state, fileorder) && browser_loaded && !browser_reload()) {
-    // Unreadable right now: show it empty, it is read again when shown.
-    smenu.browser.maxentries = smenu.browser.sortentries = smenu.browser.dispentries = 0;
-    browser_loaded = false;
-  }
-  if (end > offsetof(t_sdram_state, rentries)) {
+  spop.alert_msg = msgs[lang_id][load_error_msg(err)];
+  if (end > offsetof(t_sdram_state, fileorder)) {
     int rsel = smenu.recent.selector, roff = smenu.recent.seloff;
-    recent_reload();
+    sdram_data_load();
     if (rsel < (int)smenu.recent.maxentries) {
       smenu.recent.selector = rsel;
       smenu.recent.seloff = roff;
     }
+    if (smenu.menu_tab == MENUTAB_ROMBROWSE)
+      browser_ensure_loaded();
   }
-  if (end > offsetof(t_sdram_state, nordata))
-    flashbrowser_reload();
-  if (end > offsetof(t_sdram_state, artc))
-    art_cache_clear();
 }
 
 // Returns the cache slot holding the art for fn, or -1.
@@ -2983,22 +3017,19 @@ static unsigned art_last_list;
 // File name of the entry delta rows away from the cursor, if it can have
 // art (a file in the browser or the recent list), or NULL.
 static const char *art_neighbour(int delta) {
-  if (!boxart_enabled)
+  int sel = art_selector();
+  if (!boxart_enabled || sel < 0)
     return NULL;
-  if (smenu.menu_tab == MENUTAB_ROMBROWSE && browser_loaded && !smenu.browser.qedit) {
-    int i = smenu.browser.selector + delta;
-    if (i < 0 || i >= smenu.browser.dispentries || sdr_state->fileorder[i]->isdir)
-      return NULL;
-    return sdr_state->fileorder[i]->fname;
-  }
+  int i = sel + delta;
   if (smenu.menu_tab == MENUTAB_RECENT) {
-    int i = smenu.recent.selector + delta;
     if (i < 0 || i >= (int)smenu.recent.maxentries)
       return NULL;
     t_rentry *e = &sdr_state->rentries[i];
     return &e->fpath[e->fname_offset];
   }
-  return NULL;
+  if (i < 0 || i >= smenu.browser.dispentries || sdr_state->fileorder[i]->isdir)
+    return NULL;
+  return sdr_state->fileorder[i]->fname;
 }
 
 // Loads the wanted box art once the cursor has rested on the entry for a
@@ -3072,17 +3103,18 @@ void menu_init(int sram_testres) {
   // Reset to ROM browser and SD card root.
   memset(&smenu, 0, sizeof(smenu));
   memset(&spop, 0, sizeof(spop));
-  memset(&bart, 0, sizeof(bart));
-  bart.shown = bart.pal_slot = -1;
   smenu.set.selector = SettTitle1 + 1;     // Titles can't be selected
 
   // The file browser reopens where the last game was launched from.
-  browser_loaded = false;
   browser_load_position();
-  flashbrowser_reload();
+  sdram_data_load();
 
-  // Load recent ROMs (we could disable this for speed)
-  recent_reload();
+  // A failed load that reached the fonts rebooted the menu: show its error.
+  uint8_t err;
+  if (load_error_file(&err, FA_READ)) {
+    f_unlink(LOAD_ERROR_FILEPATH);
+    spop.alert_msg = msgs[lang_id][load_error_msg(err)];
+  }
 
   reload_theme(menu_theme);
 
@@ -3430,8 +3462,10 @@ static void keypress_popup_loadgba(unsigned newkeys) {
       }
       load_sdram_end = 0;
       unsigned err = do_load();
-      if (err && !use_slowld) {
-        // Fast loading is not reliable with some carts/SD cards, retry slowly.
+      // Fast loading is not reliable with some carts/SD cards, retry slowly.
+      // Not once the load reached the fonts (and cheats): the in-game menu
+      // the retry installs is made from them.
+      if (err && !use_slowld && load_sdram_end <= ROM_OFF_FONTS_BASE) {
         WRITE_LOG("Fast ROM load failed (%u), retrying in slow mode", err);
         use_slowld = 1;
         err = do_load();
@@ -3440,9 +3474,7 @@ static void keypress_popup_loadgba(unsigned newkeys) {
       if (err) {
         WRITE_LOG("ROM load failed: %u", err);
         sdcard_flush_log();
-        // Show any errors that might have happened!
-        spop.alert_msg = msgs[lang_id][err == ERR_LOAD_VERIFY ? MSG_ERR_VERIFY : MSG_ERR_READ];
-        menu_load_failed();
+        menu_load_failed(err);
       }
     }
   }
@@ -3924,6 +3956,11 @@ static void keypress_browse_search(unsigned newkeys) {
 }
 
 static void keypress_menu_browse(unsigned newkeys) {
+  if (!browser_loaded) {
+    // It couldn't be read (ie. SD errors after a failed load): try again.
+    browser_ensure_loaded();
+    return;
+  }
   if (smenu.browser.qedit) {
     keypress_browse_search(newkeys);
     return;
@@ -3958,9 +3995,16 @@ static void keypress_menu_browse(unsigned newkeys) {
     if (newkeys & KEY_BUTTA) {
       t_centry *e = sdr_state->fileorder[smenu.browser.selector];
       unsigned plen = strlen(smenu.browser.cpath);
-      if (plen + strlen(e->fname) + 2 > sizeof(smenu.browser.cpath))
+      char path[MAX_FN_LEN];
+      if (!e->isdir) {
+        if (browser_entry_path(path, e))
+          browser_open(path, e->filesize);
+        else
+          spop.alert_msg = msgs[lang_id][MSG_ERR_READ];   // Path too long
+      }
+      else if (plen + strlen(e->fname) + 2 > sizeof(smenu.browser.cpath))
         spop.alert_msg = msgs[lang_id][MSG_ERR_READ];     // Path too long
-      else if (e->isdir) {
+      else {
         strcat(smenu.browser.cpath, e->fname);
         strcat(smenu.browser.cpath, "/");
         browser_clear_search();
@@ -3976,11 +4020,6 @@ static void keypress_menu_browse(unsigned newkeys) {
           smenu.browser.selhist[0] = smenu.browser.selector;
           smenu.browser.selector = 0;
         }
-      } else {
-        char path[MAX_FN_LEN];
-        strcpy(path, smenu.browser.cpath);
-        strcat(path, e->fname);
-        browser_open(path, e->filesize);
       }
     }
     else if (newkeys & KEY_BUTTSEL) {

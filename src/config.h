@@ -50,6 +50,7 @@
 #define FLASHBACKUP_FILEPTRN      "/.superfw/flash_backup-%02x%02x%02x%02x.bin"
 
 #define PENDING_SAVE_FILEPATH     "/.superfw/pending-save.txt"
+#define LOAD_ERROR_FILEPATH       "/.superfw/load-error.bin"   // Shown after a reboot
 #define BROWSER_POS_FILEPATH      "/.superfw/browser.txt"
 #define PENDING_SRAM_TEST         "/.superfw/pending-sram-test.txt"
 

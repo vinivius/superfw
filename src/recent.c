@@ -117,10 +117,11 @@ NOINLINE unsigned delete_recent(t_rentry *rentries, unsigned rcount, unsigned en
   return rcount - 1;
 }
 
-NOINLINE unsigned recent_load(const char *fpath, t_rentry *rentries) {
+NOINLINE int recent_load(const char *fpath, t_rentry *rentries) {
   FIL fi;
-  if (FR_OK != f_open(&fi, fpath, FA_READ))
-    return 0;
+  FRESULT res = f_open(&fi, fpath, FA_READ);
+  if (res != FR_OK)
+    return (res == FR_NO_FILE || res == FR_NO_PATH) ? 0 : -1;
 
   // Read data block by block. Each line is a path (or "nor:" and a path),
   // lines that can't be one (too long) are skipped.
@@ -130,8 +131,10 @@ NOINLINE unsigned recent_load(const char *fpath, t_rentry *rentries) {
   while (nentries < RECENT_MAXFN_CNT) {
     if (bcount <= 512 && !eof) {
       UINT rdbytes;
-      if (FR_OK != f_read(&fi, &tmp[bcount], 512, &rdbytes))
-        break;
+      if (FR_OK != f_read(&fi, &tmp[bcount], 512, &rdbytes)) {
+        f_close(&fi);
+        return -1;
+      }
       eof = rdbytes < 512;
       bcount += rdbytes;
     }
