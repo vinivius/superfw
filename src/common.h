@@ -280,6 +280,10 @@ unsigned launch_gba_nor(
   const t_rtc_info *rtcinfo, bool ingame_menu, unsigned cheats);
 
 unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo, progress_fn progress);
+// How far the loads (that failed) wrote into SDRAM, as an offset from
+// 0x08000000: the menu data kept below it is gone. The loaders only raise it,
+// the menu resets it.
+extern uint32_t load_sdram_end;
 bool validate_gba_header(const uint8_t *header);
 bool validate_gb_header(const uint8_t *header);
 
@@ -291,9 +295,15 @@ bool validate_gb_header(const uint8_t *header);
 #define ERR_NDS_BADHEADER      0x5
 unsigned load_nds(const char *filename, const void *dldi_driver);
 
-// Asset management
-const void *get_vfile_ptr(const char *fname);
-int get_vfile_size(const char *fname);
+// Asset management: files bundled in the firmware (ie. emulators), placed in
+// SDRAM by the bootloader (rom_boot.S).
+typedef struct {
+  char fn[4];
+  uint32_t size;          // Payload size
+  uint32_t ck[2];         // checksum_words() of the unpacked file
+  uint8_t payload[];      // upkr packed
+} t_vfile;
+const t_vfile *get_vfile(const char *fname);
 
 // Test/validation stuff
 unsigned sram_test();

@@ -62,6 +62,34 @@ void replace_extension(char *fn, const char *newext) {
   strcat(fn, newext);
 }
 
+// Builds dir + the name of path without its extension + ext into out, at
+// most maxlen chars (plus the terminator). A NULL dir keeps the directory of
+// path. The name is cut short (at a UTF-8 character boundary) if needed, so
+// the result always fits. Returns false, leaving out empty, if not even the
+// directory and ext fit.
+bool derived_fn(char *out, unsigned maxlen, const char *dir, const char *path, const char *ext) {
+  const char *name = file_basename(path);
+  unsigned dlen = dir ? strlen(dir) : (unsigned)(name - path);
+  unsigned elen = strlen(ext);
+  if (dlen + elen > maxlen) {
+    out[0] = 0;
+    return false;
+  }
+
+  const char *e = find_extension(name);
+  unsigned nlen = e ? (unsigned)(e - 1 - name) : strlen(name);
+  if (nlen > maxlen - dlen - elen) {
+    nlen = maxlen - dlen - elen;
+    while (nlen && (name[nlen] & 0xC0) == 0x80)   // Don't split a character
+      nlen--;
+  }
+
+  memcpy(out, dir ? dir : path, dlen);
+  memcpy(&out[dlen], name, nlen);
+  memcpy(&out[dlen + nlen], ext, elen + 1);
+  return true;
+}
+
 unsigned parseuint(const char *s) {
   unsigned ret = 0;
   while (*s)

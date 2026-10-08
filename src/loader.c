@@ -210,10 +210,11 @@ unsigned preload_gba_rom(const char *fn, uint32_t fs, t_rom_header *romh) {
   return err ? ERR_LOAD_BADROM : 0;
 }
 
-NOINLINE
-// Copies a loaded chunk into SDRAM and reads it back, rewriting it if the
-// copy did not stick (some carts occasionally drop SDRAM writes). Returns the
-// number of extra writes needed, or -1 if it never verified.
+uint32_t load_sdram_end = 0;
+
+// Data written to SDRAM is read back and rewritten if it did not stick (some
+// carts occasionally drop SDRAM writes), up to CHUNK_WRITE_TRIES times. The
+// chunks that needed it are counted (and logged) for diagnostics.
 #define CHUNK_WRITE_TRIES   8
 static unsigned chunk_rewrites = 0;
 #ifdef HAVE_LOGGING
@@ -222,7 +223,45 @@ static unsigned chunk_rewrites = 0;
   static unsigned chunk_rewrite_num = 0;
 #endif
 
+static void chunk_stats_reset() {
+  chunk_rewrites = 0;
+  #ifdef HAVE_LOGGING
+    chunk_rewrite_num = 0;
+  #endif
+}
+
+// Records the extra writes a chunk needed (-1: it never verified).
+static void chunk_rewritten(uint32_t offset, int extra) {
+  if (!extra)
+    return;
+  chunk_rewrites++;
+  #ifdef HAVE_LOGGING
+  if (chunk_rewrite_num < 16) {
+    chunk_rewrite_off[chunk_rewrite_num] = offset;
+    chunk_rewrite_cnt[chunk_rewrite_num++] = extra < 0 ? 0xFF : extra;
+  }
+  #else
+    (void)offset;
+  #endif
+}
+
+#ifdef HAVE_LOGGING
+static void log_chunk_rewrites(const char *what) {
+  for (unsigned i = 0; i < chunk_rewrite_num; i++)
+    WRITE_LOG("%s chunk at 0x%06lx needed rewriting (%u extra writes)",
+              what, chunk_rewrite_off[i], chunk_rewrite_cnt[i]);
+  if (chunk_rewrites)
+    WRITE_LOG("%s chunks rewritten: %u", what, chunk_rewrites);
+}
+#else
+  #define log_chunk_rewrites(what)
+#endif
+
+// Copies a loaded chunk into SDRAM and reads it back, rewriting it as needed.
+// Returns the number of extra writes needed, or -1 if it never verified.
+NOINLINE
 static int copy_chunk_verified(uint8_t *dst, const uint32_t *src, unsigned bytes, uint32_t offset) {
+  load_sdram_end = MAX(load_sdram_end, offset + bytes);
   uint32_t ck_src[2] = {0, 0};
   checksum_words(src, bytes / 4, ck_src);
 
@@ -243,15 +282,7 @@ static int copy_chunk_verified(uint8_t *dst, const uint32_t *src, unsigned bytes
   }
   set_supercard_mode(MAPPED_SDRAM, true, true);
 
-  if (ret != 0) {
-    chunk_rewrites++;
-    #ifdef HAVE_LOGGING
-    if (chunk_rewrite_num < 16) {
-      chunk_rewrite_off[chunk_rewrite_num] = offset;
-      chunk_rewrite_cnt[chunk_rewrite_num++] = ret < 0 ? 0xFF : ret;
-    }
-    #endif
-  }
+  chunk_rewritten(offset, ret);
   return ret;
 }
 
@@ -326,10 +357,7 @@ unsigned load_gba_rom(
 
   bool use_rtc_patches = rtcinfo != NULL;
 
-  chunk_rewrites = 0;
-  #ifdef HAVE_LOGGING
-    chunk_rewrite_num = 0;
-  #endif
+  chunk_stats_reset();
 
   // Determine how much ROM space we need for the IGM and DirSav payloads
   const unsigned igm_reqsz = ingame_menu_payload.menu_rsize + font_block_size();
@@ -364,6 +392,10 @@ unsigned load_gba_rom(
   // Calculate the "hole" limits
   uint32_t gap_start = ds_addr;
   uint32_t gap_end = igm_addr + igm_space;
+
+  // The in-game menu (with its fonts and cheats) overwrites this SDRAM.
+  const uint32_t igm_end = ingame_menu ? igm_addr + igm_reqsz + cheats : 0;
+  load_sdram_end = MAX(load_sdram_end, igm_end);
 
   // Get aboslute addresses
   ds_addr += GBA_ROM_BASE;
@@ -446,13 +478,7 @@ unsigned load_gba_rom(
   }
   progress(1, 1);  // Mark as complete
 
-  #ifdef HAVE_LOGGING
-    for (unsigned i = 0; i < chunk_rewrite_num; i++)
-      WRITE_LOG("ROM chunk at 0x%06lx needed rewriting (%u extra writes)",
-                chunk_rewrite_off[i], chunk_rewrite_cnt[i]);
-    if (chunk_rewrites)
-      WRITE_LOG("ROM chunks rewritten: %u", chunk_rewrites);
-  #endif
+  log_chunk_rewrites("ROM");
 
   // Verify the load (before patching, which modifies the ROM). The loaded
   // regions are [0, gap_start) and [gap_end, fs), file data only.
@@ -676,34 +702,91 @@ unsigned launch_gba_nor(
   return 0;
 }
 
-// Generic-emulator (ie. NES, SMS, ...) loader
+// Writes data into SDRAM (from GBA_ROM_ADDR on) as one stream of whole words,
+// each one verified (copy_chunk_verified): up to 3 trailing bytes are carried
+// over to the next write (or the flush), so data of any length can follow
+// other data (ie. a ROM after an emulator whose size isn't a multiple of 4).
+// The words are added to a running checksum, to verify the whole image once
+// it is loaded.
+typedef struct {
+  uint32_t off;           // SDRAM offset of the next word
+  uint32_t lim;           // Writes must end below this offset
+  uint32_t ck[2];         // checksum_words() of the words written so far
+  uint32_t carry;         // Bytes waiting for the next write
+  unsigned ncarry;
+} t_sdram_stream;
+
+// Writes len bytes from buf, which must have 4 spare bytes after them.
+static unsigned stream_write(t_sdram_stream *s, uint32_t *buf, unsigned len) {
+  uint8_t *b = (uint8_t*)buf;
+  if (s->ncarry) {
+    memmove(&b[s->ncarry], b, len);
+    memcpy(b, &s->carry, s->ncarry);
+    len += s->ncarry;
+  }
+  unsigned wlen = len & ~3;
+  s->ncarry = len & 3;
+  memcpy(&s->carry, &b[wlen], s->ncarry);
+  if (!wlen)
+    return 0;
+
+  if (s->off + wlen > s->lim)
+    return ERR_LOAD_BADROM;     // Too big
+  checksum_words(buf, wlen / 4, s->ck);
+  if (copy_chunk_verified(&GBA_ROM_ADDR[s->off], buf, wlen, s->off) < 0) {
+    WRITE_LOG("Chunk at 0x%06lx never verified in SDRAM", s->off);
+    return ERR_LOAD_VERIFY;
+  }
+  s->off += wlen;
+  return 0;
+}
+
+// Writes out the carried bytes, padded to a word.
+static unsigned stream_flush(t_sdram_stream *s) {
+  uint32_t pad[2] = {0, 0};
+  return stream_write(s, pad, (4 - s->ncarry) & 3);
+}
+
+// Generic-emulator (ie. NES, SMS, ...) loader. The emulator, the ROM header it
+// needs and the ROM are loaded one after the other, and verified like GBA
+// ROMs: a dropped SDRAM write would corrupt the emulator or the game. They
+// stay below the fonts, so the menu can recover if the load fails.
 NOINLINE
 unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo, progress_fn progress) {
-  FIL fd;
-  uint8_t *ptr = (uint8_t*)(GBA_ROM_ADDR);
   if (fs > 8*1024*1024)
     return ERR_LOAD_BADROM;
 
-  // Data copied to SDRAM is read back (see copy_chunk_verified), like for GBA
-  // ROMs: a dropped write would corrupt the emulator or the game.
-  chunk_rewrites = 0;
-  #ifdef HAVE_LOGGING
-    chunk_rewrite_num = 0;
-  #endif
+  t_sdram_stream s = { .lim = ROM_OFF_FONTS_BASE };
+  chunk_stats_reset();
+  unsigned err;
+  FIL fd;
 
   // Try to find a valid and existing emulator.
   if (!memcmp(ldinfo->emu_name, "vfs:", 4)) {
-    // Look the emulator up in the VFS
-
-    set_supercard_mode(MAPPED_SDRAM, true, false);
-    const void *emupload = get_vfile_ptr(&ldinfo->emu_name[4]);
-    if (!emupload) {
-      // In case the emulator is not bundled in.
-      set_supercard_mode(MAPPED_SDRAM, true, true);
-      return ERR_LOAD_NOEMU;
+    // Bundled emulator: unpack it straight into SDRAM. The unpacker reads its
+    // own output back, so a dropped write spreads: check the result against
+    // the checksum made at build time, and unpack it again if needed.
+    set_supercard_mode(MAPPED_SDRAM, true, false);    // The assets overlap the SD interface
+    const t_vfile *vf = get_vfile(&ldinfo->emu_name[4]);
+    int t = 0;
+    if (vf) {
+      for (; t < CHUNK_WRITE_TRIES; t++) {
+        s.off = upkr_unpack16(GBA_ROM_ADDR, vf->payload);
+        load_sdram_end = MAX(load_sdram_end, s.off);
+        s.ck[0] = s.ck[1] = 0;
+        checksum_words(GBA_ROM_ADDR, s.off / 4, s.ck);
+        if (s.ck[0] == vf->ck[0] && s.ck[1] == vf->ck[1])
+          break;
+      }
     }
-    ptr += upkr_unpack16(ptr, emupload);
     set_supercard_mode(MAPPED_SDRAM, true, true);
+    if (!vf)
+      return ERR_LOAD_NOEMU;    // Not bundled in
+    chunk_rewritten(0, t < CHUNK_WRITE_TRIES ? t : -1);
+    if (t == CHUNK_WRITE_TRIES) {
+      WRITE_LOG("Bundled emulator never unpacked correctly");
+      return ERR_LOAD_VERIFY;
+    }
   }
   else {
     char emupath[64];
@@ -717,29 +800,27 @@ unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo
 
     while (1) {
       UINT rdbytes;
-      uint32_t tmp[LOAD_BS/4];
+      uint32_t tmp[LOAD_BS/4 + 1];
       if (FR_OK != f_read(&fd, tmp, LOAD_BS, &rdbytes)) {
         f_close(&fd);
         return ERR_LOAD_NOEMU;
       }
       if (!rdbytes)
         break;
-
-      // Copy data into the ROM (the SD interface is disabled meanwhile)
-      unsigned bytes = (rdbytes + 3) & ~3;
-      if (copy_chunk_verified(ptr, tmp, bytes, ptr - (uint8_t*)GBA_ROM_ADDR) < 0) {
-        WRITE_LOG("Emulator chunk at 0x%06lx never verified in SDRAM", ptr - (uint8_t*)GBA_ROM_ADDR);
+      if ((err = stream_write(&s, tmp, rdbytes))) {
         f_close(&fd);
-        return ERR_LOAD_VERIFY;
+        return err;
       }
-      ptr += rdbytes;
     }
     f_close(&fd);
   }
 
-  // Generate rom header and what not.
-  if (ldinfo->hndlr)
-    ptr += ldinfo->hndlr(ptr, fn, fs);
+  // Generate rom header and what not (64 bytes at most).
+  if (ldinfo->hndlr) {
+    uint32_t hdr[64/4 + 1];
+    if ((err = stream_write(&s, hdr, ldinfo->hndlr((uint8_t*)hdr, fn, fs))))
+      return err;
+  }
 
   // Proceed to load the ROM now.
   if (FR_OK != f_open(&fd, fn, FA_READ))
@@ -749,32 +830,32 @@ unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo
     if (progress && (offset & (64*1024-1)) == 0)
       progress(offset, fs);
 
+    unsigned toread = MIN(LOAD_BS, fs - offset);
     UINT rdbytes;
-    uint32_t tmp[LOAD_BS/4];
-    if (FR_OK != f_read(&fd, tmp, LOAD_BS, &rdbytes)) {
+    uint32_t tmp[LOAD_BS/4 + 1];
+    if (FR_OK != f_read(&fd, tmp, toread, &rdbytes) || rdbytes != toread) {
       f_close(&fd);
       return ERR_LOAD_BADROM;
     }
-
-    // Copy data into the ROM (the SD interface is disabled meanwhile)
-    if (copy_chunk_verified(ptr, tmp, LOAD_BS, ptr - (uint8_t*)GBA_ROM_ADDR) < 0) {
-      WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", ptr - (uint8_t*)GBA_ROM_ADDR);
+    if ((err = stream_write(&s, tmp, rdbytes))) {
       f_close(&fd);
-      return ERR_LOAD_VERIFY;
+      return err;
     }
-    ptr += LOAD_BS;
   }
-
-  // Close the file, not super necessary really :P
   f_close(&fd);
+  if ((err = stream_flush(&s)))
+    return err;
 
-  #ifdef HAVE_LOGGING
-    for (unsigned i = 0; i < chunk_rewrite_num; i++)
-      WRITE_LOG("Emulator load: chunk at 0x%06lx needed rewriting (%u extra writes)",
-                chunk_rewrite_off[i], chunk_rewrite_cnt[i]);
-    if (chunk_rewrites)
-      WRITE_LOG("Emulator load: chunks rewritten: %u", chunk_rewrites);
-  #endif
+  log_chunk_rewrites("Emulator load:");
+
+  // Verify the whole image: a write can disturb data written earlier.
+  uint32_t ck_mem[2] = {0, 0};
+  checksum_loaded_rom(0, s.off, ck_mem);
+  if (ck_mem[0] != s.ck[0] || ck_mem[1] != s.ck[1]) {
+    WRITE_LOG("Emulator load verify: SDRAM copy mismatch (%08lx:%08lx vs %08lx:%08lx)",
+              ck_mem[0], ck_mem[1], s.ck[0], s.ck[1]);
+    return ERR_LOAD_VERIFY;
+  }
 
   // Set the ROM into read only mode, disable SD card reader as well.
   set_supercard_mode(MAPPED_SDRAM, false, false);

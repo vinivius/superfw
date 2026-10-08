@@ -304,24 +304,15 @@ void load_settings() {
 }
 
 void sram_filename_calc(const char *rom, char *savefn, unsigned save_path) {
-  if (save_path == SaveRomName) {
-    strcpy(savefn, rom);   // Use the full ROM path
-  }
-  else {
-    const char *p = file_basename(rom);
-    const char *path = save_paths[save_path];
-    strcpy(savefn, path);   // Add the base path
-    strcat(savefn, p);      // Append just the basename
-  }
-
-  replace_extension(savefn, ".sav");
+  // Next to the ROM, or in a saves folder (also when the ROM's folder leaves
+  // no room for its name).
+  const unsigned maxlen = MAX_FN_LEN - 1 - SAVE_FN_RESERVE;
+  if (save_path != SaveRomName || !derived_fn(savefn, maxlen, NULL, rom, ".sav"))
+    derived_fn(savefn, maxlen, save_paths[save_path == SaveRomName ? SaveSavegameDir : save_path], rom, ".sav");
 }
 
 void savestate_filename_calc(const char *rom, char *statefn) {
-  const char *p = file_basename(rom);
-  strcpy(statefn, savestates_paths[state_path_default]);   // Add the base path
-  strcat(statefn, p);               // Append just the basename
-  replace_extension(statefn, "");
+  derived_fn(statefn, MAX_FN_LEN - 1 - STATE_FN_RESERVE, savestates_paths[state_path_default], rom, "");
 }
 
 static void parse_rom_load_settings(void *usr, const char *var, const char *value) {
@@ -346,33 +337,31 @@ static void parse_rom_launch_settings(void *usr, const char *var, const char *va
     rs->rtcts = valu;
 }
 
-// Builds the path of a ROM's config file: ROMCONFIG_PATH + ROM name + .config
-// Returns false if it does not fit in MAX_FN_LEN (very long ROM names).
-static bool rom_config_fn(char *cfgfn, const char *romfn) {
-  const char *bn = file_basename(romfn);
-  if (sizeof(ROMCONFIG_PATH) + strlen(bn) + sizeof(".config") - 1 > MAX_FN_LEN)
-    return false;
-
-  strcpy(cfgfn, ROMCONFIG_PATH);
-  strcat(cfgfn, bn);
-  replace_extension(cfgfn, ".config");
-  return true;
+// Opens the config file of a ROM: ROMCONFIG_PATH + its name + .config. The
+// buffer fits any FAT name (FatFs itself refuses names over 255 chars).
+static bool rom_config_open(FIL *fd, const char *romfn, BYTE mode) {
+  char cfgfn[sizeof(ROMCONFIG_PATH) + MAX_FN_LEN + 8];
+  derived_fn(cfgfn, sizeof(cfgfn) - 1, ROMCONFIG_PATH, romfn, ".config");
+  return FR_OK == f_open(fd, cfgfn, mode);
 }
 
 bool load_rom_settings(const char *fn, t_rom_load_settings *rld, t_rom_launch_settings *rlh) {
+  // Attempt to open and read the file.
   FIL fd;
-  {
-    char cfgfn[MAX_FN_LEN];
-    // Attempt to open and read the file.
-    if (!rom_config_fn(cfgfn, fn) || FR_OK != f_open(&fd, cfgfn, FA_READ))
-      return false;
-  }
+  if (!rom_config_open(&fd, fn, FA_READ))
+    return false;
 
   {
+    // The firmware writes configs of under 80 bytes.
     char buf[128];
     UINT rdbytes;
     if (FR_OK == f_read(&fd, buf, sizeof(buf) - 1, &rdbytes)) {
       buf[rdbytes] = 0;
+      // A longer (hand edited) file: drop the line cut short.
+      if (f_size(&fd) > rdbytes) {
+        char *nl = strrchr(buf, '\n');
+        *(nl ? &nl[1] : buf) = 0;
+      }
       if (rld)
         parse_file(buf, parse_rom_load_settings, rld);
       if (rlh)
@@ -393,11 +382,8 @@ bool save_rom_patchmode(const char *fn, unsigned mode) {
   f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
 
   FIL fd;
-  {
-    char cfgfn[MAX_FN_LEN];
-    if (!rom_config_fn(cfgfn, fn) || FR_OK != f_open(&fd, cfgfn, FA_WRITE | FA_OPEN_APPEND))
-      return false;
-  }
+  if (!rom_config_open(&fd, fn, FA_WRITE | FA_OPEN_APPEND))
+    return false;
   char buf[32];
   npf_snprintf(buf, sizeof(buf), "patchmode=%u\n", mode);
   UINT wrbytes;
@@ -414,36 +400,30 @@ bool save_rom_settings(const char *fn, const t_rom_load_settings *rld, const t_r
 
   // Proceed to create the file
   FIL fd;
-  {
-    char cfgfn[MAX_FN_LEN];
-    if (!rom_config_fn(cfgfn, fn) || FR_OK != f_open(&fd, cfgfn, FA_WRITE | FA_CREATE_ALWAYS))
-      return false;
-  }
+  if (!rom_config_open(&fd, fn, FA_WRITE | FA_CREATE_ALWAYS))
+    return false;
 
   // Serialize the ROM settings
-  FRESULT res;
-  {
-    char buf[128];
-    npf_snprintf(buf, sizeof(buf),
-      "patchmode=%u\n"
-      "igm=%u\n"
-      "rtc=%u\n"
-      "directsaving=%u\n"
-      "cheats=%u\n"
-      "rtcts=%u\n",
-      rld->patch_policy,
-      rld->use_igm ? 1 : 0,
-      rld->use_rtc ? 1 : 0,
-      rld->use_dsaving ? 1 : 0,
-      rlh->use_cheats ? 1 : 0,
-      (unsigned int)rlh->rtcts);
+  char buf[128];
+  npf_snprintf(buf, sizeof(buf),
+    "patchmode=%u\n"
+    "igm=%u\n"
+    "rtc=%u\n"
+    "directsaving=%u\n"
+    "cheats=%u\n"
+    "rtcts=%u\n",
+    rld->patch_policy,
+    rld->use_igm ? 1 : 0,
+    rld->use_rtc ? 1 : 0,
+    rld->use_dsaving ? 1 : 0,
+    rlh->use_cheats ? 1 : 0,
+    (unsigned int)rlh->rtcts);
 
-    UINT wrbytes;
-    res = f_write(&fd, buf, strlen(buf), &wrbytes);
-    f_close(&fd);
-  }
-
-  return FR_OK == res;
+  unsigned len = strlen(buf);
+  UINT wrbytes;
+  FRESULT res = f_write(&fd, buf, len, &wrbytes);
+  // The data reaches the card in f_close (f_write only buffers it).
+  return FR_OK == f_close(&fd) && FR_OK == res && wrbytes == len;
 }
 
 

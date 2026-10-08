@@ -65,11 +65,24 @@ SuperFW and SuperFW Next can install each other.
 - A save that could not be written at boot is retried before the next game
   is launched; if it still fails, the launch stops with an error instead of
   erasing it (the save is kept in SRAM and retried on the next boot).
-- GB, GBC and NES games (and emulators loaded from the SD card) are read
-  back after being copied to the cart's RAM and rewritten when a write was
-  dropped, like GBA ROMs, instead of starting a corrupted game.
-- "Remember config" says when the config could not be saved (ie. a ROM
-  name over 231 characters) instead of "Config saved!".
+- GB, GBC and NES games are verified like GBA ROMs: the emulator (bundled
+  ones against a checksum made at build time), the ROM header and the ROM
+  are read back after being copied to the cart's RAM, rewritten when a write
+  was dropped, and checked once more as a whole, instead of starting a
+  corrupted game.
+- A load that fails (ie. SD read errors) shows the error and reloads the
+  menu data it overwrote (folder, recent list, box art), instead of going
+  on with garbage. A big ROM that also overwrote the fonts reboots the menu.
+- Each ROM gets its own config again (an upstream change made them share
+  one file). "Remember config" and the "don't ask again" answer to the
+  patch prompt say when they could not be saved, instead of "Config saved!".
+- ROM names up to the FAT limit (255 characters) work: the save, savestate,
+  patch and config names made from them are shortened when needed instead
+  of overflowing their buffers (as are file manager paths).
+- Cheat files next to the ROM (NAME.cht) are loaded; they were found but
+  never loaded.
+- Patch files the patch engine made before the v1 flash fix (upstream
+  f170dfb) are made again when they hook flash saves.
 - A damaged or hand-edited recent.txt (no final newline, overlong lines,
   Windows line endings) no longer crashes or hangs the boot.
 - Firmware updates retry (up to 3 times) when erasing, writing or

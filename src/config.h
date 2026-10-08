@@ -31,6 +31,12 @@
 
 #define MAX_BACKUP_CNT             16
 
+// Save and savestate names get suffixes added later (".tmp.sav", ".old.sav",
+// ".17.sav", ".5.state"): the names derived from a ROM name are cut short to
+// leave room for them in MAX_FN_LEN.
+#define SAVE_FN_RESERVE            4             // ".sav" -> ".tmp.sav"
+#define STATE_FN_RESERVE           8             // "" -> ".N.state"
+
 #define SUPERFW_DIR               "/.superfw"
 #define ROMCONFIG_PATH            "/.superfw/config/"
 #define PATCHDB_PATH              "/.superfw/patches/"

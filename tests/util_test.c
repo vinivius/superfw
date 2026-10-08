@@ -91,6 +91,36 @@ int main() {
   assert(!strcmp(find_extension("/foo/bar.lol/test.123"), "123"));
   assert(find_extension("/foo/bar.lol/beef") == NULL);
 
+  // Paths derived from a ROM name (ie. saves, configs).
+  assert(derived_fn(tmp, 255, "/.superfw/config/", "/GBA/Game.gba", ".config"));
+  assert(!strcmp(tmp, "/.superfw/config/Game.config"));
+  assert(derived_fn(tmp, 255, NULL, "/GBA/Game.gba", ".sav"));
+  assert(!strcmp(tmp, "/GBA/Game.sav"));
+  assert(derived_fn(tmp, 255, NULL, "/GBA/Game", ".sav"));
+  assert(!strcmp(tmp, "/GBA/Game.sav"));
+  assert(derived_fn(tmp, 255, "/SAVESTATE/", "Game.v1.gba", ""));
+  assert(!strcmp(tmp, "/SAVESTATE/Game.v1"));
+  // Names are cut short to fit, never in the middle of a UTF-8 character.
+  assert(derived_fn(tmp, 20, "/SAVES/", "/x/ABCDEFGHIJKLMNOPQRSTUVWXYZ.gba", ".sav"));
+  assert(!strcmp(tmp, "/SAVES/ABCDEFGHI.sav"));
+  assert(derived_fn(tmp, 3, "/", "a\xc3\xa9.gba", ""));
+  assert(!strcmp(tmp, "/a"));
+  assert(derived_fn(tmp, 4, "/", "a\xc3\xa9.gba", ""));
+  assert(!strcmp(tmp, "/a\xc3\xa9"));
+  // Not even the directory fits.
+  assert(!derived_fn(tmp, 9, "/SAVES/", "/GBA/Game.gba", ".sav"));
+  assert(!strcmp(tmp, ""));
+  {
+    // The longest FAT name, into a buffer of exactly maxlen + 1 bytes.
+    char name[257], *out = malloc(256);
+    name[0] = '/';
+    memset(&name[1], 'N', 255);
+    name[256] = 0;
+    assert(derived_fn(out, 255, "/.superfw/savestate/", name, ""));
+    assert(strlen(out) == 255 && !memcmp(out, "/.superfw/savestate/NNN", 23));
+    free(out);
+  }
+
   human_size(tmp, sizeof(tmp), 0); assert(!strcmp(tmp, "1K"));
   human_size(tmp, sizeof(tmp), 100); assert(!strcmp(tmp, "1K"));
   human_size(tmp, sizeof(tmp), 1000); assert(!strcmp(tmp, "1K"));

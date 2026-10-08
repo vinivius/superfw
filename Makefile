@@ -175,7 +175,7 @@ INFILES=src/gba_ewram_crt0.S \
         src/fonts/font_render.c \
         ${FATFSFILES}
 
-all:	$(FWBINFILES) $(BIEMUFILES) directsave.payload ingame_trampoline.payload
+all:	$(FWBINFILES) $(BIEMUFILES) $(BIEMUFILES:.comp=.ck) directsave.payload ingame_trampoline.payload
 	# Wrap the firmware around a ROM->EWRAM loader
 	$(CC) $(CFLAGS) -o firmware.elf rom_boot.S -T ldscripts/gba_romboot.ld -nostartfiles -nostdlib -Wl,--defsym,MAX_FLASH_SIZE=$(MAXFSIZE)K
 	$(OBJCOPY) --output-target=binary firmware.elf superfw.gba
@@ -220,6 +220,10 @@ firmware.ewram.gba.comp:	firmware.ewram.gba ./upkr.elf
 %.gba.comp:	%.gba.bin ./upkr.elf
 	./upkr.elf -l $(COMPRESSION_RATIO) $< $@
 
+# Checksum of a bundled emulator, to verify it once unpacked.
+%.gba.ck:	%.gba.bin tools/vfs-checksum.py
+	./tools/vfs-checksum.py $< > $@
+
 %.db.comp:	%.db ./upkr.elf
 	./upkr.elf -l $(COMPRESSION_RATIO) $< $@
 
@@ -236,5 +240,5 @@ upkr.elf:	tools/upkr.cc
 	g++ -o $@ $< -O3 -ffast-math
 
 clean:
-	rm -f ldscripts/*.i *.gba *.elf *.payload *.map res/*.comp emu/*.comp *.comp src/menu_messages.h src/messages_data.h
+	rm -f ldscripts/*.i *.gba *.elf *.payload *.map res/*.comp emu/*.comp emu/*.ck *.comp src/menu_messages.h src/messages_data.h
 

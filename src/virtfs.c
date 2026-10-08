@@ -22,31 +22,14 @@
 
 #include "common.h"
 
-typedef struct {
-  char fn[4];
-  uint32_t size;
-  uint8_t payload[];
-} vf_header;
-
-const void *get_vfile_ptr(const char *fname) {
-  const vf_header *ptr = (vf_header*)ROM_ASSETS_U8;
-  while (ptr->size) {
-    if (!memcmp(ptr->fn, fname, sizeof(ptr->fn)))
-      return ptr->payload;
-    ptr = (vf_header*)&ptr->payload[ROUND_UP2(ptr->size, 4)];
+const t_vfile *get_vfile(const char *fname) {
+  const t_vfile *f = (const t_vfile*)ROM_ASSETS_U8;
+  while (f->size) {
+    if (!memcmp(f->fn, fname, sizeof(f->fn)))
+      return f;
+    f = (const t_vfile*)&f->payload[ROUND_UP2(f->size, 4)];
   }
 
   return NULL;
-}
-
-int get_vfile_size(const char *fname) {
-  const vf_header *ptr = (vf_header*)ROM_ASSETS_U8;
-  while (ptr->size) {
-    if (!memcmp(ptr->fn, fname, sizeof(ptr->fn)))
-      return (int)ptr->size;
-    ptr = (vf_header*)&ptr->payload[ROUND_UP2(ptr->size, 4)];
-  }
-
-  return -1;
 }
 
