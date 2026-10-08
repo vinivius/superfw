@@ -19,9 +19,10 @@ permissions:
 
 # A new push to a pull request cancels its outdated run. Pushes to
 # superfw-next get a group each (GitHub keeps only one pending run per group,
-# so a shared one could drop a version), and all of them run.
+# so a shared one could drop a version), and all of them run; so do manual
+# runs, in groups of their own, so they can't replace a push run either.
 concurrency:
-  group: superfw-next-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: superfw-next-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
