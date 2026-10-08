@@ -184,6 +184,19 @@ expose the UART as a pty and to keep SD image writes.
   (mounts it); unmount and `udisksctl loop-delete` before running the
   emulator. The emulator writes to the image, so work on a copy.
 - Interactive: `cd DIR && retroarch -L $SUPERFW_DEV/gpsp-supercard/gpsp_libretro.so superfw.gba`.
+  To show the user a test on screen while you drive it,
+  `tools/debug/emu/pad.py STEP...` presses buttons through RetroArch's
+  Network RetroPad (needs the retroarch.cfg settings in its header), ie.
+  `pad.py down*2 a 1.5 shot:2-open b`. Screenshot after each step that can
+  open a prompt: a press meant for a prompt that didn't appear lands on the
+  next screen (and may launch a game). RetroArch sometimes segfaults at
+  startup (empty log, often right after another instance was killed):
+  check its window exists (`pad.py` says "no RetroArch window") and start
+  it again.
+- RetroArch itself may segfault when killed (`timeout`, `pkill`), which
+  raises a "Process crashed: retroarch" notification: if
+  `coredumpctl info PID` shows frames in `retroarch`, not in
+  `gpsp_libretro.so`, it isn't the firmware or the core.
 - `GPSP_SIO_TRACE=1` (environment of `run.sh`) prints every SIOCNT/RCNT
   write and every Supercard mode write to stderr: shows what a game does to
   the link port, and whether a reset reached the cartridge mode switch.
@@ -209,6 +222,11 @@ expose the UART as a pty and to keep SD image writes.
   (sweep N to hit each step), as done for the in-game save and pending-save
   fixes.
 - Don't rebuild or replace the core while an emulator uses it (SIGBUS).
+- Long names: the browser can't open a path over 255 chars ("could not
+  load ROM!"), and a ROM's config file ("/.superfw/config/NAME.config")
+  must fit MAX_FN_LEN too (the check in rom_config_fn()), so ROM names
+  over 231 chars get no per-game config. Tests of long names must stay under both limits, or they fail
+  for that reason instead.
 
 ## Firmware memory budgets
 
