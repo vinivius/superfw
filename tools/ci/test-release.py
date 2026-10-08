@@ -58,8 +58,8 @@ def complete(rel, v, sha):
     got = {x["name"]: x["digest"] for x in rel.get("next-" + v, {}).get("assets", []) if x["state"] == "uploaded"}
     return got == want
 
-def publish(name, v, sha, releases, expect_ok, create="ok", out=None, test=None):
-    p, rel, calls, _ = run("publish-release.sh", {"V": v, "GITHUB_SHA": sha, "FAKE_CREATE": create},
+def publish(name, v, sha, releases, expect_ok, create="ok", out=None, test=None, list_="ok"):
+    p, rel, calls, _ = run("publish-release.sh", {"V": v, "GITHUB_SHA": sha, "FAKE_CREATE": create, "FAKE_LIST": list_},
                            releases=releases, out=build(v, sha) if out is None else out)
     check(name, (p.returncode == 0) == expect_ok and (test is None or test(rel, calls)), p)
 
@@ -78,6 +78,9 @@ publish("older version published after a newer one: not latest", V2, "aaa1",
         and r["next-v0.2"]["notesStartTag"] == "next-v0.1")
 publish("create leaves a starter asset: uploaded again", V2, "aaa1", {"next-v0.1": release(V1, "old1")}, True,
         create="partial", test=lambda r, c: complete(r, V2, "aaa1"))
+publish("listing the releases fails: error, nothing published", V2, "aaa1",
+        {"next-v0.1": release(V1, "old1"), "next-v0.3": release(V3, "ccc3")}, False, list_="fail",
+        test=lambda r, c: not writes(c))
 publish("create fails, nothing published: error", V2, "aaa1", {}, False, create="fail",
         test=lambda r, c: "next-v0.2" not in r)
 publish("already released by this commit (rerun): nothing to do", V2, "aaa1", {"next-v0.2": release(V2, "aaa1")}, True,

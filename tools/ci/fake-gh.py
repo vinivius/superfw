@@ -3,7 +3,8 @@
 # keeps the releases in $FAKE_GH/releases.json and the workflow runs in
 # $FAKE_GH/runs.json, logs every call to $FAKE_GH/log, and behaves like gh for
 # the calls the release scripts make. $FAKE_CREATE sets what "release create"
-# does: ok, partial (uploads one file, leaves a starter asset, fails) or fail.
+# does: ok, partial (uploads one file, leaves a starter asset, fails) or fail;
+# $FAKE_LIST=fail makes "release list" fail, $FAKE_API=fail "api".
 import hashlib, json, os, subprocess, sys
 
 d = os.environ["FAKE_GH"]
@@ -59,6 +60,8 @@ if a[0] == "api":
 rel = load("releases.json", {})
 cmd, tag = a[1], a[2] if len(a) > 2 else None
 if cmd == "list":
+    if os.environ.get("FAKE_LIST") == "fail":
+        sys.exit("HTTP 502")
     jq([{"tagName": t} for t in rel])
 elif cmd == "view":
     if tag not in rel:

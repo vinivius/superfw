@@ -25,7 +25,10 @@ NOTES
   # rerunning an old run): notes start at the highest existing version below
   # this one, and only the highest one is the latest. The release lock keeps
   # this list current until it's published.
-  tags=$( { gh release list --limit 200 --json tagName --jq '.[].tagName' | grep '^next-v' || true; echo "$tag"; } | sort -V -u)
+  # Listed first, so set -e stops on an API failure (an error must not look
+  # like an empty release history); grep finding nothing is fine.
+  list=$(gh release list --limit 200 --json tagName --jq '.[].tagName')
+  tags=$( { grep '^next-v' <<< "$list" || true; echo "$tag"; } | sort -V -u)
   prev=$(echo "$tags" | grep -x -B1 "$tag" | grep -v -x "$tag" || true)
   latest=$([ "$(echo "$tags" | tail -n1)" = "$tag" ] && echo true || echo false)
   echo "Publishing $tag (notes since: ${prev:-the beginning}, latest: $latest)"
