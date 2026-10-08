@@ -264,13 +264,13 @@ void apply_patch_ops(
     case 0x3:   // Write N bytes to address
       for (unsigned j = 0; j < arg + 1; j++)
         if (moff + j >= baseaddr && moff + j < baseaddr + bufsize)
-          write_mem8(&buffer[moff + j - baseaddr], ops[(j / 4) + 1] >> (j * 8));
+          write_mem8(&buffer[moff + j - baseaddr], ops[i + 1 + j / 4] >> ((j % 4) * 8));
       i += (arg + 1 + 3) / 4;
       break;
     case 0x4:   // Write N words to address
-      for (unsigned j = 0; j < arg + 1; j++)
-        if (moff + j >= baseaddr && moff + j < baseaddr + bufsize)
-          write_mem32(&buffer[moff + j * 4 - baseaddr], ops[++i]);
+      for (unsigned j = 0; j < arg + 1; j++, i++)
+        if (moff + j * 4 >= baseaddr && moff + j * 4 + 4 <= baseaddr + bufsize)
+          write_mem32(&buffer[moff + j * 4 - baseaddr], ops[i + 1]);
       break;
     case 0x5:   // Patch function with a dummy one
       switch (arg) {

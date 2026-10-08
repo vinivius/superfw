@@ -218,7 +218,9 @@ void load_sdram_reset(void) {
   load_sdram_lost = false;
 }
 
-// Records that a load writes SDRAM [start, end).
+// Records that a load writes SDRAM [start, end). Every write a load makes goes
+// through copy_chunk_verified(), the in-game menu install or the bundled
+// emulator unpack, which record it here first.
 static void load_writes(uint32_t start, uint32_t end) {
   if (start < ROM_OFF_FONTS_BASE)
     load_sdram_end = MAX(load_sdram_end, end);
@@ -298,8 +300,14 @@ static int copy_chunk_verified(uint32_t offset, uint32_t *src, unsigned bytes, u
   set_supercard_mode(MAPPED_SDRAM, true, false);
   int ret = -1;
   for (unsigned t = 0; t < CHUNK_WRITE_TRIES; t++) {
-    if (use_slowld)
-      rom_copy_write16(dst, src, bytes);
+    if (use_slowld) {
+      // rom_copy_write16() copies 32-byte blocks: the rest goes by half words.
+      const unsigned blocks = bytes & ~31;
+      if (blocks)
+        rom_copy_write16(dst, src, blocks);
+      for (unsigned i = blocks / 2; i < bytes / 2; i++)
+        ((volatile uint16_t*)dst)[i] = ((const uint16_t*)src)[i];
+    }
     else
       dma_memcpy32(dst, src, bytes/4);
 
@@ -374,8 +382,9 @@ unsigned load_gba_rom(
 
   chunk_stats_reset();
 
-  // Determine how much ROM space we need for the IGM and DirSav payloads
-  const unsigned igm_reqsz = ingame_menu_payload.menu_rsize + font_block_size();
+  // Determine how much ROM space we need for the IGM (with its fonts and
+  // cheats) and DirSav payloads
+  const unsigned igm_reqsz = ROUND_UP2(ingame_menu_payload.menu_rsize + font_block_size() + cheats, 1024);
   WRITE_LOG("Load sizes: rom %lu, igm %u, fonts %u", fs, ingame_menu_payload.menu_rsize, font_block_size());
   // Round it up, reserve ~1KB after the ROM for patches.
   // 32MiB games cannot generate patches beyond the end.
@@ -413,7 +422,7 @@ unsigned load_gba_rom(
   // load skips its space).
   const bool install_igm = ingame_menu && !keep_igm;
   if (ingame_menu)
-    load_writes(igm_addr, igm_addr + igm_reqsz + cheats);
+    load_writes(igm_addr, igm_addr + igm_reqsz);
 
   // Get aboslute addresses
   ds_addr += GBA_ROM_BASE;
@@ -471,9 +480,10 @@ unsigned load_gba_rom(
   if (!err && use_verify_rom) {
     // Read the file again, to catch corrupted reads from the SD card.
     ck[0] = ck[1] = 0;
-    err = load_rom_region(&fd, 0, seg1_end, ck, true, NULL, &steps, 0);
+    steps = 0;
+    err = load_rom_region(&fd, 0, seg1_end, ck, true, progress, &steps, load_steps);
     if (!err)
-      err = load_rom_region(&fd, gap_end, fs, ck, true, NULL, &steps, 0);
+      err = load_rom_region(&fd, gap_end, fs, ck, true, progress, &steps, load_steps);
     if (!err && (ck[0] != ck_load[0] || ck[1] != ck_load[1])) {
       WRITE_LOG("ROM verify: SD re-read mismatch");
       err = ERR_LOAD_VERIFY;

@@ -85,8 +85,8 @@ bool derived_fn(char *out, unsigned maxlen, const char *dir, const char *path, c
   const char *name = file_basename(path);
   unsigned dlen = dir ? strlen(dir) : (unsigned)(name - path);
   unsigned elen = strlen(ext);
-  const char *e = find_extension(name);
-  unsigned nlen = e ? (unsigned)(e - 1 - name) : strlen(name);
+  const char *e = strrchr(name, '.');     // As replace_extension() (a leading dot too)
+  unsigned nlen = e ? (unsigned)(e - name) : strlen(name);
 
   uint32_t h = 0;
   const bool cut = dlen + nlen + elen > maxlen;

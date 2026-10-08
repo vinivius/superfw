@@ -679,13 +679,16 @@ static const t_patch * get_game_patch(const t_load_gba_info *info) {
 
 bool ingame_menu_avail_sdram(const t_load_gba_info *info) {
   const t_patch *p = get_game_patch(info);
-  // Necessary size to load the IGM (+fonts +cheats)
-  const unsigned igm_reqsz = ROUND_UP2(ingame_menu_payload.menu_rsize + font_block_size() + spop.p.load.l.cheats_size, 1024);
+  // Necessary size to load the IGM (+fonts +cheats), and the DirectSave
+  // payload that may go with it (as load_gba_rom() places them).
+  const unsigned req_size = ROUND_UP2(ingame_menu_payload.menu_rsize + font_block_size() + spop.p.load.l.cheats_size, 1024) +
+                            DIRSAVE_REQ_SPACE;
+  const unsigned romrsize = ROUND_UP2(info->romfs, 1024) + (info->romfs < MAX_GBA_ROM_SIZE ? 1024 : 0);
 
   // If the ROM is too big, must use some hole to load the menu.
-  if (info->romfs > MAX_GBA_ROM_SIZE - igm_reqsz) {
+  if (romrsize + req_size > MAX_GBA_ROM_SIZE) {
     // Discard holes that are too small, or not well formed.
-    if (!p || p->hole_size < igm_reqsz || p->hole_addr + p->hole_size > info->romfs)
+    if (!p || p->hole_size < req_size || p->hole_addr + p->hole_size > info->romfs)
       return false;   // Too big to fit the menu!
   }
 
@@ -1069,10 +1072,13 @@ static bool delete_recent_flush(unsigned entry_num) {
 }
 
 // Error message for a ROM load error.
+#define ERR_LOAD_SAVEARMED 0x80   // The failed game's save is still due on reboot
+
 static unsigned load_error_msg(unsigned err) {
-  return err == ERR_LOAD_NOEMU  ? MSG_ERR_NOEMU :
-         err == ERR_LOAD_VERIFY ? MSG_ERR_VERIFY :
-         err == ERR_LOAD_TOOBIG ? MSG_ERR_TOOBIG : MSG_ERR_READ;
+  return err == ERR_LOAD_NOEMU     ? MSG_ERR_NOEMU :
+         err == ERR_LOAD_VERIFY    ? MSG_ERR_VERIFY :
+         err == ERR_LOAD_TOOBIG    ? MSG_ERR_TOOBIG :
+         err == ERR_LOAD_SAVEARMED ? MSG_ERR_SAVEWR : MSG_ERR_READ;
 }
 
 static void menu_load_failed(unsigned err);
@@ -2042,8 +2048,10 @@ static bool load_error_file(uint8_t *err, BYTE mode) {
 // error is shown after it if the reboot comes back to this firmware (not when
 // it runs from the SD card).
 static void menu_load_failed(unsigned err) {
-  // The game never ran: its SRAM must not be saved on the next boot.
-  program_sram_dump(NULL, 0);
+  // The game never ran: its SRAM must not be saved on the next boot. If that
+  // can't be undone (the card fails writes too), that's the error to show.
+  if (!program_sram_dump(NULL, 0))
+    err = ERR_LOAD_SAVEARMED;
 
   const uint32_t end = load_sdram_end;
   const bool lost = load_sdram_lost;
@@ -3983,11 +3991,13 @@ static void keypress_browse_search(unsigned newkeys) {
   }
 }
 
+extern const uint16_t keyrep;
+
 static void keypress_menu_browse(unsigned newkeys) {
-  if (!browser_loaded && (newkeys & ~(KEY_BUTTUP | KEY_BUTTDOWN | KEY_BUTTLEFT | KEY_BUTTRIGHT))) {
-    // It couldn't be read (ie. SD errors): any key but the (repeating) D-pad
-    // tries again. If it still can't be, the keys work on the empty folder
-    // (B goes up).
+  if (!browser_loaded && (newkeys & ~keyrep)) {
+    // It couldn't be read (ie. SD errors): any key that doesn't repeat tries
+    // again. If it still can't be, the keys work on the empty folder (B goes
+    // up).
     browser_ensure_loaded();
     if (browser_loaded)
       return;

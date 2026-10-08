@@ -73,8 +73,10 @@ SuperFW and SuperFW Next can install each other.
 - A load that fails (ie. SD read errors) shows the error and reloads the
   menu data it overwrote (folder, recent list, box art), instead of going
   on with garbage. A big ROM that also overwrote the fonts reboots the menu
-  (like after playing a game) and shows the error after it. The slow retry
-  of a failed fast load keeps the in-game menu the first try installed.
+  (like after playing a game) and shows the error after it (unless the
+  firmware runs from the SD card: then the reboot goes to the installed
+  one). The slow retry of a failed fast load keeps the in-game menu the
+  first try installed.
 - Each ROM gets its own config again (an upstream change made them share
   one file). "Remember config" and the "don't ask again" answer to the
   patch prompt say when they could not be saved, instead of "Config saved!".

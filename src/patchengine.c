@@ -556,8 +556,16 @@ bool unserialize_patch(const uint8_t *buffer, unsigned size, t_patch *patch) {
   // handlers (regenerate them). Those tables give the erase and write
   // handlers but, unlike v2 tables, no byte write one.
   bool v1table = false, wrbt = false;
-  for (unsigned i = 0; i < patch->wcnt_ops + patch->save_ops + patch->irqh_ops + patch->rtc_ops; i++) {
+  const unsigned nops = patch->wcnt_ops + patch->save_ops + patch->irqh_ops + patch->rtc_ops;
+  for (unsigned i = 0; i < nops; i++) {
     const unsigned opc = patch->op[i] >> 28, arg = (patch->op[i] >> 25) & 7;
+    if (opc == OPC_COPY_BYTE || opc == OPC_COPY_WORD) {
+      // Followed by their data (arg + 1 bytes or words), not ops.
+      i += opc == OPC_COPY_BYTE ? (arg + 4) / 4 : arg + 1;
+      if (i >= nops)
+        return false;
+      continue;
+    }
     if ((opc == OPC_WR_BUF && arg >= MAX_PATCH_PRG) || (opc == OPC_RTC_HD && arg > RTC_GETTD_HNDLR))
       return false;
     if (opc == OPC_FLASH_HD) {

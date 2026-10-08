@@ -104,6 +104,16 @@ int main() {
   write_patch((0x7u << 28) | (3u << 25) | 0x1234, NULL);
   assert(unserialize_patch(buf, size, &q));
 
+  // Copy ops are followed by data, which isn't checked as ops (this word would
+  // be an op writing program 5), but must fit in the op table.
+  {
+    const uint32_t copy[] = { (0x4u << 28) | (0u << 25) | 0x100, (0x0u << 28) | (5u << 25) | 0x1234 };
+    write_patch_ops(copy, 2, NULL);
+    assert(unserialize_patch(buf, size, &q));
+    write_patch_ops(copy, 1, NULL);       // Its data word missing
+    assert(!unserialize_patch(buf, size, &q));
+  }
+
   // A hole (where payloads go) past the 32 MiB of ROM is refused.
   write_patch(OP_EEPROM_HD(0x1234), NULL);
   p.hole_addr = 32*1024*1024 - 1024;

@@ -100,6 +100,8 @@ int main() {
   assert(!strcmp(tmp, "/GBA/Game.sav"));
   assert(derived_fn(tmp, 255, "/SAVESTATE/", "Game.v1.gba", ""));
   assert(!strcmp(tmp, "/SAVESTATE/Game.v1"));
+  assert(derived_fn(tmp, 255, NULL, "/GBA/.hidden", ".sav"));     // As replace_extension()
+  assert(!strcmp(tmp, "/GBA/.sav"));
   // Names that don't fit are cut short (never in the middle of a UTF-8
   // character) and end in "~" and a hash of the whole name, so they differ.
   assert(derived_fn(tmp, 26, "/SAVES/", "/x/ABCDEFGHIJKLMNOPQRSTUVWXYZ.gba", ".sav"));
