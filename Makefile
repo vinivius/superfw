@@ -222,7 +222,7 @@ firmware.ewram.gba.comp:	firmware.ewram.gba ./upkr.elf
 
 # Checksum of a bundled emulator, to verify it once unpacked.
 %.gba.ck:	%.gba.bin tools/vfs-checksum.py
-	./tools/vfs-checksum.py $< > $@.tmp && mv $@.tmp $@
+	./tools/vfs-checksum.py $< > $@.tmp && mv $@.tmp $@ || { rm -f $@.tmp; false; }
 
 %.db.comp:	%.db ./upkr.elf
 	./upkr.elf -l $(COMPRESSION_RATIO) $< $@
@@ -240,5 +240,5 @@ upkr.elf:	tools/upkr.cc
 	g++ -o $@ $< -O3 -ffast-math
 
 clean:
-	rm -f ldscripts/*.i *.gba *.elf *.payload *.map res/*.comp emu/*.comp emu/*.ck *.comp src/menu_messages.h src/messages_data.h
+	rm -f ldscripts/*.i *.gba *.elf *.payload *.map res/*.comp emu/*.comp emu/*.ck emu/*.ck.tmp *.comp src/menu_messages.h src/messages_data.h
 

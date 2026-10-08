@@ -62,19 +62,25 @@ void replace_extension(char *fn, const char *newext) {
   strcat(fn, newext);
 }
 
-// FNV-1a (32 bit) hash of s, up to len chars (~0U: the whole string).
-uint32_t fnv1a(const char *s, unsigned len) {
+// FNV-1a (32 bit) hash of s, up to len chars (~0U: the whole string). With
+// nocase, ASCII letters hash the same in either case (like FAT names).
+uint32_t fnv1a(const char *s, unsigned len, bool nocase) {
   uint32_t h = 0x811C9DC5;
-  for (; len && *s; len--)
-    h = (h ^ (uint8_t)*s++) * 0x01000193;
+  for (; len && *s; len--) {
+    uint8_t c = *s++;
+    if (nocase && c >= 'A' && c <= 'Z')
+      c += 'a' - 'A';
+    h = (h ^ c) * 0x01000193;
+  }
   return h;
 }
 
 // Builds dir + the name of path without its extension + ext into out, at
 // most maxlen chars (plus the terminator). A NULL dir keeps the directory of
 // path. A name that doesn't fit is cut short (at a UTF-8 character boundary)
-// and ends in "~" and a hash of the whole name, so different names never end
-// up the same. Returns false, leaving out empty, if not even that fits.
+// and ends in "~" and a hash of the whole name (case aside, as FAT compares
+// names), so different names never end up the same. Returns false, leaving
+// out empty, if not even that fits.
 bool derived_fn(char *out, unsigned maxlen, const char *dir, const char *path, const char *ext) {
   const char *name = file_basename(path);
   unsigned dlen = dir ? strlen(dir) : (unsigned)(name - path);
@@ -89,7 +95,7 @@ bool derived_fn(char *out, unsigned maxlen, const char *dir, const char *path, c
       out[0] = 0;
       return false;
     }
-    h = fnv1a(name, nlen);                // Of the whole name
+    h = fnv1a(name, nlen, true);          // Of the whole name, case aside (FAT)
     nlen = maxlen - dlen - 9 - elen;
     while (nlen && (name[nlen] & 0xC0) == 0x80)   // Don't split a character
       nlen--;

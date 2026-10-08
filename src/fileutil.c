@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "fatfs/ff.h"
+#include "config.h"
 
 #pragma GCC optimize ("Os")
 
@@ -35,7 +36,7 @@ void create_basepath(const char *fn) {
   if (!fn || !*fn)
     return;        // Empty path
 
-  char tmp[FF_MAX_LFN];
+  char tmp[MAX_FN_LEN];
   strcpy(tmp, fn);
 
   // Iteratively attempt to create dirs, will fail if the dir already exists.

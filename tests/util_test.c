@@ -105,9 +105,13 @@ int main() {
   assert(derived_fn(tmp, 26, "/SAVES/", "/x/ABCDEFGHIJKLMNOPQRSTUVWXYZ.gba", ".sav"));
   assert(strlen(tmp) == 26 && !memcmp(tmp, "/SAVES/ABCDEF~", 14) && !strcmp(&tmp[22], ".sav"));
   {
+    // Other names differ; names differing only in case hash the same (FAT
+    // compares names that way).
     char other[64];
-    assert(derived_fn(other, 26, "/SAVES/", "/x/ABCDEFGHIJKLMNOPQRSTUVWXYz.gba", ".sav"));
+    assert(derived_fn(other, 26, "/SAVES/", "/x/ABCDEFGHIJKLMNOPQRSTUVWXYQ.gba", ".sav"));
     assert(strlen(other) == 26 && !memcmp(other, "/SAVES/ABCDEF~", 14) && strcmp(tmp, other));
+    assert(derived_fn(other, 26, "/SAVES/", "/x/ABCDEFGHIJKLMNOPQRSTUVWXYz.gba", ".sav"));
+    assert(!strcmp(tmp, other));
   }
   #define AE6 "a\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9.gba"    // 13 bytes before .gba
   assert(derived_fn(tmp, 12, "/", AE6, ""));

@@ -329,21 +329,33 @@ static void checksum_loaded_rom(uint32_t start, uint32_t end, uint32_t *st) {
   set_supercard_mode(MAPPED_SDRAM, true, true);
 }
 
-// Reads a file region again from the SD card, checksumming it.
-static bool checksum_file_region(FIL *fd, uint32_t start, uint32_t end, uint32_t *st) {
-  if (end <= start)
-    return true;
+// Loads the file region [start, end) to the same offsets in SDRAM, adding it
+// to the running checksum ck; dry, it only checksums it (to read it again).
+// Progress counts chunks in *steps, out of nsteps.
+static unsigned load_rom_region(FIL *fd, uint32_t start, uint32_t end, uint32_t *ck, bool dry,
+                                progress_fn progress, uint32_t *steps, uint32_t nsteps) {
+  if (start >= end)
+    return 0;
   if (FR_OK != f_lseek(fd, start))
-    return false;
+    return ERR_LOAD_BADROM;
   for (uint32_t offset = start; offset < end; offset += LOAD_BS) {
+    if (progress && (*steps & 31) == 0)
+      progress(*steps, nsteps);
+    (*steps)++;
+
     unsigned toread = MIN(LOAD_BS, end - offset);
     UINT rdbytes;
     uint32_t tmp[LOAD_BS/4];
     if (FR_OK != f_read(fd, tmp, toread, &rdbytes) || rdbytes != toread)
-      return false;
-    checksum_words(tmp, pad_to_word(tmp, toread) / 4, st);
+      return ERR_LOAD_BADROM;
+    if (dry)
+      checksum_words(tmp, pad_to_word(tmp, toread) / 4, ck);
+    else if (copy_chunk_verified(offset, tmp, toread, ck) < 0) {
+      WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", offset);
+      return ERR_LOAD_VERIFY;
+    }
   }
-  return true;
+  return 0;
 }
 
 unsigned load_gba_rom(
@@ -352,6 +364,7 @@ unsigned load_gba_rom(
   const t_patch *ptch,
   const t_dirsave_info *dsinfo,
   bool ingame_menu,
+  bool keep_igm,
   const t_rtc_info *rtcinfo,
   unsigned cheats,
   progress_fn progress
@@ -395,9 +408,10 @@ unsigned load_gba_rom(
   uint32_t gap_start = ds_addr;
   uint32_t gap_end = igm_addr + igm_space;
 
-  // A retry of a load that overwrote the fonts and cheats the in-game menu is
-  // made from keeps the menu that load installed (the ROM load skips it).
-  const bool install_igm = ingame_menu && !load_sdram_lost;
+  // keep_igm: a retry of a load that overwrote the fonts and cheats the
+  // in-game menu is made from keeps the menu that load installed (the ROM
+  // load skips its space).
+  const bool install_igm = ingame_menu && !keep_igm;
   if (ingame_menu)
     load_writes(igm_addr, igm_addr + igm_reqsz + cheats);
 
@@ -434,85 +448,41 @@ unsigned load_gba_rom(
   // Honor fast loading (switch mirror if appropriate)
   slowsd = use_slowld;
 
-  // Checksum of the data as read from the SD card, to verify the SDRAM copy.
-  uint32_t ck_load[2] = {0, 0};
-
-  // The file data goes to [0, gap_start) and [gap_end, fs).
+  // The file data goes to [0, gap_start) and [gap_end, fs). Its checksum as
+  // read from the SD card verifies the SDRAM copy and, with ROM verification,
+  // a second read of the file.
   const uint32_t seg1_end = MIN(gap_start, fs);
-  for (uint32_t offset = 0; offset < seg1_end; offset += LOAD_BS, steps++) {
-    if (progress && (steps & (31)) == 0)
-      progress(steps, load_steps);
+  uint32_t ck_load[2] = {0, 0}, ck[2] = {0, 0};
+  unsigned err = load_rom_region(&fd, 0, seg1_end, ck_load, false, progress, &steps, load_steps);
+  if (!err)
+    err = load_rom_region(&fd, gap_end, fs, ck_load, false, progress, &steps, load_steps);
+  if (!err) {
+    progress(1, 1);  // Mark as complete
+    log_chunk_rewrites("ROM");
 
-    unsigned toread = MIN(LOAD_BS, seg1_end - offset);
-    UINT rdbytes;
-    uint32_t tmp[LOAD_BS/4];
-    if (FR_OK != f_read(&fd, tmp, toread, &rdbytes) || rdbytes != toread) {
-      slowsd = true;
-      f_close(&fd);
-      return ERR_LOAD_BADROM;
-    }
-
-    if (copy_chunk_verified(offset, tmp, toread, ck_load) < 0) {
-      WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", offset);
-      slowsd = true;
-      f_close(&fd);
-      return ERR_LOAD_VERIFY;
+    // Verify the load (before patching, which modifies the ROM).
+    checksum_loaded_rom(0, seg1_end, ck);
+    checksum_loaded_rom(gap_end, fs, ck);
+    if (ck[0] != ck_load[0] || ck[1] != ck_load[1]) {
+      WRITE_LOG("ROM verify: SDRAM copy mismatch");
+      err = ERR_LOAD_VERIFY;
     }
   }
-  // Skip over the gap
-  if (FR_OK != f_lseek(&fd, gap_end)) {
+  if (!err && use_verify_rom) {
+    // Read the file again, to catch corrupted reads from the SD card.
+    ck[0] = ck[1] = 0;
+    err = load_rom_region(&fd, 0, seg1_end, ck, true, NULL, &steps, 0);
+    if (!err)
+      err = load_rom_region(&fd, gap_end, fs, ck, true, NULL, &steps, 0);
+    if (!err && (ck[0] != ck_load[0] || ck[1] != ck_load[1])) {
+      WRITE_LOG("ROM verify: SD re-read mismatch");
+      err = ERR_LOAD_VERIFY;
+    }
+  }
+  if (err) {
     slowsd = true;
     f_close(&fd);
-    return ERR_LOAD_BADROM;
-  }
-  for (uint32_t offset = gap_end; offset < fs; offset += LOAD_BS, steps++) {
-    if (progress && (steps & (31)) == 0)
-      progress(steps, load_steps);
-
-    unsigned toread = MIN(LOAD_BS, fs - offset);
-    UINT rdbytes;
-    uint32_t tmp[LOAD_BS/4];
-    if (FR_OK != f_read(&fd, tmp, toread, &rdbytes) || rdbytes != toread) {
-      slowsd = true;
-      f_close(&fd);
-      return ERR_LOAD_BADROM;
-    }
-
-    if (copy_chunk_verified(offset, tmp, toread, ck_load) < 0) {
-      WRITE_LOG("ROM chunk at 0x%06lx never verified in SDRAM", offset);
-      slowsd = true;
-      f_close(&fd);
-      return ERR_LOAD_VERIFY;
-    }
-  }
-  progress(1, 1);  // Mark as complete
-
-  log_chunk_rewrites("ROM");
-
-  // Verify the load (before patching, which modifies the ROM).
-  {
-    uint32_t ck_mem[2] = {0, 0};
-    checksum_loaded_rom(0, seg1_end, ck_mem);
-    checksum_loaded_rom(gap_end, fs, ck_mem);
-    if (ck_mem[0] != ck_load[0] || ck_mem[1] != ck_load[1]) {
-      WRITE_LOG("ROM verify: SDRAM copy mismatch");
-      slowsd = true;
-      f_close(&fd);
-      return ERR_LOAD_VERIFY;
-    }
-  }
-
-  // Optionally read the file again, to catch corrupted reads from the SD card.
-  if (use_verify_rom) {
-    uint32_t ck_file[2] = {0, 0};
-    bool ok = checksum_file_region(&fd, 0, seg1_end, ck_file) &&
-              checksum_file_region(&fd, gap_end, fs, ck_file);
-    if (!ok || ck_file[0] != ck_load[0] || ck_file[1] != ck_load[1]) {
-      WRITE_LOG("ROM verify: SD re-read mismatch (read ok %d)", ok);
-      slowsd = true;
-      f_close(&fd);
-      return ERR_LOAD_VERIFY;
-    }
+    return err;
   }
 
   WRITE_LOG("ROM verify OK (%08lx:%08lx, %lu bytes, re-read %u)", ck_load[0], ck_load[1], fs, use_verify_rom);
@@ -754,13 +724,14 @@ static unsigned stream_flush(t_sdram_stream *s) {
   return stream_write(s, pad, (4 - s->ncarry) & 3);
 }
 
-// Streams the whole file fn. Returns 0, or the error: openerr if it can't be
-// opened, readerr if it can't be read (or a stream_write() one).
+// Streams the whole file fn. Returns 0, or the error: openerr if it doesn't
+// exist, readerr if it can't be read (or a stream_write() one).
 static unsigned stream_file(t_sdram_stream *s, const char *fn, unsigned openerr, unsigned readerr,
                             progress_fn progress, uint32_t fs) {
   FIL fd;
-  if (FR_OK != f_open(&fd, fn, FA_READ))
-    return openerr;
+  FRESULT res = f_open(&fd, fn, FA_READ);
+  if (res != FR_OK)
+    return (res == FR_NO_FILE || res == FR_NO_PATH) ? openerr : readerr;
 
   unsigned err = 0;
   for (uint32_t offset = 0; !err; offset += LOAD_BS) {
@@ -834,14 +805,15 @@ unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo
     t_sdram_stream st = start;
     st.dry = pass;
     unsigned err;
-    if (emupath[0] && (err = stream_file(&st, emupath, ERR_LOAD_NOEMU, ERR_LOAD_EMUERR, NULL, 0)))
+    if (emupath[0] && (err = stream_file(&st, emupath, pass ? ERR_LOAD_EMUERR : ERR_LOAD_NOEMU,
+                                         ERR_LOAD_EMUERR, NULL, 0)))
       return err;
     if (ldinfo->hndlr) {
       uint32_t hdr[64/4 + 1];
       if ((err = stream_write(&st, hdr, ldinfo->hndlr((uint8_t*)hdr, fn, fs))))
         return err;
     }
-    if ((err = stream_file(&st, fn, ERR_LOAD_BADROM, ERR_LOAD_BADROM, pass ? NULL : progress, fs)) ||
+    if ((err = stream_file(&st, fn, ERR_LOAD_BADROM, ERR_LOAD_BADROM, progress, fs)) ||
         (err = stream_flush(&st)))
       return err;
 

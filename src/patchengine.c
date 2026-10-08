@@ -537,7 +537,8 @@ bool unserialize_patch(const uint8_t *buffer, unsigned size, t_patch *patch) {
   patch->rtc_ops = buffer[20];
   patch->hole_size = (buffer[22] | (buffer[23] << 8)) << 10;
   patch->hole_addr = (buffer[24] | (buffer[25] << 8)) << 10;
-  if (patch->wcnt_ops + patch->save_ops + patch->irqh_ops + patch->rtc_ops > MAX_PATCH_OPS)
+  if (patch->wcnt_ops + patch->save_ops + patch->irqh_ops + patch->rtc_ops > MAX_PATCH_OPS ||
+      patch->hole_addr + patch->hole_size > MAX_GBA_ROM_SIZE)
     return false;
   buffer += 32;
 

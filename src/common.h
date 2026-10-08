@@ -271,7 +271,7 @@ unsigned preload_gba_rom(const char *fn, uint32_t fs, t_rom_header *romh);
 // Loads a ROM file and launches it.
 unsigned load_gba_rom(const char *fn, uint32_t fs, const char *savefn,
                       const struct struct_t_patch *ptch,
-                      const t_dirsave_info *dsinfo, bool ingame_menu,
+                      const t_dirsave_info *dsinfo, bool ingame_menu, bool keep_igm,
                       const t_rtc_info *rtcinfo, unsigned cheats, progress_fn progress);
 // Launch from NOR
 unsigned  flash_gba_nor(const char *fn, uint32_t fs, const t_rom_header *rom_header,

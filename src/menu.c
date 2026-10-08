@@ -1447,8 +1447,8 @@ static void browser_load_position() {
   strcpy(browser_reselect, sel);
 }
 
-#ifdef ENABLE_UART_LOGGING
 static void art_cache_clear();
+#ifdef ENABLE_UART_LOGGING
 // Files may have changed over the serial link (uart_xfer.c), reload the lists.
 void browser_refresh_after_xfer() {
   browser_reload();
@@ -1984,19 +1984,18 @@ static struct {
 // The subfolder is FNV-1a (32 bit) of the ROM file name, modulo 64 (the
 // ROM manager tool computes the same, see tools/superfw_romlib.py).
 static uint32_t boxart_hash(const char *fn) {
-  return fnv1a(fn, ~0U);
+  return fnv1a(fn, ~0U, false);
 }
 
 static unsigned boxart_bucket(const char *fn) {
   return boxart_hash(fn) % 64;
 }
 
-#ifdef ENABLE_UART_LOGGING
-// Empties the box art cache (art files changed).
+// Empties the box art cache (art files changed, or a load overwrote it).
 static void art_cache_clear() {
-  memset(bart.len, 0, sizeof(bart.len));
+  memset(&bart, 0, sizeof(bart));
+  bart.shown = bart.pal_slot = -1;
 }
-#endif
 
 // Loads the menu data kept in SDRAM (t_sdram_state) below offset end: all of
 // it at boot, what a failed ROM load overwrote after it. The folder is read
@@ -2020,10 +2019,8 @@ static void sdram_data_load(uint32_t end) {
   }
   if (end > offsetof(t_sdram_state, nordata))
     flashbrowser_reload();
-  if (end > offsetof(t_sdram_state, artc)) {
-    memset(&bart, 0, sizeof(bart));
-    bart.shown = bart.pal_slot = -1;
-  }
+  if (end > offsetof(t_sdram_state, artc))
+    art_cache_clear();
 }
 
 // Writes or reads (FA_WRITE/FA_READ) the error of a load that rebooted the
@@ -3481,23 +3478,25 @@ static void keypress_popup_loadgba(unsigned newkeys) {
       };
 
       sdcard_flush_log();   // Record SD write diagnostics before launching
-      unsigned do_load() {
+      unsigned do_load(bool keep_igm) {
         return load_gba_rom(
           spop.p.load.i.romfn, spop.p.load.i.romfs,
           spop.p.load.l.sram_save_type == SaveDisable ? NULL : spop.p.load.l.savefn, p,
           spop.p.load.l.sram_save_type == SaveDirect ? &dsinfo : NULL,
-          spop.p.load.i.ingame_menu_enabled,
+          spop.p.load.i.ingame_menu_enabled, keep_igm,
           spop.p.load.i.rtc_patch_enabled ? &rtci : NULL,
           spop.p.load.l.use_cheats ? spop.p.load.l.cheats_size : 0,
           loadrom_progress);
       }
       load_sdram_reset();
-      unsigned err = do_load();
+      unsigned err = do_load(false);
       if (err && !use_slowld) {
         // Fast loading is not reliable with some carts/SD cards, retry slowly.
+        // If the first try overwrote the fonts and cheats the in-game menu is
+        // made from, the retry keeps the menu it installed.
         WRITE_LOG("Fast ROM load failed (%u), retrying in slow mode", err);
         use_slowld = 1;
-        err = do_load();
+        err = do_load(load_sdram_lost);
         use_slowld = 0;
       }
       if (err) {
@@ -3985,9 +3984,10 @@ static void keypress_browse_search(unsigned newkeys) {
 }
 
 static void keypress_menu_browse(unsigned newkeys) {
-  if (!browser_loaded && newkeys) {
-    // It couldn't be read (ie. SD errors): try again. If it still can't be,
-    // the keys work on the empty folder (B goes up).
+  if (!browser_loaded && (newkeys & ~(KEY_BUTTUP | KEY_BUTTDOWN | KEY_BUTTLEFT | KEY_BUTTRIGHT))) {
+    // It couldn't be read (ie. SD errors): any key but the (repeating) D-pad
+    // tries again. If it still can't be, the keys work on the empty folder
+    // (B goes up).
     browser_ensure_loaded();
     if (browser_loaded)
       return;

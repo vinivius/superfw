@@ -552,8 +552,8 @@ def art_bucket(rom_fname):
 def derived_stem(sd_dir, rom_fname, ext, maxlen):
   """The name (without ext) SuperFW gives a file made from a ROM name in
      sd_dir, as util.c derived_fn(): the ROM name without its extension, cut
-     short with "~" and a hash of the whole name when sd_dir + name + ext is
-     over maxlen bytes. None if not even that fits."""
+     short with "~" and a hash of the whole name (ASCII case aside) when
+     sd_dir + name + ext is over maxlen bytes. None if not even that fits."""
   d, e = len(sd_dir.encode("utf-8")), len(ext.encode("utf-8"))
   name = sfw_stem(rom_fname).encode("utf-8")
   if d + len(name) + e <= maxlen:
@@ -563,7 +563,7 @@ def derived_stem(sd_dir, rom_fname, ext, maxlen):
   n = maxlen - d - 9 - e
   while n and (name[n] & 0xC0) == 0x80:      # Don't split a character
     n -= 1
-  return name[:n].decode("utf-8") + "~%08x" % fnv1a(name)
+  return name[:n].decode("utf-8") + "~%08x" % fnv1a(name.lower())
 
 
 def art_relpath(rom_fname):

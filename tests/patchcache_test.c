@@ -104,6 +104,16 @@ int main() {
   write_patch((0x7u << 28) | (3u << 25) | 0x1234, NULL);
   assert(unserialize_patch(buf, size, &q));
 
+  // A hole (where payloads go) past the 32 MiB of ROM is refused.
+  write_patch(OP_EEPROM_HD(0x1234), NULL);
+  p.hole_addr = 32*1024*1024 - 1024;
+  p.hole_size = 2048;
+  serialize_patch(&p, buf);
+  assert(!unserialize_patch(buf, size, &q));
+  p.hole_size = 1024;
+  serialize_patch(&p, buf);
+  assert(unserialize_patch(buf, size, &q) && q.hole_addr == p.hole_addr && q.hole_size == 1024);
+
   // Unknown versions and wrong sizes are refused.
   assert(!unserialize_patch(buf, write_patch(OP_EEPROM_HD(0x1234), "SUPERFWPATCHV02"), &q));
   assert(!unserialize_patch(buf, size - 1, &q));

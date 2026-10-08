@@ -35,7 +35,7 @@ void file_dirname(const char *fullpath, char *dirname);
 void replace_extension(char *fn, const char *newext);
 const char *find_extension(const char *s);
 bool derived_fn(char *out, unsigned maxlen, const char *dir, const char *path, const char *ext);
-uint32_t fnv1a(const char *s, unsigned len);
+uint32_t fnv1a(const char *s, unsigned len, bool nocase);
 
 unsigned parseuint(const char *s);
 void human_size(char *s, unsigned ml, uint32_t sz);
