@@ -75,8 +75,8 @@ SuperFW and SuperFW Next can install each other.
   on with garbage. A big ROM that also overwrote the fonts reboots the menu
   (like after playing a game) and shows the error after it (unless the
   firmware runs from the SD card: then the reboot goes to the installed
-  one). The slow retry of a failed fast load keeps the in-game menu the
-  first try installed.
+  one). The slow retry of a failed fast load keeps the fonts and cheats
+  the first try moved, and installs the in-game menu again.
 - Each ROM gets its own config again (an upstream change made them share
   one file). "Remember config" and the "don't ask again" answer to the
   patch prompt say when they could not be saved, instead of "Config saved!".
@@ -130,7 +130,8 @@ SuperFW and SuperFW Next can install each other.
   header's code and version): another game's (a ROM of the same name in
   another folder, or another version of it) isn't used, the state shows
   "Invalid savestate!". The file formats stay the same: older SuperFW
-  (Next) versions read them, and their states load in any game.
+  (Next) versions read them; their states load in any game, and their
+  patches in any ROM of that name up to 8 MiB.
 - The NOR game table is a log that keeps working after a write cut short
   (it falls back to the newest whole table), never writes past its area and
   refuses NOR writes and deletes while it can't be read, instead of taking

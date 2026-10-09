@@ -98,6 +98,13 @@ int main() {
   scan((uint8_t*)rom, size, chunk, &pb);
   assert(pb.overflow);
 
+  // The same with the EEPROM one first: only flash ones are lost, the patch
+  // is whole.
+  memcpy(&rom[2048], eeprom_v1_read_sig, sizeof(eeprom_v1_read_sig));
+  memset(&rom[we], 0, sizeof(eeprom_v1_read_sig));
+  scan((uint8_t*)rom, size, chunk, &pb);
+  assert(!pb.overflow && pb.p.save_ops == 1);
+
   free(rom);
   printf("Patch engine tests OK\n");
   return 0;

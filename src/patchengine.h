@@ -60,7 +60,7 @@ typedef struct {
   // Save ops found (the ones of the save type found are kept at the end)
   uint32_t save_op[MAX_PATCH_OPS];
   unsigned save_cnt;
-  bool save_lost;                 // More than save_op holds
+  uint16_t save_lost;             // Save types (bit OPC_*_HD) with more ops than save_op holds
   // More ops found than a patch holds (MAX_PATCH_OPS): unusable
   bool overflow;
   // The actual patch data.

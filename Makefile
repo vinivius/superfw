@@ -8,13 +8,13 @@ CXX		:= $(PREFIX)g++
 OBJDUMP		:= $(PREFIX)objdump
 OBJCOPY		:= $(PREFIX)objcopy
 
-# UART debug builds are the tightest fit in the flash, compress them harder
-# (slower build: level 15, the most, takes ~140 s and saves ~120 bytes over
-# level 11, ~320 over level 9).
+# The firmware fills the flash: it's compressed hard. Level 9 takes ~35 s and
+# saves ~1.1KiB over level 4; UART debug builds are the tightest fit, they
+# use level 15, the most (~140 s, ~250 bytes smaller than level 9).
 ifeq ($(ENABLE_UART_LOGGING),1)
   COMPRESSION_RATIO ?= 15
 endif
-COMPRESSION_RATIO ?= 4
+COMPRESSION_RATIO ?= 9
 
 GLOBAL_DEFINES = -D__GBA__
 

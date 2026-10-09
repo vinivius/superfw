@@ -176,7 +176,7 @@ static void push_save_handler(t_patch_builder *pb, unsigned savetype, unsigned h
   if (pb->save_cnt < MAX_PATCH_OPS)
     pb->save_op[pb->save_cnt++] = addr | (savetype << 28) | (hndltype << 25);
   else
-    pb->save_lost = true;
+    pb->save_lost |= 1U << savetype;
 }
 #define push_rtc_handler(pb, hndltype, addr) \
   push_op(pb, OpsRtc, (addr) | (OPC_RTC_HD << 28) | ((hndltype) << 25))
@@ -277,8 +277,8 @@ void patchengine_finalize(t_patch_builder *patchb) {
   for (unsigned i = 0; i < patchb->save_cnt; i++)
     if ((patchb->save_op[i] >> 28) == keep)
       push_op(patchb, OpsSave, patchb->save_op[i]);
-  // Some were lost: the kept type's may be among them.
-  if (patchb->save_lost && keep != 0xF)
+  // Some of the kept type's were lost: the patch isn't whole.
+  if (patchb->save_lost & (1U << keep))
     patchb->overflow = true;
 
   // Process any FLASH_IDEN_HNDLR handlers into program patches.
