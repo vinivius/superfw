@@ -588,26 +588,28 @@ bool unserialize_patch(const uint8_t *buffer, unsigned size, t_patch *patch) {
 // PATCHDB_PATH), named after the ROM (shortened if needed to the FAT limit).
 #define PATCH_FN_SIZE   (sizeof(PATCHDB_PATH) + FF_MAX_LFN)
 
-static bool load_patch_file(const char *fn, t_patch *patches) {
+// FR_OK if loaded. A missing file, or an unusable one (generated again), is
+// FR_NO_FILE; card errors are returned as such.
+static FRESULT load_patch_file(const char *fn, t_patch *patches) {
   FIL fd;
-  if (FR_OK != f_open(&fd, fn, FA_READ))
-    return false;
+  FRESULT res = f_open(&fd, fn, FA_READ);
+  if (FR_OK != res)
+    return res;
 
   uint8_t buf[1024];
   UINT rdbytes;
-  bool ok = FR_OK == f_read(&fd, buf, sizeof(buf), &rdbytes) &&
-            unserialize_patch(buf, rdbytes, patches);
+  res = f_read(&fd, buf, sizeof(buf), &rdbytes);
   f_close(&fd);
-  return ok;
+  return FR_OK != res ? res : unserialize_patch(buf, rdbytes, patches) ? FR_OK : FR_NO_FILE;
 }
 
-bool load_rom_patches(const char *romfn, t_patch *patches) {
+FRESULT load_rom_patches(const char *romfn, t_patch *patches) {
   char fn[PATCH_FN_SIZE];
   derived_fn(fn, sizeof(fn) - 1, NULL, romfn, ".patch");
   return load_patch_file(fn, patches);
 }
 
-bool load_cached_patches(const char *romfn, t_patch *patches) {
+FRESULT load_cached_patches(const char *romfn, t_patch *patches) {
   char fn[PATCH_FN_SIZE];
   derived_fn(fn, sizeof(fn) - 1, PATCHDB_PATH, romfn, ".patch");
   return load_patch_file(fn, patches);

@@ -146,8 +146,7 @@ static void cmd_get(const char *path) {
   uint32_t remaining = f_size(&fd);
   while (remaining) {
     unsigned len = MIN(XFER_BLK, remaining);
-    UINT rd;
-    if (FR_OK != f_read(&fd, xbuf, len, &rd) || rd != len) {
+    if (!read_all(&fd, xbuf, len)) {
       uart_write("F", 1);
       break;
     }
@@ -182,7 +181,10 @@ static void cmd_put(char *args) {
 
   // Write to a temporary file, replace the target once complete.
   char tmpfn[MAX_FN_LEN];
-  npf_snprintf(tmpfn, sizeof(tmpfn), "%s.part", path);
+  if (npf_snprintf(tmpfn, sizeof(tmpfn), "%s.part", path) >= (int)sizeof(tmpfn)) {
+    uputs("ERR path too long\n");
+    return;
+  }
   create_basepath(path);
   FIL fd;
   if (FR_OK != f_open(&fd, tmpfn, FA_WRITE | FA_CREATE_ALWAYS)) {

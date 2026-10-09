@@ -28,6 +28,7 @@
 #include "res/logo.h"
 #include "fatfs/ff.h"
 #include "fileutil.h"
+#include "config.h"
 #include "supercard_driver.h"
 #include "res/icons-menu.h"
 #include "ingame.h"
@@ -405,8 +406,7 @@ bool read_rom_buffer(FIL *fd, void *buffer, unsigned size, void *tmpbuf) {
   for (unsigned off = 0; off < size; off += 1024) {
     set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can read from the SD card
 
-    UINT rdbytes;
-    if (FR_OK != f_read(fd, tmpbuf, 1024, &rdbytes) || rdbytes != 1024)
+    if (!read_all(fd, tmpbuf, 1024))
       return false;
 
     set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can write spill area.
@@ -431,9 +431,8 @@ bool readfd_mem_snapshot(FIL *fd) {
   _Static_assert(sizeof(tmp.header) == 512, "The header structure is 512 bytes in size");
   _Static_assert(sizeof(tmp.regs) == 512, "The regs structure is 512 bytes in size");
   _Static_assert(sizeof(tmp.iomap) == 1024, "The I/O structure is 1024 bytes in size");
-  UINT rdbytes;
 
-  if (FR_OK != f_read(fd, &tmp.header, sizeof(tmp.header), &rdbytes) || rdbytes != sizeof(tmp.header))
+  if (!read_all(fd, &tmp.header, sizeof(tmp.header)))
     return false;
 
   if (tmp.header.signature[0] != SIGNATURE_A ||
@@ -444,7 +443,7 @@ bool readfd_mem_snapshot(FIL *fd) {
   if (tmp.header.version != SAVESTATE_VERSION)
     return false;
 
-  if (FR_OK != f_read(fd, &tmp.regs, sizeof(tmp.regs), &rdbytes) || rdbytes != sizeof(tmp.regs))
+  if (!read_all(fd, &tmp.regs, sizeof(tmp.regs)))
     return false;
 
   set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can write spill area.
@@ -457,7 +456,7 @@ bool readfd_mem_snapshot(FIL *fd) {
   memory_copy32(spill_ptr->und_regs, tmp.regs.und_regs, sizeof(tmp.regs.und_regs) / 4);
   set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can read from the SD card
 
-  if (FR_OK != f_read(fd, &tmp.iomap, sizeof(tmp.iomap), &rdbytes) || rdbytes != sizeof(tmp.iomap))
+  if (!read_all(fd, &tmp.iomap, sizeof(tmp.iomap)))
     return false;
 
   set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can write spill area.
@@ -509,14 +508,14 @@ bool readfd_mem_snapshot(FIL *fd) {
   const unsigned highsize2 = 32*1024 - sizeof(spill_ptr->low_iwram);
   if (!read_rom_buffer(fd, spill_ptr->low_iwram, sizeof(spill_ptr->low_iwram), tmp.buf))
     return false;
-  if (FR_OK != f_read(fd, &IWRAM_BUF[sizeof(spill_ptr->low_iwram)], highsize2, &rdbytes) || rdbytes != highsize2)
+  if (!read_all(fd, &IWRAM_BUF[sizeof(spill_ptr->low_iwram)], highsize2))
     return false;
 
   uint8_t *EWRAM_BUF = (uint8_t*)0x02000000;
   const unsigned highsize3 = 256*1024 - sizeof(spill_ptr->low_ewram);
   if (!read_rom_buffer(fd, spill_ptr->low_ewram, sizeof(spill_ptr->low_ewram), tmp.buf))
     return false;
-  if (FR_OK != f_read(fd, &EWRAM_BUF[sizeof(spill_ptr->low_ewram)], highsize3, &rdbytes) || rdbytes != highsize3)
+  if (!read_all(fd, &EWRAM_BUF[sizeof(spill_ptr->low_ewram)], highsize3))
     return false;
 
   return true;
@@ -800,6 +799,12 @@ bool action_save_menu() {
   return false;
 }
 
+// The file of persistent (disk) savestate slot n (1 to num_dsk_savestates),
+// or its temporary one (within STATE_FN_RESERVE).
+static void state_fn(char *fn, int n, bool tmp) {
+  npf_snprintf(fn, MAX_FN_LEN, tmp ? "%s.%d.tmp" : "%s.%d.state", savestate_pattern, n);
+}
+
 bool action_sstate_menu() {
   bool havess = num_mem_savestates || num_dsk_savestates;
   if (havess) {
@@ -811,8 +816,8 @@ bool action_sstate_menu() {
       for (unsigned i = 0; i < num_dsk_savestates; i++) {
         FRESULT res = FR_DISK_ERR;
         if (diskst_init) {
-          char tmp[256];
-          npf_snprintf(tmp, sizeof(tmp), "%s.%d.state", savestate_pattern, i + 1);
+          char tmp[MAX_FN_LEN];
+          state_fn(tmp, i + 1, false);
           res = f_stat(tmp, NULL);
         }
         diskslot_valid[i] = !fr_missing(res);
@@ -930,24 +935,23 @@ void save_memstate() {
 void save_diskstate() {
   set_supercard_mode(MAPPED_SDRAM, true, true);
 
+  // Written to a temporary file that replaces the slot's once whole (a cut
+  // state can't be loaded, and the one there is kept if it fails).
   FIL fd;
-  char fn[256];
-  npf_snprintf(fn, sizeof(fn), "%s.%d.state", savestate_pattern, -state_slot);
+  char fn[MAX_FN_LEN], tmpfn[MAX_FN_LEN];
+  state_fn(fn, -state_slot, false);
+  state_fn(tmpfn, -state_slot, true);
   create_paths(fn);
-  if (FR_OK == f_open(&fd, fn, FA_WRITE | FA_CREATE_ALWAYS)) {
-    bool success = (makepers >= 0) ? writefd_mem_snapshot_clone(&fd, get_memslot_addr(makepers), sizeof(t_savestate_snapshot))
-                                   : writefd_mem_snapshot(&fd);
+  bool success = FR_OK == f_open(&fd, tmpfn, FA_WRITE | FA_CREATE_ALWAYS);
+  if (success) {
+    success = (makepers >= 0) ? writefd_mem_snapshot_clone(&fd, get_memslot_addr(makepers), sizeof(t_savestate_snapshot))
+                              : writefd_mem_snapshot(&fd);
     // The data reaches the card when it's closed.
-    success = FR_OK == f_close(&fd) && success;
-    if (success) {
-      popup.msg = msgs[ingame_menu_lang][IMENU_WSTAF_OK];
-      diskslot_valid[-state_slot - 1] = 1;
-    } else {
-      popup.msg = msgs[ingame_menu_lang][IMENU_WSTAF_ERR];
-    }
-  } else {
-    popup.msg = msgs[ingame_menu_lang][IMENU_WSTAF_ERR];
+    success = file_replace(tmpfn, fn, FR_OK == f_close(&fd) && success);
   }
+  popup.msg = msgs[ingame_menu_lang][success ? IMENU_WSTAF_OK : IMENU_WSTAF_ERR];
+  if (success)
+    diskslot_valid[-state_slot - 1] = 1;
 
   if (makepers >= 0)
     state_slot = makepers;
@@ -995,10 +999,13 @@ bool state_load() {
     }
     else if (state_slot < 0 && diskslot_valid[-state_slot - 1]) {
       FIL fd;
-      char fn[256];
-      npf_snprintf(fn, sizeof(fn), "%s.%d.state", savestate_pattern, -state_slot);
+      char fn[MAX_FN_LEN];
+      state_fn(fn, -state_slot, false);
       if (FR_OK == f_open(&fd, fn, FA_READ)) {
-        bool success = readfd_mem_snapshot(&fd);
+        // It's applied as it's read: a cut file (ie. by an older firmware)
+        // isn't started.
+        bool success = f_size(&fd) == sizeof(t_savestate_snapshot) && readfd_mem_snapshot(&fd);
+        f_close(&fd);
         popup.msg = msgs[ingame_menu_lang][success ? IMENU_QLD_OK : IMENU_PLD_ERR];
       }
       else
@@ -1010,8 +1017,8 @@ bool state_load() {
 
 void del_diskstate() {
   set_supercard_mode(MAPPED_SDRAM, true, true);
-  char tmp[256];
-  npf_snprintf(tmp, sizeof(tmp), "%s.%d.state", savestate_pattern, -state_slot);
+  char tmp[MAX_FN_LEN];
+  state_fn(tmp, -state_slot, false);
   const FRESULT res = f_unlink(tmp);
   if (FR_OK == res || fr_missing(res))
     diskslot_valid[-state_slot - 1] = 0;

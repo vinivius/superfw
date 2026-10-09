@@ -88,14 +88,19 @@ bool superfw_file_open(FIL *fd, const char *subdir, const char *fn, BYTE mode) {
 }
 
 bool file_replace(const char *tmpfn, const char *fn, bool ok) {
-  // FAT can't rename over a file: fn is missing for a moment.
-  if (ok) {
-    f_unlink(fn);
-    ok = FR_OK == f_rename(tmpfn, fn);
-  }
-  if (!ok)
+  if (!ok) {
     f_unlink(tmpfn);
-  return ok;
+    return false;
+  }
+  // FAT can't rename over a file: fn is missing for a moment. If the rename
+  // fails tmpfn is kept (fn may be gone: it's the only copy).
+  f_unlink(fn);
+  return FR_OK == f_rename(tmpfn, fn);
+}
+
+bool read_all(FIL *fd, void *buf, unsigned len) {
+  UINT rdbytes;
+  return FR_OK == f_read(fd, buf, len, &rdbytes) && rdbytes == len;
 }
 
 bool write_all(FIL *fd, const void *buf, unsigned len) {

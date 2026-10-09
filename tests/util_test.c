@@ -88,7 +88,7 @@ static bool collect_line(char *line, unsigned len, void *usr) {
   return ++rd_count < *(unsigned*)usr;
 }
 
-static const char *read_all(const char *text, unsigned bufsize, unsigned maxlines) {
+static const char *lines_of(const char *text, unsigned bufsize, unsigned maxlines) {
   char buf[64];
   rd_text = text;
   rd_off = rd_count = 0;
@@ -103,12 +103,12 @@ int main() {
   // Lines (CRLF too) without their newline, the last one with or without
   // one; lines that don't fit the buffer (9 bytes, a newline included) are
   // skipped whole (the callback gets NULL for them); the callback can stop it.
-  assert(!strcmp(read_all("a=1\nbb=2\r\n\nlast", 10, 99), "a=1|bb=2||last|"));
-  assert(!strcmp(read_all("12345678\n123456789\nx\n1234567890123456789012\ny", 10, 99), "12345678|~|x|~|y|"));
-  assert(!strcmp(read_all("toolongforit", 10, 99), "~|"));
-  assert(!strcmp(read_all("1\n2\n3\n4\n5\n6\n7\n8\n9", 10, 99), "1|2|3|4|5|6|7|8|9|"));
-  assert(!strcmp(read_all("a\nb\nc\n", 10, 2), "a|b|"));
-  assert(!strcmp(read_all("", 10, 99), ""));
+  assert(!strcmp(lines_of("a=1\nbb=2\r\n\nlast", 10, 99), "a=1|bb=2||last|"));
+  assert(!strcmp(lines_of("12345678\n123456789\nx\n1234567890123456789012\ny", 10, 99), "12345678|~|x|~|y|"));
+  assert(!strcmp(lines_of("toolongforit", 10, 99), "~|"));
+  assert(!strcmp(lines_of("1\n2\n3\n4\n5\n6\n7\n8\n9", 10, 99), "1|2|3|4|5|6|7|8|9|"));
+  assert(!strcmp(lines_of("a\nb\nc\n", 10, 2), "a|b|"));
+  assert(!strcmp(lines_of("", 10, 99), ""));
 
   // read_lines_file(): opens the file (or says it's missing).
   {

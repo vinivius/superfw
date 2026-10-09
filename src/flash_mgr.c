@@ -133,8 +133,13 @@ bool flashmgr_store(uint32_t baseaddr, unsigned maxsize, t_reg_entry *ndata) {
   }
 
   // Repurpose the last header (should contain the right block balancing data).
-  ndata->magic = NOR_ENTRY_MAGIC;
-  ndata->crc = xorh((uint32_t*)ndata->games, (sizeof(t_flash_game_entry) * ndata->gamecnt) / 4) ^ ndata->gamecnt;
+  // Checked: ndata is in the cart's SDRAM.
+  const uint32_t id[2] = {
+    NOR_ENTRY_MAGIC,
+    xorh((uint32_t*)ndata->games, (sizeof(t_flash_game_entry) * ndata->gamecnt) / 4) ^ ndata->gamecnt
+  };
+  if (!memcpy32_checked(&ndata->magic, id, sizeof(id)))
+    return false;
 
   if (!flash_program(baseaddr + off, (uint8_t*)ndata, reqsz))
     return false;
@@ -175,7 +180,9 @@ bool flashmgr_allocate_blocks(uint8_t *blockmap, unsigned nalloc, t_reg_entry *n
     // Mark the block as used, book it and increase cycle count.
     BM_SET(blkm, cand);
     blockmap[a] = cand;
-    ndata->wr_cycles[cand]++;
+    const uint32_t cyc = ndata->wr_cycles[cand] + 1;
+    if (!memcpy32_checked(&ndata->wr_cycles[cand], &cyc, sizeof(cyc)))
+      return false;
   }
 
   return true;

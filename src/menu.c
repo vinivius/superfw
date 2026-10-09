@@ -584,9 +584,14 @@ bool generate_patches_progress(const char *fn, unsigned fs) {
         return false;
       }
 
+      // The patches made from it are kept: the copy is checked.
       set_supercard_mode(MAPPED_SDRAM, true, false);
-      dma_memcpy32(&hiscratch[j], tmp, sizeof(tmp)/4);
+      const bool copied = memcpy32_checked(&hiscratch[j], tmp, sizeof(tmp));
       set_supercard_mode(MAPPED_SDRAM, true, true);
+      if (!copied) {
+        f_close(&fd);
+        return false;
+      }
       if (j & ~0xFFFF)
         loadrom_progress((i*2 + j) >> 8, fs >> 7);
     }
@@ -748,14 +753,19 @@ static bool prepare_gba_info(
     WRITE_LOG("No patches in PatchDB found for '%s' with gamecode %c%c%c%c-%d",
               fn, gamecode[0], gamecode[1], gamecode[2], gamecode[3], (int)gamecode[4]);
 
-  // Attempt to load any existing patch and check also the PE cache dir.
-  info->patches_cache_found = load_rom_patches(fn, &info->patches_cache);
-  if (!info->patches_cache_found) {
+  // Attempt to load any existing patch and check also the PE cache dir. A card
+  // error isn't a missing file (generating them would be offered, and "no"
+  // remembered): it's a read error.
+  FRESULT res = load_rom_patches(fn, &info->patches_cache);
+  if (fr_missing(res)) {
     WRITE_LOG("No patch file found for '%s'", fn);
-    info->patches_cache_found = load_cached_patches(fn, &info->patches_cache);
-    if (!info->patches_cache_found)
+    res = load_cached_patches(fn, &info->patches_cache);
+    if (fr_missing(res))
       WRITE_LOG("No patch file found in patches cache dir for '%s'", fn);
   }
+  if (FR_OK != res && !fr_missing(res))
+    return false;
+  info->patches_cache_found = FR_OK == res;
 
   // If PatchAuto is selected, resolve it. Downgrade if not found.
   if (st->patch_policy == PatchAuto) {
@@ -975,10 +985,9 @@ static void load_patchdb_action(bool confirm) {
       return;
     } else {
       for (unsigned off = 0; off < spop.p.pdb_ld.fs; off += 1024) {
-        UINT rdbytes;
         uint32_t tmp[1024/4];
         unsigned toread = MIN(sizeof(tmp), spop.p.pdb_ld.fs - off);
-        if (FR_OK != f_read(&fd, tmp, toread, &rdbytes) || rdbytes != toread) {
+        if (!read_all(&fd, tmp, toread)) {
           // A partial database is unusable, the built-in one comes back on reboot.
           f_close(&fd);
           spop.alert_msg = msgs[lang_id][MSG_ERR_GENERIC];
@@ -986,8 +995,13 @@ static void load_patchdb_action(bool confirm) {
         }
 
         set_supercard_mode(MAPPED_SDRAM, true, false);
-        dma_memcpy32(ROM_PATCHDB_U8 + off, tmp, sizeof(tmp)/4);
+        const bool copied = memcpy32_checked((void*)(ROM_PATCHDB_U8 + off), tmp, sizeof(tmp));
         set_supercard_mode(MAPPED_SDRAM, true, true);
+        if (!copied) {
+          f_close(&fd);
+          spop.alert_msg = msgs[lang_id][MSG_ERR_GENERIC];
+          return;
+        }
       }
       f_close(&fd);
     }
@@ -1145,9 +1159,8 @@ NOINLINE static void browser_open(const char *fn, uint32_t fs) {
       if (res != FR_OK)
         spop.alert_msg = msgs[lang_id][MSG_FWUP_ERRRD];
       else {
-        UINT rdbytes;
         uint8_t tmp[512];
-        if (FR_OK != f_read(&fd, tmp, sizeof(tmp), &rdbytes) || rdbytes != sizeof(tmp))
+        if (!read_all(&fd, tmp, sizeof(tmp)))
           spop.alert_msg = msgs[lang_id][MSG_FWUP_ERRRD];
         else if (!validate_gba_header(tmp))  // Is it a valid GBA ROM header?
           spop.alert_msg = msgs[lang_id][MSG_FWUP_BADHD];
@@ -1177,8 +1190,7 @@ NOINLINE static void browser_open(const char *fn, uint32_t fs) {
       FIL fi;
       if (FR_OK == f_open(&fi, fn, FA_READ)) {
         uint32_t tmphdr[512 / 4];
-        UINT rdbytes;
-        if (FR_OK == f_read(&fi, tmphdr, sizeof(tmphdr), &rdbytes) && rdbytes == sizeof(tmphdr)) {
+        if (read_all(&fi, tmphdr, sizeof(tmphdr))) {
           unsigned guesstype = guess_file_type((uint8_t*)tmphdr);
           switch (guesstype) {
           case FileTypeGBA:
@@ -2110,11 +2122,10 @@ static int art_load(const char *fn) {
   uint32_t tmp[400];               // Header+palette, then pixel row chunks
   uint16_t *hdr = (uint16_t*)tmp;
   unsigned w = 0, h = 0, nc = 0;
-  UINT rd;
-  if (FR_OK == f_read(&fd, tmp, 12, &rd) && rd == 12 && !memcmp(tmp, "SFWA", 4)) {
+  if (read_all(&fd, tmp, 12) && !memcmp(tmp, "SFWA", 4)) {
     w = hdr[2]; h = hdr[3]; nc = hdr[4];
     if (!w || (w & 1) || w > ART_MAX_DIM || !h || h > ART_MAX_DIM || !nc || nc > 128 ||
-        FR_OK != f_read(&fd, tmp, nc * 2, &rd) || rd != nc * 2)
+        !read_all(&fd, tmp, nc * 2))
       h = 0;
   }
 
@@ -2125,7 +2136,7 @@ static int art_load(const char *fn) {
     for (unsigned r = 0; r < h; r += rpc) {
       unsigned cnt = MIN(rpc, h - r) * w;
       uint8_t *p = (uint8_t*)tmp;
-      if (FR_OK != f_read(&fd, tmp, cnt, &rd) || rd != cnt)
+      if (!read_all(&fd, tmp, cnt))
         goto out;
       for (unsigned i = 0; i < cnt; i++)
         p[i] = p[i] < nc ? p[i] + ART_PAL_BASE : ART_PAL_BASE;
@@ -3234,10 +3245,9 @@ static unsigned flash_update_attempt(const char *fn, unsigned fwsize, bool valid
   spop.p.update.curr_state = FlashingLoading;
   menu_render(1); menu_flip();
   for (unsigned i = 0; i < fwsize; i += 4*1024) {
-    UINT rdbytes;
     unsigned tord = fwsize >= i + 4*1024 ? 4*1024 : fwsize - i;
     uint32_t tmp[1024];
-    if (FR_OK != f_read(&fd, tmp, tord, &rdbytes) || rdbytes != tord) {
+    if (!read_all(&fd, tmp, tord)) {
       f_close(&fd);
       return MSG_FWUP_ERRRD;
     }
@@ -3424,7 +3434,7 @@ static void keypress_popup_loadgba(unsigned newkeys) {
       bool ok = generate_patches_progress(spop.p.load.i.romfn, spop.p.load.i.romfs);
       spop.alert_msg = msgs[lang_id][ok ? MSG_PATCHGEN_OK : MSG_PATCHGEN_ERR];
       // Try/Load the just-generated patches.
-      spop.p.load.i.patches_cache_found = load_cached_patches(spop.p.load.i.romfn, &spop.p.load.i.patches_cache);
+      spop.p.load.i.patches_cache_found = FR_OK == load_cached_patches(spop.p.load.i.romfn, &spop.p.load.i.patches_cache);
       loadgba_normalize(0);       // The options follow the new patches
     }
     else if (spop.submenu == GbaLoadPopLoadS && spop.selector == GBALdRemember) {
@@ -3515,10 +3525,10 @@ static void keypress_popup_savefile(unsigned newkeys) {
         spop.alert_msg = msgs[lang_id][MSG_SAVOPT_MSG_WERR];
       break;
     case SavLoad:
-      if (load_save_sram(spop.p.savopt.savfn))
-        spop.alert_msg = msgs[lang_id][MSG_SAVOPT_MSG1];
-      else
-        spop.alert_msg = msgs[lang_id][MSG_SAVOPT_MSG_RERR];
+      // A save still pending in the SRAM is written first.
+      spop.alert_msg = msgs[lang_id][!sram_prepare_overwrite()               ? MSG_ERR_SAVEWR :
+                                     load_save_sram(spop.p.savopt.savfn) ? MSG_SAVOPT_MSG1 :
+                                                                           MSG_SAVOPT_MSG_RERR];
       break;
     case SavClear:
       if (wipe_sav_file(spop.p.savopt.savfn))
@@ -3567,7 +3577,7 @@ static void keypress_popup_norwrite(unsigned newkeys) {
       bool ok = generate_patches_progress(spop.p.norwr.i.romfn, spop.p.norwr.i.romfs);
       spop.alert_msg = msgs[lang_id][ok ? MSG_PATCHGEN_OK : MSG_PATCHGEN_ERR];
       // Try/Load the just-generated patches.
-      spop.p.norwr.i.patches_cache_found = load_cached_patches(spop.p.norwr.i.romfn, &spop.p.norwr.i.patches_cache);
+      spop.p.norwr.i.patches_cache_found = FR_OK == load_cached_patches(spop.p.norwr.i.romfn, &spop.p.norwr.i.patches_cache);
     }
   }
   norwrite_normalize(newkeys);
@@ -3597,21 +3607,25 @@ static void keypress_popup_norwrite(unsigned newkeys) {
         memset(&ne.blkmap, 0, sizeof(ne.blkmap));
         strcpy(ne.game_name, info->romfn);
 
-        flashmgr_allocate_blocks(ne.blkmap, blkcnt, (t_reg_entry*)&sdr_state->nordata);
+        // (The free space was checked: it fails only if SDRAM does.)
+        unsigned errc = flashmgr_allocate_blocks(ne.blkmap, blkcnt, (t_reg_entry*)&sdr_state->nordata) ? 0 : ERR_FLASH_OP;
 
         // Go ahead and start the flasher-loader with patching support.
-        unsigned errc = flash_gba_nor(info->romfn, info->romfs, &info->romh, p,
-                                      info->use_dsaving, info->ingame_menu_enabled,
-                                      info->rtc_patch_enabled,
-                                      ne.blkmap, loadrom_progress,
-                                      sdr_state->scratch, scratch_mem_size);
+        if (!errc)
+          errc = flash_gba_nor(info->romfn, info->romfs, &info->romh, p,
+                               info->use_dsaving, info->ingame_menu_enabled,
+                               info->rtc_patch_enabled,
+                               ne.blkmap, loadrom_progress,
+                               sdr_state->scratch, scratch_mem_size);
         if (errc)
           spop.alert_msg = msgs[lang_id][errc == ERR_LOAD_BADROM ? MSG_ERR_READ : MSG_ERR_NORUPD];
         else {
-          // Now we can just write the metadata entry!
-          memcpy32(&sdr_state->nordata.games[smenu.fbrowser.maxentries], &ne, sizeof(ne));
-          sdr_state->nordata.gamecnt++;
-          if (!flashmgr_store(ROM_FLASHMETA_ADDR, FLASH_METADATA_SIZE, (t_reg_entry*)&sdr_state->nordata))
+          // Now we can just write the metadata entry (checked in SDRAM: it's
+          // flashed with a checksum of what's there).
+          const uint32_t cnt = sdr_state->nordata.gamecnt + 1;
+          if (!memcpy32_checked(&sdr_state->nordata.games[smenu.fbrowser.maxentries], &ne, sizeof(ne)) ||
+              !memcpy32_checked(&sdr_state->nordata.gamecnt, &cnt, sizeof(cnt)) ||
+              !flashmgr_store(ROM_FLASHMETA_ADDR, FLASH_METADATA_SIZE, (t_reg_entry*)&sdr_state->nordata))
             spop.alert_msg = msgs[lang_id][MSG_ERR_NORUPD];
           else {
             spop.alert_msg = msgs[lang_id][MSG_NOR_WROK];
@@ -3832,8 +3846,8 @@ static void keypress_menu_recent(unsigned newkeys) {
     }
     else if (newkeys & KEY_BUTTSEL) {
       void recent_del_cb(bool confirm) {
-        if (confirm)
-          delete_recent_flush(smenu.recent.selector);
+        if (confirm && !delete_recent_flush(smenu.recent.selector))
+          spop.alert_msg = msgs[lang_id][MSG_ERR_SETSAVE];
       }
       spop.qpop.message = msgs[lang_id][MSG_Q4_DELREC];
       spop.qpop.default_button = msgs[lang_id][MSG_Q_NO];
@@ -4041,14 +4055,16 @@ static void keypress_menu_norbrowse(unsigned newkeys) {
         if (!confirm)
           return;
 
-        // Remove game entry, just memmove the other games on top.
-        sdr_state->nordata.gamecnt--;
-        memmove32(&sdr_state->nordata.games[smenu.fbrowser.selector],
-                  &sdr_state->nordata.games[smenu.fbrowser.selector + 1],
-                  (sdr_state->nordata.gamecnt - smenu.fbrowser.selector) * sizeof(t_flash_game_entry));
+        // Remove game entry, the other games move down (checked in SDRAM:
+        // it's flashed with a checksum of what's there).
+        const uint32_t cnt = sdr_state->nordata.gamecnt - 1;
+        bool ok = memcpy32_checked(&sdr_state->nordata.gamecnt, &cnt, sizeof(cnt));
+        for (unsigned i = smenu.fbrowser.selector; ok && i < cnt; i++)
+          ok = memcpy32_checked(&sdr_state->nordata.games[i], &sdr_state->nordata.games[i + 1],
+                                sizeof(t_flash_game_entry));
 
         // Go ahead and write a new metadata entry;
-        if (!flashmgr_store(ROM_FLASHMETA_ADDR, FLASH_METADATA_SIZE, (t_reg_entry*)&sdr_state->nordata))
+        if (!ok || !flashmgr_store(ROM_FLASHMETA_ADDR, FLASH_METADATA_SIZE, (t_reg_entry*)&sdr_state->nordata))
           spop.alert_msg = msgs[lang_id][MSG_ERR_NORUPD];
         flashbrowser_reload();   // Force list reload, free block calculation, etc.
       }

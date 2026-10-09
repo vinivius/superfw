@@ -185,8 +185,7 @@ unsigned preload_gba_rom(const char *fn, uint32_t fs, t_rom_header *romh) {
   if (res != FR_OK)
     return ERR_LOAD_BADROM;
 
-  UINT rdbytes;
-  bool err = (FR_OK != f_read(&fd, romh, sizeof(*romh), &rdbytes) || rdbytes != sizeof(*romh));
+  bool err = (!read_all(&fd, romh, sizeof(*romh)));
 
   f_close(&fd);
   return err ? ERR_LOAD_BADROM : 0;
@@ -385,9 +384,8 @@ static unsigned load_rom_region(FIL *fd, uint32_t start, uint32_t end, uint32_t 
     (*steps)++;
 
     unsigned toread = MIN(LOAD_BS, end - offset);
-    UINT rdbytes;
     uint32_t tmp[LOAD_BS/4];
-    if (FR_OK != f_read(fd, tmp, toread, &rdbytes) || rdbytes != toread)
+    if (!read_all(fd, tmp, toread))
       return ERR_LOAD_BADROM;
     // Whole words: the end of the file is padded with zeros.
     toread = pad_to_word(tmp, toread);
@@ -639,9 +637,8 @@ unsigned flash_gba_nor(
       }
 
       unsigned toread = MIN(LOAD_BS, fs - absoff);
-      UINT rdbytes;
       uint32_t tmp[LOAD_BS/4];
-      if (FR_OK != f_read(&fd, tmp, toread, &rdbytes) || rdbytes != toread) {
+      if (!read_all(&fd, tmp, toread)) {
         err = ERR_LOAD_BADROM;
         goto out;
       }

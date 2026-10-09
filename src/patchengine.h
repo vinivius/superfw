@@ -23,6 +23,8 @@
 #include <stdbool.h>
 #include <string.h>
 
+#include "fatfs/ff.h"
+
 #define MAX_PATCH_OPS           128   // (artifically limited to save memory)
 #define MAX_PATCH_PRG             4   // Only 4 programs can be encoded so far
 
@@ -74,8 +76,9 @@ void patchengine_finalize(t_patch_builder *patch);
 bool patchengine_process_rom(const uint32_t *rom, unsigned romsize, t_patch_builder *patch, void(*progresscb)(unsigned));
 
 // Tries to load patches from disk
-bool load_cached_patches(const char *romfn, t_patch *patches);
-bool load_rom_patches(const char *romfn, t_patch *patches);
+// The patch file of a ROM (next to it, or generated): see load_patch_file().
+FRESULT load_cached_patches(const char *romfn, t_patch *patches);
+FRESULT load_rom_patches(const char *romfn, t_patch *patches);
 // Saves the patches to disk
 bool write_patches_cache(const char *romfn, const t_patch *patches);
 

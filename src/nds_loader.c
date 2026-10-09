@@ -27,6 +27,7 @@
 #include "crc.h"
 #include "dldi_patcher.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
 
 #pragma GCC optimize ("Os")
 
@@ -120,8 +121,7 @@ unsigned load_nds(const char *filename, const void *dldi_driver) {
 
   // Read header directly to its RAM destination.
   t_nds_header *hdr = (t_nds_header*)NDS_HEADER_ADDR;
-  UINT rdbytes;
-  if (FR_OK != f_read(&fd, hdr, sizeof(*hdr), &rdbytes) || rdbytes != sizeof(*hdr))
+  if (!read_all(&fd, hdr, sizeof(*hdr)))
     return ERR_FILE_ACCESS;
 
   // Disable header check, many homebrew do not follow the header format.
@@ -173,8 +173,7 @@ unsigned load_nds(const char *filename, const void *dldi_driver) {
                                       (uint8_t*)((uintptr_t)hdr->arm7_load_addr);
   if (FR_OK != f_lseek(&fd, hdr->arm7_rom_offset))
     return ERR_FILE_ACCESS;
-  if (FR_OK != f_read(&fd, arm7_addr, hdr->arm7_load_size, &rdbytes) ||
-                      rdbytes != hdr->arm7_load_size)
+  if (!read_all(&fd, arm7_addr, hdr->arm7_load_size))
     return ERR_FILE_ACCESS;
 
   if (dldi_driver) {
@@ -200,8 +199,7 @@ unsigned load_nds(const char *filename, const void *dldi_driver) {
   uint8_t *arm9_addr = (uint8_t*)((uintptr_t)hdr->arm9_load_addr);
   if (FR_OK != f_lseek(&fd, hdr->arm9_rom_offset))
     return ERR_FILE_ACCESS;
-  if (FR_OK != f_read(&fd, arm9_addr, hdr->arm9_load_size, &rdbytes) ||
-                      rdbytes != hdr->arm9_load_size)
+  if (!read_all(&fd, arm9_addr, hdr->arm9_load_size))
     return ERR_FILE_ACCESS;
 
   f_close(&fd);

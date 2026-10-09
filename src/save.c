@@ -393,8 +393,8 @@ bool sram_prepare_overwrite() {
   }
   if (FR_OK != res && !fr_missing(res))
     return false;                         // SD error: don't risk it
-  f_unlink(PENDING_SRAM_TEST);
-  return true;
+  res = f_unlink(PENDING_SRAM_TEST);
+  return FR_OK == res || fr_missing(res);
 }
 
 unsigned prepare_sram_based_savegame(t_sram_load_policy loadp, t_sram_save_policy savep, const char *savefn) {
