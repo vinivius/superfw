@@ -96,9 +96,11 @@ bool load_save_sram(const char *savefn) {
 }
 
 bool wipe_sav_file(const char *fn) {
+  // A temporary file replaces it once whole (a cut one would be loaded).
+  char tmpfn[MAX_FN_LEN];
   FIL fd;
-  FRESULT res = f_open(&fd, fn, FA_WRITE | FA_CREATE_ALWAYS);
-  if (res != FR_OK)
+  if (npf_snprintf(tmpfn, sizeof(tmpfn), "%s.tmp", fn) >= (int)sizeof(tmpfn) ||
+      FR_OK != f_open(&fd, tmpfn, FA_WRITE | FA_CREATE_ALWAYS))
     return false;
 
   uint16_t tmpbuf[4096/2];
@@ -107,7 +109,7 @@ bool wipe_sav_file(const char *fn) {
   bool ok = true;
   for (unsigned i = 0; ok && i < SRAM_CHIP_SIZE; i += sizeof(tmpbuf))
     ok = write_all(&fd, tmpbuf, sizeof(tmpbuf));    // (ie. card full)
-  if (FR_OK != f_close(&fd) || !ok)
+  if (!file_replace(tmpfn, fn, FR_OK == f_close(&fd) && ok))
     return false;
 
   WRITE_LOG("Wiped save file: %s", fn);
@@ -332,8 +334,10 @@ bool file_is_contiguous(const char *fn, LBA_t *lba) {
     return false;
 
   int iscont = 0;
-  if (FR_OK != test_contiguous_file(&fd, &iscont))
+  if (FR_OK != test_contiguous_file(&fd, &iscont)) {
+    f_close(&fd);
     return false;
+  }
 
   if (iscont) {
     LBA_t lbaoff = fd.obj.fs->database + fd.obj.fs->csize * (fd.obj.sclust - 2);

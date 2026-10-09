@@ -43,8 +43,8 @@ static uint32_t xorh(const uint32_t *p, unsigned wc) {
 static int find_latest(uint32_t flash_addr, unsigned max_size, t_reg_entry *hdr) {
   int ret = -1;    // No last valid entry found
   for (unsigned off = 0; off < max_size; ) {
-    flash_read(flash_addr + off, (uint8_t*)hdr, sizeof(*hdr));
-    if (hdr->magic != NOR_ENTRY_MAGIC || hdr->gamecnt > FLASHG_MAXFN_CNT)
+    if (!flash_read(flash_addr + off, (uint8_t*)hdr, sizeof(*hdr)) ||
+        hdr->magic != NOR_ENTRY_MAGIC || hdr->gamecnt > FLASHG_MAXFN_CNT)
       break;
 
     unsigned esz = (sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * hdr->gamecnt);
@@ -52,8 +52,7 @@ static int find_latest(uint32_t flash_addr, unsigned max_size, t_reg_entry *hdr)
     off += esz;
   }
 
-  flash_read(flash_addr + ret, (uint8_t*)hdr, sizeof(*hdr));
-  return ret;
+  return ret >= 0 && flash_read(flash_addr + ret, (uint8_t*)hdr, sizeof(*hdr)) ? ret : -1;
 }
 
 static bool flashmgr_erase(uint32_t baseaddr, unsigned size) {
@@ -88,11 +87,13 @@ bool flashmgr_load(uint32_t baseaddr, unsigned maxsize, t_reg_entry *ndata) {
   if (ndata->gamecnt > FLASHG_MAXFN_CNT)
     return false;
 
-  unsigned gsize = sizeof(t_flash_game_entry) * ndata->gamecnt;
-  unsigned dsize = (sizeof(t_reg_entry) + gsize);
-  flash_read(baseaddr + off, (uint8_t*)ndata, dsize);
+  unsigned dsize = (sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * ndata->gamecnt);
+  return flash_read(baseaddr + off, (uint8_t*)ndata, dsize) && flashmgr_check(ndata);
+}
 
+bool flashmgr_check(const t_reg_entry *ndata) {
   // Check the checksum
+  unsigned gsize = sizeof(t_flash_game_entry) * ndata->gamecnt;
   uint32_t crc = xorh((uint32_t*)ndata->games, gsize / 4) ^ ndata->gamecnt;
   if (crc != ndata->crc)
     return false;

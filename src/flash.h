@@ -42,7 +42,7 @@ bool flash_identify(t_flash_info *info);
 bool flash_erase_chip();
 bool flash_erase_sector(uintptr_t addr);
 bool flash_erase_sectors(uint32_t baseaddr, unsigned sectsize, unsigned sectcount);
-void flash_read(uint32_t baseaddr, uint8_t *buf, unsigned size);
+bool flash_read(uint32_t baseaddr, uint8_t *buf, unsigned size);
 bool flash_check_erased(uintptr_t addr, unsigned size);
 bool flash_program(uint32_t baseaddr, const uint8_t *buf, unsigned size);
 bool flash_program_buffered(uint32_t baseaddr, const uint8_t *buf, unsigned size, unsigned bufsize);

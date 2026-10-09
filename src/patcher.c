@@ -57,6 +57,8 @@ static int gcodecmp(const uint8_t *g1, const uint8_t *g2) {
 
 void patchmem_dbinfo(const uint8_t *dbptr, uint32_t *pcnt, char *version, char *date, char *creator) {
   const t_db_header *dbh = (t_db_header*)dbptr;
+  if (dbh->signature != 0x31424450)       // No (valid) database: left as is
+    return;
   *pcnt = dbh->patchcnt;
   memcpy(date, dbh->date, sizeof(dbh->date));
   memcpy(version, dbh->version, sizeof(dbh->version));

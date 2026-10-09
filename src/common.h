@@ -191,6 +191,7 @@ typedef struct {
   char creator[33];
 } t_patchdb_info;
 extern t_patchdb_info pdbinfo;
+void pdbinfo_load();
 extern volatile unsigned frame_count;
 uint32_t systime();
 

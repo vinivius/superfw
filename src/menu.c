@@ -972,41 +972,37 @@ void patch_gen_callback(bool confirm) {
 }
 
 static void load_patchdb_action(bool confirm) {
-  if (confirm) {
-    // The database area is 1MiB, the emulator assets follow it.
-    if (spop.p.pdb_ld.fs > ROM_OFF_ASSETS_BASE - ROM_OFF_PATCH_DB) {
-      spop.alert_msg = msgs[lang_id][MSG_ERR_TOOBIG];
-      return;
-    }
-    FIL fd;
-    FRESULT res = f_open(&fd, spop.p.pdb_ld.fn, FA_READ);
-    if (res != FR_OK) {
-      spop.alert_msg = msgs[lang_id][MSG_ERR_GENERIC];
-      return;
-    } else {
-      for (unsigned off = 0; off < spop.p.pdb_ld.fs; off += 1024) {
-        uint32_t tmp[1024/4];
-        unsigned toread = MIN(sizeof(tmp), spop.p.pdb_ld.fs - off);
-        if (!read_all(&fd, tmp, toread)) {
-          // A partial database is unusable, the built-in one comes back on reboot.
-          f_close(&fd);
-          spop.alert_msg = msgs[lang_id][MSG_ERR_GENERIC];
-          return;
-        }
-
-        set_supercard_mode(MAPPED_SDRAM, true, false);
-        const bool copied = memcpy32_checked((void*)(ROM_PATCHDB_U8 + off), tmp, sizeof(tmp));
-        set_supercard_mode(MAPPED_SDRAM, true, true);
-        if (!copied) {
-          f_close(&fd);
-          spop.alert_msg = msgs[lang_id][MSG_ERR_GENERIC];
-          return;
-        }
-      }
-      f_close(&fd);
-    }
-    spop.alert_msg = msgs[lang_id][MSG_OK_GENERIC];
+  if (!confirm)
+    return;
+  // The database area is 1MiB, the emulator assets follow it.
+  if (spop.p.pdb_ld.fs > ROM_OFF_ASSETS_BASE - ROM_OFF_PATCH_DB) {
+    spop.alert_msg = msgs[lang_id][MSG_ERR_TOOBIG];
+    return;
   }
+  FIL fd;
+  if (FR_OK != f_open(&fd, spop.p.pdb_ld.fn, FA_READ)) {
+    spop.alert_msg = msgs[lang_id][MSG_ERR_GENERIC];
+    return;
+  }
+  bool ok = true;
+  for (unsigned off = 0; ok && off < spop.p.pdb_ld.fs; off += 1024) {
+    uint32_t tmp[1024/4];
+    ok = read_all(&fd, tmp, MIN(sizeof(tmp), spop.p.pdb_ld.fs - off));
+    set_supercard_mode(MAPPED_SDRAM, true, false);
+    ok = ok && memcpy32_checked((void*)(ROM_PATCHDB_U8 + off), tmp, sizeof(tmp));
+    set_supercard_mode(MAPPED_SDRAM, true, true);
+  }
+  f_close(&fd);
+
+  // A partial database is unusable: its signature is cleared (the built-in
+  // one comes back on reboot). The About tab shows the one in use.
+  if (!ok) {
+    set_supercard_mode(MAPPED_SDRAM, true, false);
+    write16_checked((volatile uint16_t*)ROM_PATCHDB_U8, 0);
+    set_supercard_mode(MAPPED_SDRAM, true, true);
+  }
+  pdbinfo_load();
+  spop.alert_msg = msgs[lang_id][ok ? MSG_OK_GENERIC : MSG_ERR_GENERIC];
 }
 
 unsigned guess_file_type(const uint8_t *header) {
@@ -1055,15 +1051,27 @@ static void launch_record(const char *fn, unsigned flags) {
     recent_reload();
   if (recent_unread)
     return;
-  // Insert element: it becomes the first one, the cursor goes with it.
-  smenu.recent.maxentries = insert_recent_fn(sdr_state->rentries, smenu.recent.maxentries, fn, flags);
+  // Insert element: it becomes the first one, the cursor goes with it. If the
+  // list in SDRAM couldn't be written, it's read again (and not saved).
+  const int n = insert_recent_fn(sdr_state->rentries, smenu.recent.maxentries, fn, flags);
+  if (n < 0) {
+    recent_reload();
+    return;
+  }
+  smenu.recent.maxentries = n;
   smenu.recent.selector = smenu.recent.seloff = 0;
   art_list_gen++;
   recent_flush(sdr_state->rentries, smenu.recent.maxentries);
 }
 
 static bool delete_recent_flush(unsigned entry_num) {
-  smenu.recent.maxentries = delete_recent(sdr_state->rentries, smenu.recent.maxentries, entry_num);
+  // If the list in SDRAM couldn't be written, it's read again (and not saved).
+  const int n = delete_recent(sdr_state->rentries, smenu.recent.maxentries, entry_num);
+  if (n < 0) {
+    recent_reload();
+    return false;
+  }
+  smenu.recent.maxentries = n;
   art_list_gen++;
 
   smenu.recent.selector = MIN(smenu.recent.maxentries - 1, smenu.recent.selector);
@@ -1160,7 +1168,9 @@ NOINLINE static void browser_open(const char *fn, uint32_t fs) {
         spop.alert_msg = msgs[lang_id][MSG_FWUP_ERRRD];
       else {
         uint8_t tmp[512];
-        if (!read_all(&fd, tmp, sizeof(tmp)))
+        const bool rd = read_all(&fd, tmp, sizeof(tmp));
+        f_close(&fd);
+        if (!rd)
           spop.alert_msg = msgs[lang_id][MSG_FWUP_ERRRD];
         else if (!validate_gba_header(tmp))  // Is it a valid GBA ROM header?
           spop.alert_msg = msgs[lang_id][MSG_FWUP_BADHD];
@@ -1170,7 +1180,6 @@ NOINLINE static void browser_open(const char *fn, uint32_t fs) {
           spop.p.update.curr_state = FlashingReady;
           spop.pop_num = POPUP_FWFLASH;
           strcpy(spop.p.update.fn, fn);
-          f_close(&fd);
         }
       }
     }
@@ -1333,6 +1342,7 @@ static FRESULT browser_reload() {
   unsigned fcount = 0;
   DIR d;
   FRESULT res = f_opendir(&d, smenu.browser.cpath);
+  const bool opened = FR_OK == res;
 
   unsigned start = frame_count, shown = frame_count;
   while (1) {
@@ -1343,6 +1353,8 @@ static FRESULT browser_reload() {
       // Unreadable (ie. SD errors): empty, read again on the next key press.
       smenu.browser.maxentries = smenu.browser.sortentries = smenu.browser.dispentries = 0;
       browser_loaded = false;
+      if (opened)
+        f_closedir(&d);
       return res;
     }
     if (!info.fname[0])
@@ -1371,6 +1383,7 @@ static FRESULT browser_reload() {
       draw_busy_counter(msgs[lang_id][MSG_BROW_LOADING], fcount);
     }
   }
+  f_closedir(&d);
   smenu.browser.maxentries = fcount;
 
   // Filter and sort list of files/dirs
@@ -1472,22 +1485,29 @@ static void flashbrowser_reload() {
   smenu.fbrowser.selector = 0;
   smenu.anim_state = 0;
 
-  if (!flashmgr_load(ROM_FLASHMETA_ADDR, FLASH_METADATA_SIZE, (t_reg_entry*)&sdr_state->nordata))
+  // Sorted in place (it's stored as it is): a sort that didn't write it right
+  // (SDRAM) leaves it as loaded, unsorted (its checksum doesn't depend on the
+  // order).
+  t_reg_entry *nd = (t_reg_entry*)&sdr_state->nordata;
+  if (flashmgr_load(ROM_FLASHMETA_ADDR, FLASH_METADATA_SIZE, nd)) {
+    heapsort4(nd->games, nd->gamecnt, sizeof(t_flash_game_entry) / sizeof(uint32_t), romsort);
+    if (!flashmgr_check(nd) && !flashmgr_load(ROM_FLASHMETA_ADDR, FLASH_METADATA_SIZE, nd))
+      memset(nd, 0, sizeof(sdr_state->nordata));
+  }
+  else
     // No data found, reset the entries
-    memset(&sdr_state->nordata, 0, sizeof(sdr_state->nordata));
+    memset(nd, 0, sizeof(sdr_state->nordata));
 
   // Calculate block usage, free space, etc.
   smenu.fbrowser.usedblks = 0;
-  for (unsigned i = 0; i < sdr_state->nordata.gamecnt; i++) {
-    const t_flash_game_entry *e = &sdr_state->nordata.games[i];
+  for (unsigned i = 0; i < nd->gamecnt; i++) {
+    const t_flash_game_entry *e = &nd->games[i];
     for (unsigned j = 0; j < MAX_GAME_BLOCKS; j++)
       if (e->blkmap[j])
         smenu.fbrowser.usedblks++;
   }
   smenu.fbrowser.freeblks = NOR_GAMEBLOCK_COUNT - smenu.fbrowser.usedblks;
-
-  smenu.fbrowser.maxentries = sdr_state->nordata.gamecnt;
-  heapsort4(sdr_state->nordata.games, smenu.fbrowser.maxentries, sizeof(t_flash_game_entry) / sizeof(uint32_t), romsort);
+  smenu.fbrowser.maxentries = nd->gamecnt;
   #endif
 }
 
@@ -1797,8 +1817,12 @@ static void draw_hints(volatile uint8_t *frame, const char *s, unsigned y) {
     s = colon + 1;
     while (*s == ' ')
       s++;
-    const char *end = strstr(s, "  ");
-    unsigned al = MIN(end ? (unsigned)(end - s) : strlen(s), sizeof(act) - 1);
+    // The action ends at a double space, or at the end (a loop: strstr()
+    // brings ~1.5KiB of code).
+    const char *end = s;
+    while (*end && (end[0] != ' ' || end[1] != ' '))
+      end++;
+    unsigned al = MIN((unsigned)(end - s), sizeof(act) - 1);
     memcpy(act, s, al);
     act[al] = 0;
     s += al;
@@ -3251,8 +3275,11 @@ static unsigned flash_update_attempt(const char *fn, unsigned fwsize, bool valid
       f_close(&fd);
       return MSG_FWUP_ERRRD;
     }
-    // Copy (ensure aligned copy!)
-    dma_memcpy32(&sdr_state->scratch[i], tmp, 1024);
+    // Copy (aligned), checked: it's what's flashed and verified against.
+    if (!memcpy32_checked(&sdr_state->scratch[i], tmp, sizeof(tmp))) {
+      f_close(&fd);
+      return MSG_FWUP_ERRRD;
+    }
   }
   f_close(&fd);
   spop.p.update.curr_state = FlashingChecking;
@@ -3518,12 +3545,17 @@ static void keypress_popup_savefile(unsigned newkeys) {
 
   if (newkeys & KEY_BUTTA) {
     switch (spop.selector) {
-    case SaveWrite:
-      if (write_save_sram(spop.p.savopt.savfn))
-        spop.alert_msg = msgs[lang_id][MSG_SAVOPT_MSG0];
-      else
-        spop.alert_msg = msgs[lang_id][MSG_SAVOPT_MSG_WERR];
+    case SaveWrite: {
+      // As the in-game menu saves: a temporary file read back replaces it,
+      // the old one goes to the backups (the name must leave room for them).
+      char templ[MAX_FN_LEN];
+      strcpy(templ, spop.p.savopt.savfn);
+      replace_extension(templ, "");
+      const bool ok = strlen(templ) + sizeof(".tmp.sav") <= MAX_FN_LEN &&
+                      write_save_sram_rotate(templ, backup_sram_default);
+      spop.alert_msg = msgs[lang_id][ok ? MSG_SAVOPT_MSG0 : MSG_SAVOPT_MSG_WERR];
       break;
+    }
     case SavLoad:
       // A save still pending in the SRAM is written first.
       spop.alert_msg = msgs[lang_id][!sram_prepare_overwrite()               ? MSG_ERR_SAVEWR :

@@ -144,67 +144,90 @@ static inline void* get_memslot_addr(unsigned slotnum) {
   return (void*)(scratch_base + ((slotnum * 388) << 10));
 }
 
+// Copies n bytes (whole 256 byte blocks) to the cart's SDRAM, then checks
+// them against the source (unchanged while the menu runs), up to
+// SDRAM_WRITE_TRIES times.
+static bool snap_copy(void *dst, const void *src, unsigned n) {
+  const volatile uint32_t *d = (uint32_t*)dst;
+  const uint32_t *s = (const uint32_t*)src;
+  for (unsigned t = 0; t < SDRAM_WRITE_TRIES; t++) {
+    fast_mem_cpy_256(dst, src, n);
+    unsigned i = 0;
+    while (i < n / 4 && d[i] == s[i])
+      i++;
+    if (i == n / 4)
+      return true;
+  }
+  return false;
+}
+
 // The save state is a bit all over the place, since entering the menu only
-// swaps some partial state (to save space and be faster).
-void take_mem_snapshot(void *buffer) {
+// swaps some partial state (to save space and be faster). Takes a snapshot of
+// the game into buffer (a memory slot, in the cart's SDRAM), checked: false
+// if it couldn't be written.
+bool take_mem_snapshot(void *buffer) {
   // Memory layout in ingame.h
 
   const t_spilled_region *spill_ptr = (t_spilled_region*)spill_addr;
   t_savestate_snapshot *save_ptr = (t_savestate_snapshot*)buffer;
-
-  // Copy the (partially) spilled buffers first.
-  fast_mem_cpy_256(save_ptr->iwram, spill_ptr->low_iwram, sizeof(spill_ptr->low_iwram));
-  fast_mem_cpy_256(save_ptr->ewram, spill_ptr->low_ewram, sizeof(spill_ptr->low_ewram));
-  fast_mem_cpy_256(save_ptr->vram,  spill_ptr->low_vram,  sizeof(spill_ptr->low_vram));
-  fast_mem_cpy_256(save_ptr->palette, spill_ptr->palette, sizeof(spill_ptr->palette));
-  fast_mem_cpy_256(save_ptr->oamem, spill_ptr->oam, sizeof(spill_ptr->oam));
-
-  // Copy the remaining memory chunks (high segments)
   const uint8_t *IWRAM_BUF = (uint8_t*)0x03000000;
-  fast_mem_cpy_256(&save_ptr->iwram[sizeof(spill_ptr->low_iwram)], &IWRAM_BUF[sizeof(spill_ptr->low_iwram)],
-                   32*1024 - sizeof(spill_ptr->low_iwram));
-
   const uint8_t *EWRAM_BUF = (uint8_t*)0x02000000;
-  fast_mem_cpy_256(&save_ptr->ewram[sizeof(spill_ptr->low_ewram)], &EWRAM_BUF[sizeof(spill_ptr->low_ewram)],
-                   256*1024 - sizeof(spill_ptr->low_ewram));
-
   const uint8_t *VRAM_BUF = (uint8_t*)0x06000000;
-  fast_mem_cpy_256(&save_ptr->vram[sizeof(spill_ptr->low_vram)], &VRAM_BUF[sizeof(spill_ptr->low_vram)],
-                   96*1024 - sizeof(spill_ptr->low_vram));
-
   const uint8_t *IORAM_BUF = (uint8_t*)0x04000000;
-  fast_mem_cpy_256(save_ptr->ioram, IORAM_BUF, sizeof(save_ptr->ioram));
 
+  // Copy the (partially) spilled buffers first, then the remaining memory
+  // chunks (high segments).
+  bool ok = snap_copy(save_ptr->iwram, spill_ptr->low_iwram, sizeof(spill_ptr->low_iwram)) &&
+            snap_copy(save_ptr->ewram, spill_ptr->low_ewram, sizeof(spill_ptr->low_ewram)) &&
+            snap_copy(save_ptr->vram,  spill_ptr->low_vram,  sizeof(spill_ptr->low_vram)) &&
+            snap_copy(save_ptr->palette, spill_ptr->palette, sizeof(spill_ptr->palette)) &&
+            snap_copy(save_ptr->oamem, spill_ptr->oam, sizeof(spill_ptr->oam)) &&
+            snap_copy(&save_ptr->iwram[sizeof(spill_ptr->low_iwram)], &IWRAM_BUF[sizeof(spill_ptr->low_iwram)],
+                      32*1024 - sizeof(spill_ptr->low_iwram)) &&
+            snap_copy(&save_ptr->ewram[sizeof(spill_ptr->low_ewram)], &EWRAM_BUF[sizeof(spill_ptr->low_ewram)],
+                      256*1024 - sizeof(spill_ptr->low_ewram)) &&
+            snap_copy(&save_ptr->vram[sizeof(spill_ptr->low_vram)], &VRAM_BUF[sizeof(spill_ptr->low_vram)],
+                      96*1024 - sizeof(spill_ptr->low_vram));
+
+  // The I/O registers, then the header and CPU registers, are made here and
+  // copied checked.
+  union {
+    t_iomap iomap;
+    struct {
+      t_savestate_header header;
+      t_savestate_regs regs;
+    } hr;
+  } tmp;
+  _Static_assert(sizeof(tmp.iomap) == sizeof(save_ptr->ioram), "The I/O structure fills its space");
+
+  fast_mem_cpy_256(&tmp.iomap, IORAM_BUF, sizeof(tmp.iomap));
   // Some I/O registers have been spilled to the spill area, we copy them too.
-  t_iomap *siomap = (t_iomap*)save_ptr->ioram;
-  siomap->dispcnt  = spill_ptr->dispcnt;
-  siomap->dispstat = spill_ptr->dispstat;
-  siomap->bldcnt   = spill_ptr->bldcnt;
-  siomap->bldalpha = spill_ptr->bldalpha;
-  siomap->soundcnt = spill_ptr->soundcnt;
+  tmp.iomap.dispcnt  = spill_ptr->dispcnt;
+  tmp.iomap.dispstat = spill_ptr->dispstat;
+  tmp.iomap.bldcnt   = spill_ptr->bldcnt;
+  tmp.iomap.bldalpha = spill_ptr->bldalpha;
+  tmp.iomap.soundcnt = spill_ptr->soundcnt;
   for (unsigned i = 0; i < 4; i++) {
-    siomap->tms[i].tm_cntl = spill_ptr->tm_cnt[i];
-    siomap->dma[i].ctrl    = spill_ptr->dma_cnt[i];
-    siomap->bg_cnt[i]      = spill_ptr->bg_cnt[i];
+    tmp.iomap.tms[i].tm_cntl = spill_ptr->tm_cnt[i];
+    tmp.iomap.dma[i].ctrl    = spill_ptr->dma_cnt[i];
+    tmp.iomap.bg_cnt[i]      = spill_ptr->bg_cnt[i];
   }
-
-  memory_copy32(save_ptr->regs.cpu_regs, spill_ptr->cpu_regs, sizeof(save_ptr->regs.cpu_regs) / 4);
-
-  save_ptr->regs.cpsr = spill_ptr->cpsr;
-
-  memory_copy32(save_ptr->regs.irq_regs, spill_ptr->irq_regs, sizeof(save_ptr->regs.irq_regs) / 4);
-  memory_copy32(save_ptr->regs.fiq_regs, spill_ptr->fiq_regs, sizeof(save_ptr->regs.fiq_regs) / 4);
-  memory_copy32(save_ptr->regs.sup_regs, spill_ptr->sup_regs, sizeof(save_ptr->regs.sup_regs) / 4);
-  memory_copy32(save_ptr->regs.abt_regs, spill_ptr->abt_regs, sizeof(save_ptr->regs.abt_regs) / 4);
-  memory_copy32(save_ptr->regs.und_regs, spill_ptr->und_regs, sizeof(save_ptr->regs.und_regs) / 4);
+  ok = ok && snap_copy(save_ptr->ioram, &tmp.iomap, sizeof(tmp.iomap));
 
   // Complete the state by clearing empty regions and completing the header
-  memory_set16(save_ptr->header.pad, 0, sizeof(save_ptr->header.pad) / 2);
-  memory_set16(save_ptr->regs.pad, 0, sizeof(save_ptr->regs.pad) / 2);
-  save_ptr->header.signature[0] = SIGNATURE_A;
-  save_ptr->header.signature[1] = SIGNATURE_B;
-  save_ptr->header.signature[2] = SIGNATURE_C;
-  save_ptr->header.version = SAVESTATE_VERSION;
+  memset(&tmp.hr, 0, sizeof(tmp.hr));
+  tmp.hr.header.signature[0] = SIGNATURE_A;
+  tmp.hr.header.signature[1] = SIGNATURE_B;
+  tmp.hr.header.signature[2] = SIGNATURE_C;
+  tmp.hr.header.version = SAVESTATE_VERSION;
+  memory_copy32(tmp.hr.regs.cpu_regs, spill_ptr->cpu_regs, sizeof(tmp.hr.regs.cpu_regs) / 4);
+  tmp.hr.regs.cpsr = spill_ptr->cpsr;
+  memory_copy32(tmp.hr.regs.irq_regs, spill_ptr->irq_regs, sizeof(tmp.hr.regs.irq_regs) / 4);
+  memory_copy32(tmp.hr.regs.fiq_regs, spill_ptr->fiq_regs, sizeof(tmp.hr.regs.fiq_regs) / 4);
+  memory_copy32(tmp.hr.regs.sup_regs, spill_ptr->sup_regs, sizeof(tmp.hr.regs.sup_regs) / 4);
+  memory_copy32(tmp.hr.regs.abt_regs, spill_ptr->abt_regs, sizeof(tmp.hr.regs.abt_regs) / 4);
+  memory_copy32(tmp.hr.regs.und_regs, spill_ptr->und_regs, sizeof(tmp.hr.regs.und_regs) / 4);
+  return ok && snap_copy(&save_ptr->header, &tmp.hr, sizeof(tmp.hr));
 }
 
 bool write_rom_buffer(FIL *fd, const void *buffer, unsigned size, void *tmpbuf) {
@@ -926,9 +949,9 @@ bool action_menu_back() {
 
 void save_memstate() {
   set_supercard_mode(MAPPED_SDRAM, true, false);
-  take_mem_snapshot(get_memslot_addr(state_slot));
-  memslot_valid[state_slot] = 1;
-  popup.msg = msgs[ingame_menu_lang][IMENU_WSAV_OK];
+  const bool ok = take_mem_snapshot(get_memslot_addr(state_slot));
+  memslot_valid[state_slot] = ok;
+  popup.msg = msgs[ingame_menu_lang][ok ? IMENU_WSAV_OK : IMENU_MSG_SAVEERR];
 }
 
 // Saves a disk state, capable of "cloning" an in-memory state.

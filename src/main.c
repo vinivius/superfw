@@ -40,6 +40,14 @@ t_flash_info flashinfo;
 t_card_info sd_info;
 t_patchdb_info pdbinfo;
 
+// The patch database info (shown in the About tab), none if it's invalid.
+void pdbinfo_load() {
+  set_supercard_mode(MAPPED_SDRAM, true, false);
+  memset(&pdbinfo, 0, sizeof(pdbinfo));
+  patchmem_dbinfo((uint8_t*)ROM_PATCHDB_U8, &pdbinfo.patch_count, pdbinfo.version, pdbinfo.date, pdbinfo.creator);
+  set_supercard_mode(MAPPED_SDRAM, true, true);
+}
+
 void *font_base_addr = (void*)ROM_FONTBASE_U8;
 
 static void wait_for_vblank() {
@@ -304,11 +312,7 @@ static int main_gba() {
   // Load settings files
   load_settings();
 
-  // Load patchdb info.
-  set_supercard_mode(MAPPED_SDRAM, true, false);
-  memset(&pdbinfo, 0, sizeof(pdbinfo));
-  patchmem_dbinfo((uint8_t*)ROM_PATCHDB_U8, &pdbinfo.patch_count, pdbinfo.version, pdbinfo.date, pdbinfo.creator);
-  set_supercard_mode(MAPPED_SDRAM, true, true);
+  pdbinfo_load();
 
   // Configure video mode so we can render the menu.
   setup_video();

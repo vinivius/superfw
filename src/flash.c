@@ -404,23 +404,26 @@ bool flash_program_buffered(uint32_t baseaddr, const uint8_t *buf, unsigned size
 
 // Reads data into a buffer, even if it's on SDRAM.
 // Size must be multiple of 4 bytes!
-void flash_read(uint32_t baseaddr, uint8_t *buf, unsigned size) {
+bool flash_read(uint32_t baseaddr, uint8_t *buf, unsigned size) {
   // Reset any previous command that might be ongoing.
   FLASH_WE_MODE();
   SLOT2_BASE_U16[0] = 0x00F0;
 
-  for (unsigned i = 0; i < size; i += 512) {
+  // buf may be in the cart's SDRAM: the copy is checked.
+  bool ok = true;
+  for (unsigned i = 0; ok && i < size; i += 512) {
     unsigned tocpy = MIN(512U, size - i);
     uint16_t tmp[256];
     const uint8_t *ptr = (uint8_t*)(baseaddr + i);
     memcpy32(tmp, ptr, 512);
 
     set_supercard_mode(MAPPED_SDRAM, true, true);
-    memcpy32(&buf[i], tmp, tocpy);
+    ok = memcpy32_checked(&buf[i], tmp, tocpy);
     FLASH_WE_MODE();
   }
 
   set_supercard_mode(MAPPED_SDRAM, true, true);
+  return ok;
 }
 
 // Programs the built-in flash memory. 

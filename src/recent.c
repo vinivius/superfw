@@ -48,50 +48,57 @@ NOINLINE bool recent_flush(const t_rentry *rentries, unsigned rcount) {
   return file_replace(RECENT_FILEPATH ".tmp", RECENT_FILEPATH, ok);
 }
 
-NOINLINE unsigned insert_recent_fn(t_rentry *rentries, unsigned rcount, const char *fn, unsigned flags) {
-  WRITE_LOG("Adding/bumping recently played game: '%s' [%x]", fn, flags);
+// The list is in the cart's SDRAM and saved as it is there: its writes are
+// checked. The bytes of an entry with a path of len chars (whole words).
+#define RENTRY_BYTES(len)  (offsetof(t_rentry, fpath) + (((len) + 4) & ~3U))
 
-  for (unsigned i = 0; i < rcount; i++) {
-    if (rentries[i].flags == flags && !strcmp(rentries[i].fpath, fn)) {
-      // Found a matching file, move it to position 0, unless it's there already.
-      if (i) {
-        t_rentry tmp;
-        memcpy32(&tmp, &rentries[i], sizeof(tmp));   // Copy entry to tmp
-        memmove32(&rentries[1], &rentries[0], i * sizeof(rentries[0]));
-        memcpy32(&rentries[0], &tmp, sizeof(tmp));
-      }
-      return rcount;
-    }
+// Moves n entries from src to dst (overlapping too), checked.
+static bool rentry_move(t_rentry *r, unsigned dst, unsigned src, unsigned n) {
+  for (unsigned k = 0; k < n; k++) {
+    const unsigned i = dst > src ? n - 1 - k : k;
+    if (!memcpy32_checked(&r[dst + i], &r[src + i], sizeof(t_rentry)))
+      return false;
   }
-
-  // Not in the list, push all items back and insert it in the first position
-  if (rcount) {
-    unsigned movecnt = MIN(rcount, RECENT_MAXFN_CNT - 1);
-    memmove32(&rentries[1], &rentries[0], movecnt * sizeof(rentries[0]));
-  }
-
-  const char *pbn = file_basename(fn);
-  rentries[0].fname_offset = pbn - fn;
-  rentries[0].flags = flags;
-  memcpy32(rentries[0].fpath, fn, strlen(fn) + 1);
-  // The oldest entry falls off the end when the list is full.
-  return MIN(rcount + 1, RECENT_MAXFN_CNT);
+  return true;
 }
 
-NOINLINE unsigned delete_recent(t_rentry *rentries, unsigned rcount, unsigned entry_num) {
+NOINLINE int insert_recent_fn(t_rentry *rentries, unsigned rcount, const char *fn, unsigned flags) {
+  WRITE_LOG("Adding/bumping recently played game: '%s' [%x]", fn, flags);
+
+  t_rentry e;
+  unsigned i = 0, len;
+  while (i < rcount && (rentries[i].flags != flags || strcmp(rentries[i].fpath, fn)))
+    i++;
+  if (i < rcount) {
+    // Found a matching file: it moves to position 0.
+    memcpy32(&e, &rentries[i], sizeof(e));
+    len = strlen(e.fpath);
+  }
+  else {
+    // Not in the list: it goes first, the oldest entry falls off the end when
+    // the list is full.
+    i = MIN(rcount, RECENT_MAXFN_CNT - 1);
+    rcount = MIN(rcount + 1, RECENT_MAXFN_CNT);
+    e.flags = flags;
+    e.fname_offset = file_basename(fn) - fn;
+    len = strlen(fn);
+    memcpy(e.fpath, fn, len + 1);
+  }
+  // The ones before it move down one.
+  return rentry_move(rentries, 1, 0, i) && memcpy32_checked(&rentries[0], &e, RENTRY_BYTES(len)) ? (int)rcount : -1;
+}
+
+NOINLINE int delete_recent(t_rentry *rentries, unsigned rcount, unsigned entry_num) {
   if (entry_num >= rcount)
     return rcount;
-
-  if (entry_num + 1 < rcount)
-    memmove32(&rentries[entry_num], &rentries[entry_num + 1],
-              (rcount - (entry_num + 1)) * sizeof(rentries[0]));
-
-  return rcount - 1;
+  // The ones after it move up one.
+  return rentry_move(rentries, entry_num, entry_num + 1, rcount - entry_num - 1) ? (int)rcount - 1 : -1;
 }
 
 typedef struct {
   t_rentry *rentries;
   unsigned cnt;
+  bool error;               // An entry couldn't be written (SDRAM)
 } t_recent_read;
 
 // A line of the list: a path (or "nor:" and a path).
@@ -104,27 +111,23 @@ static bool recent_line(char *line, unsigned len, void *usr) {
   unsigned plen = nor ? len - 4 : len;
   // Skip empty lines, and paths that don't fit an entry.
   if (plen && plen < MAX_FN_LEN) {
-    t_rentry *e = &rd->rentries[rd->cnt++];
-    e->flags = nor ? FLAG_RECENT_NOR : 0;
-    // Half word writes (SDRAM), from a line at any address (its NUL ends it).
-    volatile uint16_t *d = (uint16_t*)e->fpath;
-    unsigned i;
-    for (i = 0; i < plen; i += 2)
-      d[i / 2] = (uint8_t)path[i] | ((uint8_t)path[i + 1] << 8);
-    if (i == plen)
-      d[i / 2] = 0;
-    e->fname_offset = file_basename(e->fpath) - e->fpath;
+    t_rentry e;
+    e.flags = nor ? FLAG_RECENT_NOR : 0;
+    memcpy(e.fpath, path, plen);
+    e.fpath[plen] = 0;
+    e.fname_offset = file_basename(e.fpath) - e.fpath;
+    rd->error = !memcpy32_checked(&rd->rentries[rd->cnt++], &e, RENTRY_BYTES(plen));
   }
-  return rd->cnt < RECENT_MAXFN_CNT;
+  return !rd->error && rd->cnt < RECENT_MAXFN_CNT;
 }
 
 NOINLINE int recent_load(const char *fpath, t_rentry *rentries) {
   // Lines too long to be a path ("nor:", its path and "\r\n") are skipped.
   char buf[MAX_FN_LEN + 8];
-  t_recent_read rd = { rentries, 0 };
+  t_recent_read rd = { rentries, 0, false };
   FRESULT res = read_lines_file(fpath, buf, sizeof(buf), recent_line, &rd);
   WRITE_LOG("Loaded recently played games. %d entries found", rd.cnt);
-  return FR_OK == res ? (int)rd.cnt : fr_missing(res) ? 0 : -1;
+  return rd.error ? -1 : FR_OK == res ? (int)rd.cnt : fr_missing(res) ? 0 : -1;
 }
 
 

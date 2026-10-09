@@ -38,10 +38,10 @@ _Static_assert (sizeof(t_rentry) % 4 == 0, "t_rentry must be word-friendly");
 bool recent_flush(const t_rentry *rentries, unsigned rcount);
 
 // Inserts a filename to the recently played games (or re-orders the list)
-unsigned insert_recent_fn(t_rentry *rentries, unsigned rcount, const char *fn, unsigned flags);
+int insert_recent_fn(t_rentry *rentries, unsigned rcount, const char *fn, unsigned flags);
 
 // Deletes a recent entry
-unsigned delete_recent(t_rentry *rentries, unsigned rcount, unsigned entry_num);
+int delete_recent(t_rentry *rentries, unsigned rcount, unsigned entry_num);
 
 // Loads entries from disk: their count (0 if there is no file), or -1 if the
 // file couldn't be read.
