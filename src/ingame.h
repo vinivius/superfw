@@ -27,6 +27,8 @@
 #define IGM_ENTRYPOINT_CHEATS_OFF       (12*4)
 
 #define IGM_HEADER_SIZE                 (652)     // The header in ingame.S (t_igmenu)
+#define SPILL_HDR_SIZE                  (164)     // Spilled registers (t_spilled_region
+                                                  // up to its palette)
 
 #define FLASH_IGM_TRAMP_NOCHEATS_OFF    ( 8*4)    // Offsets in ingame_trampoline.S
 #define FLASH_IGM_TRAMP_CHEATS_OFF      (32*4)
@@ -220,6 +222,7 @@ _Static_assert(sizeof(t_spilled_region) <= MIN_SCRATCH_SPACE, "Reserved spilled 
 _Static_assert(offsetof(t_igmenu, tramp1_insts) == IGM_ENTRYPOINT_NOCHEATS_OFF, "Struct offset mismatch");
 _Static_assert(offsetof(t_igmenu, tramp2_insts) == IGM_ENTRYPOINT_CHEATS_OFF, "Struct offset mismatch");
 _Static_assert(sizeof(t_igmenu) == IGM_HEADER_SIZE, "Struct size mismatch (ingame.S checks its own)");
+_Static_assert(offsetof(t_spilled_region, palette) == SPILL_HDR_SIZE, "Spill header size mismatch");
 
 #endif
 

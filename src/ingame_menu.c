@@ -323,7 +323,7 @@ bool write_rom_buffer(FIL *fd, const void *buffer, unsigned size, void *tmpbuf) 
 
 // The spill's registers and I/O (before its memory) are edited in RAM, and
 // written back checked (the spill is in the cart's SDRAM).
-#define SPILL_HDR_WORDS   (offsetof(t_spilled_region, palette) / 4)
+#define SPILL_HDR_WORDS   (SPILL_HDR_SIZE / 4)
 _Static_assert(offsetof(t_spilled_region, palette) % 4 == 0, "The spill's memory is word aligned");
 
 // Same as above but we write directly to disk.

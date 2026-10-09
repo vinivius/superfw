@@ -660,7 +660,8 @@ bool dump_flashmem_backup() {
 
     ok = write_all(&fd, tmp, sizeof(tmp));
 
-    loadrom_progress(i >> 10, fsize >> 10);
+    if (!(i & 0xFFFF))                    // Every 64KiB
+      loadrom_progress(i >> 10, fsize >> 10);
   }
 
   // The data reaches the card when it's closed.
@@ -3439,10 +3440,12 @@ void start_flash_update(const char *fn, unsigned fwsize, bool validate_superfw) 
 }
 
 // Generates the patches of a ROM (the "Generate patches" option) and loads
-// them: an error generating them or reading them back is shown.
+// them: an error generating them or reading them back is shown. After a
+// failed generation there are none (an older cache it couldn't remove isn't
+// used).
 static void patches_generate(t_load_gba_info *i) {
   const bool ok = generate_patches_progress(i->romfn, i->romfs, &i->id);
-  i->patches_cache_found = FR_OK == load_cached_patches(i->romfn, &i->id, i->romfs, &i->patches_cache);
+  i->patches_cache_found = ok && FR_OK == load_cached_patches(i->romfn, &i->id, i->romfs, &i->patches_cache);
   spop.alert_msg = msgs[lang_id][!ok                    ? MSG_PATCHGEN_ERR :
                                  i->patches_cache_found ? MSG_PATCHGEN_OK : MSG_ERR_READ];
 }

@@ -135,6 +135,9 @@ game_ver:              .word 0x0    // in its savestates
 .if (. - ingame_menu) != IGM_HEADER_SIZE
   .error "The in-game menu header doesn't match t_igmenu (ingame.h)"
 .endif
+.if (igm_trampoline_nocheats - ingame_menu) != IGM_ENTRYPOINT_NOCHEATS_OFF || (igm_trampoline_cheats - ingame_menu) != IGM_ENTRYPOINT_CHEATS_OFF
+  .error "The in-game menu entry points moved (IGM_ENTRYPOINT_*_OFF, ingame.h)"
+.endif
 
 
 // Necessary handlers for the SC driver
@@ -439,7 +442,7 @@ ingame_menu_entry:
 
   // Start restoring the saved state.
   ldr r1, spill_addr
-  add r1, $(8 + 8 + 16 + 2+2 + 64 + 64)   // Skip register save to RAM buffers.
+  add r1, $(SPILL_HDR_SIZE)          // Skip register save to RAM buffers.
 
   // Restore palette and OAM
   mov r0, $0x05000000

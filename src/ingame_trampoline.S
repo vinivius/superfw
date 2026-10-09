@@ -68,6 +68,9 @@ trampoline_nocheats_handler:
 
 .global trampoline_cheats_handler
 trampoline_cheats_handler:
+.if (trampoline_nocheats_handler - startup_entrypoint) != FLASH_IGM_TRAMP_NOCHEATS_OFF || (trampoline_cheats_handler - startup_entrypoint) != FLASH_IGM_TRAMP_CHEATS_OFF
+  .error "The trampoline handlers moved (FLASH_IGM_TRAMP_*_OFF, ingame.h)"
+.endif
   ldrb r1, [r0, #REG_IF]       // Just read the LSB byte (r0 is 0x04000000 from BIOS)
   tst r1, $0x1                 // Check for V-Blank interrupt
   ldreq pc, [r0, #-12]         // No V-blank IRQ, resume executing the user's IRQ handler
