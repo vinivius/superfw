@@ -113,16 +113,12 @@ uint32_t rtcvalue_default = 45568800U;
 // reads them again).
 static unsigned settings_unread;
 
-// Creates a settings file (in SUPERFW_DIR), unless unread.
-static bool settings_create(FIL *fd, const char *fn, unsigned unread_bit) {
-  return !(settings_unread & unread_bit) && superfw_file_open(fd, NULL, fn, FA_CREATE_ALWAYS);
+// Writes a settings file (in SUPERFW_DIR) whole, unless it couldn't be read.
+static bool settings_write(const char *fn, unsigned unread_bit, const char *buf) {
+  return !(settings_unread & unread_bit) && superfw_file_write(NULL, fn, buf, strlen(buf));
 }
 
 bool save_ui_settings() {
-  FIL fd;
-  if (!settings_create(&fd, UISETTINGS_FILEPATH, 2))
-    return false;
-
   // Serialize the settings
   uint16_t lc = lang_getcode();
   char buf[512];
@@ -136,14 +132,10 @@ bool save_ui_settings() {
     "hide_ext=%u\n",
     menu_theme, (lc & 0xFF), (lc >> 8), recent_menu, anim_speed, hide_hidden, boxart_enabled, hide_ext);
 
-  return write_close(&fd, buf, strlen(buf));
+  return settings_write(UISETTINGS_FILEPATH, 2, buf);
 }
 
 bool save_settings() {
-  FIL fd;
-  if (!settings_create(&fd, SETTINGS_FILEPATH, 1))
-    return false;
-
   // Serialize the settings
   char buf[512];
   npf_snprintf(buf, sizeof(buf),
@@ -172,7 +164,7 @@ bool save_settings() {
     rtcspeed_default, autoload_default, autosave_default, autosave_prefer_ds,
     rtcvalue_default);
 
-  return write_close(&fd, buf, strlen(buf));
+  return settings_write(SETTINGS_FILEPATH, 1, buf);
 }
 
 static void parse_settings(void *usr, const char *var, const char *value) {
@@ -336,12 +328,6 @@ static void rom_config_fn(char *cfgfn, const char *romfn) {
   derived_fn(cfgfn, ROM_CONFIG_FN_SIZE - 1, ROMCONFIG_PATH, romfn, ".config");
 }
 
-// Opens the config file of a ROM to write it (FA_WRITE | mode).
-static bool rom_config_create(FIL *fd, const char *romfn, BYTE mode) {
-  char cfgfn[ROM_CONFIG_FN_SIZE];
-  rom_config_fn(cfgfn, romfn);
-  return superfw_file_open(fd, ROMCONFIG_PATH, cfgfn, mode);
-}
 
 typedef struct {
   t_rom_load_settings *rld;
@@ -372,8 +358,10 @@ bool load_rom_settings(const char *fn, t_rom_load_settings *rld, t_rom_launch_se
 // needed): later lines win, and the other settings keep following the
 // global defaults unless the config already sets them.
 bool save_rom_patchmode(const char *fn, unsigned mode) {
+  char cfgfn[ROM_CONFIG_FN_SIZE];
+  rom_config_fn(cfgfn, fn);
   FIL fd;
-  if (!rom_config_create(&fd, fn, FA_OPEN_APPEND))
+  if (!superfw_file_open(&fd, ROMCONFIG_PATH, cfgfn, FA_OPEN_APPEND))
     return false;
   // On a line of its own (a hand-edited file may not end in a newline).
   char buf[32];
@@ -382,10 +370,6 @@ bool save_rom_patchmode(const char *fn, unsigned mode) {
 }
 
 bool save_rom_settings(const char *fn, const t_rom_load_settings *rld, const t_rom_launch_settings *rlh) {
-  FIL fd;
-  if (!rom_config_create(&fd, fn, FA_CREATE_ALWAYS))
-    return false;
-
   // Serialize the ROM settings
   char buf[128];
   npf_snprintf(buf, sizeof(buf),
@@ -402,7 +386,9 @@ bool save_rom_settings(const char *fn, const t_rom_load_settings *rld, const t_r
     rlh->use_cheats ? 1 : 0,
     (unsigned int)rlh->rtcts);
 
-  return write_close(&fd, buf, strlen(buf));
+  char cfgfn[ROM_CONFIG_FN_SIZE];
+  rom_config_fn(cfgfn, fn);
+  return superfw_file_write(ROMCONFIG_PATH, cfgfn, buf, strlen(buf));
 }
 
 

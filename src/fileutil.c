@@ -87,6 +87,12 @@ bool superfw_file_open(FIL *fd, const char *subdir, const char *fn, BYTE mode) {
   return FR_OK == f_open(fd, fn, FA_WRITE | mode);
 }
 
+bool superfw_file_write(const char *subdir, const char *fn, const void *buf, unsigned len) {
+  FIL fd;
+  return superfw_file_open(&fd, subdir, WRITE_TMP_FILEPATH, FA_CREATE_ALWAYS) &&
+         file_replace(WRITE_TMP_FILEPATH, fn, write_close(&fd, buf, len));
+}
+
 bool file_replace(const char *tmpfn, const char *fn, bool ok) {
   if (!ok) {
     f_unlink(tmpfn);

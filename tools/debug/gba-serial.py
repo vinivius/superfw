@@ -113,6 +113,8 @@ class Link:
             l = self.readline().decode("utf-8", "replace")
             if l == "END":
                 return out
+            if l.startswith("ERR"):
+                raise RuntimeError(l)
             out.append(l)
 
     def get(self, remote, local):

@@ -42,6 +42,15 @@ FRESULT read_lines_file(const char *fn, char *buf, unsigned bufsize, line_fn cb,
 // opens fn in them to write it (FA_WRITE | mode).
 bool superfw_file_open(FIL *fd, const char *subdir, const char *fn, BYTE mode);
 
+// The temporary file whole-file writes go through (FatFs moves it across
+// folders: its name never gets too long).
+#define WRITE_TMP_FILEPATH   SUPERFW_DIR "/write.tmp"
+
+// Writes fn whole (making SUPERFW_DIR, and subdir if any, if missing) through
+// WRITE_TMP_FILEPATH, which replaces it once written: a failure keeps the
+// old one.
+bool superfw_file_write(const char *subdir, const char *fn, const void *buf, unsigned len);
+
 // Finishes writing fn through tmpfn (closed): if ok it replaces fn, else it's
 // removed. False if fn wasn't replaced (tmpfn is kept if only the rename
 // failed).

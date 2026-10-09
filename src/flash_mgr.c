@@ -39,12 +39,14 @@ static uint32_t xorh(const uint32_t *p, unsigned wc) {
   return ret;
 }
 
-// Walks and finds the most up to data TOC entry and returns a pointer to it.
+// Walks and finds the most up to data TOC entry and returns its offset: -1
+// if there's none, -2 if it couldn't be read (an older one isn't the latest).
 static int find_latest(uint32_t flash_addr, unsigned max_size, t_reg_entry *hdr) {
   int ret = -1;    // No last valid entry found
   for (unsigned off = 0; off < max_size; ) {
-    if (!flash_read(flash_addr + off, (uint8_t*)hdr, sizeof(*hdr)) ||
-        hdr->magic != NOR_ENTRY_MAGIC || hdr->gamecnt > FLASHG_MAXFN_CNT)
+    if (!flash_read(flash_addr + off, (uint8_t*)hdr, sizeof(*hdr)))
+      return -2;
+    if (hdr->magic != NOR_ENTRY_MAGIC || hdr->gamecnt > FLASHG_MAXFN_CNT)
       break;
 
     unsigned esz = (sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * hdr->gamecnt);
@@ -52,7 +54,7 @@ static int find_latest(uint32_t flash_addr, unsigned max_size, t_reg_entry *hdr)
     off += esz;
   }
 
-  return ret >= 0 && flash_read(flash_addr + ret, (uint8_t*)hdr, sizeof(*hdr)) ? ret : -1;
+  return ret >= 0 && !flash_read(flash_addr + ret, (uint8_t*)hdr, sizeof(*hdr)) ? -2 : ret;
 }
 
 static bool flashmgr_erase(uint32_t baseaddr, unsigned size) {
@@ -78,17 +80,20 @@ static bool flashmgr_erase(uint32_t baseaddr, unsigned size) {
   return true;
 }
 
-// Fills the most up to data TOC on flash and returns entry count (or error).
-bool flashmgr_load(uint32_t baseaddr, unsigned maxsize, t_reg_entry *ndata) {
+// Fills the most up to data TOC on flash: 1 if loaded, 0 if there's no
+// (valid) table, -1 if it couldn't be read (into the cart's SDRAM).
+int flashmgr_load(uint32_t baseaddr, unsigned maxsize, t_reg_entry *ndata) {
   int off = find_latest(baseaddr, maxsize, ndata);
   if (off < 0)
-    return false;
+    return off == -1 ? 0 : -1;
 
   if (ndata->gamecnt > FLASHG_MAXFN_CNT)
-    return false;
+    return 0;
 
   unsigned dsize = (sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * ndata->gamecnt);
-  return flash_read(baseaddr + off, (uint8_t*)ndata, dsize) && flashmgr_check(ndata);
+  if (!flash_read(baseaddr + off, (uint8_t*)ndata, dsize))
+    return -1;
+  return flashmgr_check(ndata) ? 1 : 0;
 }
 
 bool flashmgr_check(const t_reg_entry *ndata) {
@@ -121,6 +126,8 @@ bool flashmgr_store(uint32_t baseaddr, unsigned maxsize, t_reg_entry *ndata) {
   const unsigned reqsz = sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * ndata->gamecnt;
 
   int off = find_latest(baseaddr, maxsize, &hdr);
+  if (off == -2)
+    return false;            // Couldn't be read: it isn't wiped
   if (off < 0 || off + reqsz > maxsize) {
     // Flash looks bogus, or is full. Let's wipe it!
     if (!flashmgr_erase(baseaddr, maxsize))

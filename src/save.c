@@ -97,10 +97,8 @@ bool load_save_sram(const char *savefn) {
 
 bool wipe_sav_file(const char *fn) {
   // A temporary file replaces it once whole (a cut one would be loaded).
-  char tmpfn[MAX_FN_LEN];
   FIL fd;
-  if (npf_snprintf(tmpfn, sizeof(tmpfn), "%s.tmp", fn) >= (int)sizeof(tmpfn) ||
-      FR_OK != f_open(&fd, tmpfn, FA_WRITE | FA_CREATE_ALWAYS))
+  if (!superfw_file_open(&fd, NULL, WRITE_TMP_FILEPATH, FA_CREATE_ALWAYS))
     return false;
 
   uint16_t tmpbuf[4096/2];
@@ -109,7 +107,7 @@ bool wipe_sav_file(const char *fn) {
   bool ok = true;
   for (unsigned i = 0; ok && i < SRAM_CHIP_SIZE; i += sizeof(tmpbuf))
     ok = write_all(&fd, tmpbuf, sizeof(tmpbuf));    // (ie. card full)
-  if (!file_replace(tmpfn, fn, FR_OK == f_close(&fd) && ok))
+  if (!file_replace(WRITE_TMP_FILEPATH, fn, FR_OK == f_close(&fd) && ok))
     return false;
 
   WRITE_LOG("Wiped save file: %s", fn);
@@ -309,10 +307,7 @@ bool program_sram_dump(const char *save_filename, unsigned backup_cnt) {
   char content[512];
   npf_snprintf(content, sizeof(content), "%s\nbackup_count=%u", save_filename, backup_cnt);
 
-  FIL fd;
-  if (!superfw_file_open(&fd, NULL, PENDING_SAVE_FILEPATH, FA_CREATE_ALWAYS))
-    return false;
-  return write_close(&fd, content, strlen(content));
+  return superfw_file_write(NULL, PENDING_SAVE_FILEPATH, content, strlen(content));
 }
 
 // Erases the SRAM (using ones since it seems to be the most common mem type)

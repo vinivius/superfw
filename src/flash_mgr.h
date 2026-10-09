@@ -68,7 +68,7 @@ _Static_assert (sizeof(t_reg_entry) % 4 == 0, "t_reg_entry must be word-friendly
 _Static_assert (sizeof(t_reg_entry_max) % 4 == 0, "t_reg_entry_max must be word-friendly");
 _Static_assert (sizeof(t_flash_game_entry) % 4 == 0, "t_flash_game_entry must be word-friendly");
 
-bool flashmgr_load(uint32_t baseaddr, unsigned maxsize, t_reg_entry *ndata);
+int flashmgr_load(uint32_t baseaddr, unsigned maxsize, t_reg_entry *ndata);
 bool flashmgr_store(uint32_t baseaddr, unsigned maxsize, t_reg_entry *ndata);
 // Whether a table (as loaded) is well formed: its checksum and block map.
 bool flashmgr_check(const t_reg_entry *ndata);

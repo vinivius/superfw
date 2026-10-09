@@ -619,18 +619,10 @@ bool write_patches_cache(const char *romfn, const t_patch *patches) {
   char fn[PATCH_FN_SIZE];
   derived_fn(fn, sizeof(fn) - 1, PATCHDB_PATH, romfn, ".patch");
 
-  // Replace any existing patch file.
-  FIL fd;
-  if (!superfw_file_open(&fd, PATCHDB_PATH, fn, FA_CREATE_ALWAYS))
-    return false;
-
+  // Replace any existing patch file (whole).
   uint8_t buf[1024];
   unsigned fs = serialize_patch(patches, buf);
-
-  bool ok = write_close(&fd, buf, fs);
-  if (!ok)
-    f_unlink(fn);     // Never leave a partial file behind
-  return ok;
+  return superfw_file_write(PATCHDB_PATH, fn, buf, fs);
 }
 
 #pragma GCC pop_options

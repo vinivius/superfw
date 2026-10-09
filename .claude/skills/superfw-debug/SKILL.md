@@ -28,7 +28,7 @@ and commit it as its own commit. Push only when the user asks.
 
 - Always `make clean` when changing build flags.
 - The SD board firmware must fit 512 KiB (enforced at link time). UART builds
-  are within ~900 bytes of the limit (v0.2), keep debug features small.
+  are within ~750 bytes of the limit (v0.2), keep debug features small.
   `superfw.gba` is padded to the next 512 byte block (`tools/fw-fixer.py`),
   so `stat` doesn't show the free space;
   measure where the content ends with `tools/debug/flash-free.sh superfw.gba`
@@ -261,7 +261,7 @@ expose the UART as a pty and to keep SD image writes.
   write it with a space). Check sizes after every change: the UART build had
   dropped to a few dozen bytes free; sha256.c (always) and nanoprintf.c
   (UART builds only, `#ifdef ENABLE_UART_LOGGING`) went -Os to get ~1.1 KiB
-  back. In v0.2 the release has ~1000 bytes free and the UART build ~920;
+  back. In v0.2 the release has ~770 bytes free and the UART build ~750;
   code compresses poorly (a byte of code costs about a byte of flash).
   nanoprintf.c and utf_util.c are built for size in UART builds only. To
   fit, the UART build also lost the diagnostic that listed where SDRAM
@@ -334,6 +334,13 @@ expose the UART as a pty and to keep SD image writes.
   and a DLDI header byte stored into firmware code). The build uses
   -fno-ipa-ra (BASEFLAGS); `tools/debug/ipascan.py` checks a disassembly for
   such call sites. Symptoms: results that change when a log line is added.
+- The build uses -flto: GCC sees across files, and with strict aliasing it
+  dropped a uint16_t store into a local struct that was only read back
+  through memcpy32_checked()'s uint32_t pointers (Recent showed full paths:
+  fname_offset was never stored; right on the host, which has no LTO). The
+  code reads structs and buffers through cast pointers in many places, so
+  BASEFLAGS has -fno-strict-aliasing. Symptom: a field right on the host
+  test, wrong on the GBA; check the disassembly for the missing store.
 - Open: Mario Kart Super Circuit with DirectSave shows a blank screen in game.
 
 ## Shell gotchas

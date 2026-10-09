@@ -63,6 +63,8 @@ typedef struct {
 void patchmem_dbinfo(const uint8_t *dbptr, uint32_t *pcnt, char *version, char *date, char *creator);
 // Lookup routines (builtin, on-disk, etc).
 bool patchmem_lookup(const uint8_t *gamecode, const uint8_t *dbptr, t_patch *pdata);
+// Whether the database at dbptr is one this firmware uses (signature, version).
+bool patchmem_valid(const uint8_t *dbptr);
 // Actual patching magic
 bool patch_apply_rom(uint8_t *buffer, unsigned bufsize, uint32_t baseaddr, bool patch_waitcnt, const t_patch *pdata,
                      bool patch_rtc, uint32_t igmenu_addr, uint32_t ds_addr);

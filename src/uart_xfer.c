@@ -118,9 +118,11 @@ static void cmd_ls(const char *path) {
     return;
   }
   uputs("OK\n");
+  FRESULT res;
   while (1) {
     FILINFO info;
-    if (FR_OK != f_readdir(&d, &info) || !info.fname[0])
+    res = f_readdir(&d, &info);
+    if (FR_OK != res || !info.fname[0])
       break;
     char line[300];
     if (info.fattrib & AM_DIR)
@@ -130,7 +132,7 @@ static void cmd_ls(const char *path) {
     uputs(line);
   }
   f_closedir(&d);
-  uputs("END\n");
+  uputs(FR_OK == res ? "END\n" : "ERR read error\n");    // (A cut listing isn't whole)
 }
 
 static void cmd_get(const char *path) {

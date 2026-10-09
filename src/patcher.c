@@ -55,9 +55,15 @@ static int gcodecmp(const uint8_t *g1, const uint8_t *g2) {
   return 0;
 }
 
+bool patchmem_valid(const uint8_t *dbptr) {
+  const t_db_header *dbh = (t_db_header*)dbptr;
+  return dbh->signature == 0x31424450 &&   // PTDB signature
+         dbh->dbversion == 0x00010000;     // Version check
+}
+
 void patchmem_dbinfo(const uint8_t *dbptr, uint32_t *pcnt, char *version, char *date, char *creator) {
   const t_db_header *dbh = (t_db_header*)dbptr;
-  if (dbh->signature != 0x31424450)       // No (valid) database: left as is
+  if (!patchmem_valid(dbptr))             // No (usable) database: left as is
     return;
   *pcnt = dbh->patchcnt;
   memcpy(date, dbh->date, sizeof(dbh->date));
@@ -68,8 +74,7 @@ void patchmem_dbinfo(const uint8_t *dbptr, uint32_t *pcnt, char *version, char *
 // Routines to lookup patches from the patch database in memory
 bool patchmem_lookup(const uint8_t *gamecode, const uint8_t *dbptr, t_patch *pdata) {
   const t_db_header *dbh = (t_db_header*)dbptr;
-  if (dbh->signature != 0x31424450 ||      // PTDB signature mismatch
-      dbh->dbversion != 0x00010000)        // Version check
+  if (!patchmem_valid(dbptr))
     return false;
 
   // A database loaded from the SD card may be corrupted: what's read must be
