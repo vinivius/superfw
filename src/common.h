@@ -278,11 +278,17 @@ typedef struct {
 bool gba_payload_space(uint32_t fs, const struct struct_t_patch *ptch, bool ds, bool igm, unsigned cheats,
                        t_payload_space *ps);
 bool nor_payload_space(uint32_t fs, const struct struct_t_patch *ptch, bool igm);
+// A game's identity (ROM header): its code and version.
+typedef struct {
+  uint32_t code;
+  uint32_t version;
+} t_game_id;
+
 // Loads a ROM file and launches it.
 unsigned load_gba_rom(const char *fn, uint32_t fs, const char *savefn,
                       const struct struct_t_patch *ptch,
                       const t_dirsave_info *dsinfo, bool ingame_menu, bool keep_igm,
-                      const t_rtc_info *rtcinfo, unsigned cheats, uint32_t gamecode,
+                      const t_rtc_info *rtcinfo, unsigned cheats, t_game_id id,
                       progress_fn progress);
 // Launch from NOR
 unsigned  flash_gba_nor(const char *fn, uint32_t fs, const t_rom_header *rom_header,
@@ -290,7 +296,7 @@ unsigned  flash_gba_nor(const char *fn, uint32_t fs, const t_rom_header *rom_hea
                         const uint8_t *blkmap, progress_fn progress, uint8_t *scratch, unsigned ssize);
 unsigned launch_gba_nor(
   const char *romfn, const char *savefn, const uint8_t *normap, unsigned blkcnts, const t_dirsave_info *dsinfo,
-  const t_rtc_info *rtcinfo, bool ingame_menu, unsigned cheats, uint32_t gamecode);
+  const t_rtc_info *rtcinfo, bool ingame_menu, unsigned cheats, t_game_id id);
 
 unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo, progress_fn progress);
 // What the loads (that failed) wrote into SDRAM: load_sdram_end is how far the

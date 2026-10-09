@@ -38,7 +38,8 @@
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
 
-#define SAVESTATE_VERSION       0x00010000
+#define SAVESTATE_VERSION       0x00010001    // With the game's identity
+#define SAVESTATE_V1            0x00010000    // Without (loaded in any game)
 
 // ASM functions and varibles:
 extern unsigned has_rtc_support;
@@ -153,9 +154,9 @@ static bool blocks_checked(void *dst, const void *src, unsigned count) {
   return copy_checked(dst, src, count, fast_mem_cpy_256);
 }
 
-// The game's code (from the loader): a memory slot is only loaded into its
-// game.
-extern uint32_t game_code;
+// The game's code and version (from the loader): its states are only loaded
+// into it.
+extern uint32_t game_code, game_ver;
 
 // A savestate's header, registers and I/O, made from the game's state (the
 // spill holds its CPU registers and some I/O registers, the spill area must
@@ -167,6 +168,7 @@ static void state_header(t_savestate_header *h) {
   h->signature[2] = SIGNATURE_C;
   h->version = SAVESTATE_VERSION;
   h->gamecode = game_code;
+  h->gamever = game_ver;
 }
 
 static void state_regs(t_savestate_regs *r, const t_spilled_region *sp) {
@@ -393,7 +395,8 @@ bool load_mem_snapshot(const void *buffer) {
     return false;
 
   if (save_ptr->header.version != SAVESTATE_VERSION ||
-      save_ptr->header.gamecode != game_code)       // (Another game's slot)
+      save_ptr->header.gamecode != game_code ||     // (Another game's slot)
+      save_ptr->header.gamever != game_ver)
     return false;
 
   // From here the game's state is a mix until it's all loaded.
@@ -474,10 +477,11 @@ bool readfd_mem_snapshot(FIL *fd) {
       tmp.header.signature[2] != SIGNATURE_C)
     return false;
 
-  // (A state of another game, ie. a ROM of the same name elsewhere, isn't
-  // loaded; 0: a state made before states carried it.)
-  if (tmp.header.version != SAVESTATE_VERSION ||
-      (tmp.header.gamecode && tmp.header.gamecode != game_code))
+  // A state of another game (ie. a ROM of the same name elsewhere, or
+  // another version of it) isn't loaded; older ones don't tell.
+  if (tmp.header.version == SAVESTATE_VERSION ?
+      tmp.header.gamecode != game_code || tmp.header.gamever != game_ver :
+      tmp.header.version != SAVESTATE_V1)
     return false;
 
   if (!read_all(fd, &tmp.regs, sizeof(tmp.regs)))
@@ -792,8 +796,12 @@ bool action_reset_fw() {
   return false;
 }
 bool action_reset_fw_nosave() {
-  // Skip saving on reboot!
-  program_sram_dump(NULL, 0);
+  // Skip saving on reboot! If the save is still due (its sentinel can't be
+  // removed) the menu stays: it would be written at boot.
+  if (!program_sram_dump(NULL, 0)) {
+    popup.msg = msgs[ingame_menu_lang][IMENU_MSG_SAVEERR];
+    return false;
+  }
   // Go ahead and reboot to flash.
   reset_fw();
   return false;

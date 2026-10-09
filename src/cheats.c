@@ -128,6 +128,20 @@ typedef struct {
   t_cheathdr_ext chdr;
 } t_cheat_read;
 
+// Whether a line looks like codes: hex digits (some of them numbers) and
+// separators only.
+static bool code_line(const char *s) {
+  bool digit = false;
+  for (; *s; s++) {
+    const char c = *s | 0x20;          // (Letters lower case)
+    if (*s >= '0' && *s <= '9')
+      digit = true;
+    else if ((c < 'a' || c > 'f') && *s != ' ' && *s != '+' && *s != '\t')
+      return false;
+  }
+  return digit;
+}
+
 // A line of the cheat file: codes (hex digits, some of them numbers, and
 // separators only) of the cheat titled by the line before, or else a title
 // (empty lines are skipped). A cheat whose codes can't be used, or a title
@@ -143,7 +157,7 @@ static bool cheat_line(char *line, unsigned len, void *usr) {
   if (!*line)
     return true;
 
-  if (line[strspn(line, "0123456789abcdefABCDEF +\t")] || !strpbrk(line, "0123456789")) {
+  if (!code_line(line)) {
     // A title: long ones are cut (at a character start).
     len = strlen(line);
     len = utf8_cut(line, len > MAX_CHEAT_TITLE ? MAX_CHEAT_TITLE : len);

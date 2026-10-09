@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "fatfs/ff.h"
+#include "common.h"
 
 #define MAX_PATCH_OPS           128   // (artifically limited to save memory)
 #define MAX_PATCH_PRG             4   // Only 4 programs can be encoded so far
@@ -56,6 +57,10 @@ typedef struct {
   bool rtc_guess;
   // Trailing data
   uint32_t ldata, ldatacnt;
+  // Save ops found (the ones of the save type found are kept at the end)
+  uint32_t save_op[MAX_PATCH_OPS];
+  unsigned save_cnt;
+  bool save_lost;                 // More than save_op holds
   // More ops found than a patch holds (MAX_PATCH_OPS): unusable
   bool overflow;
   // The actual patch data.
@@ -81,17 +86,26 @@ void patchengine_finalize(t_patch_builder *patch);
 // in it): a chunk of it, with the PE_LOOKBACK bytes before it (LDR searches)
 // and PE_LOOKAHEAD after it (signatures) loaded around it, as far as they're
 // in the ROM (zeros past its end).
-#define PE_LOOKBACK      4096
+#define PE_LOOKBACK      8192
 #define PE_LOOKAHEAD     4096
 void patchengine_process_rom(const uint32_t *rom, unsigned first, unsigned count, uint32_t base,
                              t_patch_builder *patch, void(*progresscb)(unsigned));
 
+// A ROM of romsize bytes is scanned in chunks of up to chunk bytes, the one at
+// off loaded from start to end (its context, zeros past the ROM's end; whole
+// 4KiB blocks) and scanned from word first, count words.
+typedef struct {
+  unsigned start, end, first, count;
+} t_pe_chunk;
+void patchengine_chunk(unsigned romsize, unsigned off, unsigned chunk, t_pe_chunk *c);
+
 // Tries to load patches from disk
 // The patch file of a ROM (next to it, or generated): see load_patch_file().
-FRESULT load_cached_patches(const char *romfn, uint32_t gamecode, t_patch *patches);
+FRESULT load_cached_patches(const char *romfn, const t_game_id *id, unsigned romfs, t_patch *patches);
 FRESULT load_rom_patches(const char *romfn, t_patch *patches);
 // Saves the patches to disk
-bool write_patches_cache(const char *romfn, uint32_t gamecode, const t_patch *patches);
+bool write_patches_cache(const char *romfn, const t_game_id *id, const t_patch *patches);
+void drop_patches_cache(const char *romfn);
 
 int serialize_patch(const t_patch *patch, uint8_t *buffer);
 bool unserialize_patch(const uint8_t *buffer, unsigned size, t_patch *patch);

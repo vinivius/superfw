@@ -58,7 +58,8 @@ typedef struct {
   uint32_t savefile_backups;           // Backup count
   char savefile_pattern[256];          // File name (without the .sav) pattern
   char statefile_pattern[256];         // File name (without the .X.state) pattern
-  uint32_t game_code;                  // The game's code (ROM header)
+  uint32_t game_code;                  // The game's code and version (ROM
+  uint32_t game_ver;                   // header)
 } t_igmenu;
 
 // Built-in assets
@@ -102,8 +103,9 @@ typedef struct {
 typedef struct {
   uint32_t signature[3];       // Some signature for the file on disk
   uint32_t version;            // Savestate version.
-  uint32_t gamecode;           // Of the game (ROM header), 0 if unknown
-  uint16_t pad[492 / 2];       // Unused header state
+  uint32_t gamecode;           // Of the game (ROM header): code and version
+  uint32_t gamever;            //   (states of version SAVESTATE_V1 have none)
+  uint16_t pad[488 / 2];       // Unused header state
 } t_savestate_header;
 
 typedef struct {

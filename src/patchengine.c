@@ -67,7 +67,7 @@
 #include "save_signatures.h"
 
 #define THUMB_LDR_BACKOFF    256      // 8bit imm (scaled by 4 really)
-#define ARM_LDR_BACKOFF     1024      // 12bit imm (not scaled)
+#define ARM_LDR_BACKOFF     1025      // 12bit imm (not scaled), PC + 8
 _Static_assert(ARM_LDR_BACKOFF * 4 <= PE_LOOKBACK && THUMB_LDR_BACKOFF * 4 <= PE_LOOKBACK,
                "The LDR searches stay in the bytes loaded before a chunk");
 
@@ -150,8 +150,10 @@ static bool find_arm_ldrpc(const uint32_t *rom, unsigned start, unsigned target)
 enum { OpsWcnt, OpsSave, OpsIrqh, OpsRtc };
 
 // Adds an op at the end of its group: the groups after it move up. If the
-// patch has no room for it the builder knows (the patch is unusable).
-ARM_CODE IWRAM_CODE NOINLINE
+// patch has no room for it the builder knows (the patch is unusable). Save
+// ops are held apart while scanning (only the ones of the save type found are
+// kept, see patchengine_finalize()). (Not run often: Thumb, not IWRAM code.)
+NOINLINE
 static void push_op(t_patch_builder *pb, unsigned group, uint32_t op) {
   t_patch *p = &pb->p;
   uint8_t *const cnt[] = { &p->wcnt_ops, &p->save_ops, &p->irqh_ops, &p->rtc_ops };
@@ -170,8 +172,12 @@ static void push_op(t_patch_builder *pb, unsigned group, uint32_t op) {
   (*cnt[group])++;
 }
 
-#define push_save_handler(pb, savetype, hndltype, addr) \
-  push_op(pb, OpsSave, (addr) | ((savetype) << 28) | ((hndltype) << 25))
+static void push_save_handler(t_patch_builder *pb, unsigned savetype, unsigned hndltype, uint32_t addr) {
+  if (pb->save_cnt < MAX_PATCH_OPS)
+    pb->save_op[pb->save_cnt++] = addr | (savetype << 28) | (hndltype << 25);
+  else
+    pb->save_lost = true;
+}
 #define push_rtc_handler(pb, hndltype, addr) \
   push_op(pb, OpsRtc, (addr) | (OPC_RTC_HD << 28) | ((hndltype) << 25))
 
@@ -213,17 +219,6 @@ static inline bool isflash128k(uint16_t did) {
 #define FLASHINFO_VALIDSIZE(st) \
   ((st)->flash_size == (st)->sector_count * (st)->sector_size)
 
-static void filter_save_ops(t_patch *p, unsigned optype) {
-  // Filter save ops to match the specified type.
-  for (unsigned i = 0; i < p->save_ops; i++)
-    if ((p->op[p->wcnt_ops + i] >> 28) != optype) {
-      memmove32(&p->op[p->wcnt_ops + i], &p->op[p->wcnt_ops + i + 1],
-                (p->save_ops - 1 - i + p->irqh_ops + p->rtc_ops) * 4);
-      p->save_ops--;
-      i--;
-    }
-}
-
 void patchengine_init(t_patch_builder *patchb, unsigned filesize) {
   memset(patchb, 0, sizeof(*patchb));
 
@@ -257,15 +252,15 @@ void patchengine_init(t_patch_builder *patchb, unsigned filesize) {
 
 void patchengine_finalize(t_patch_builder *patchb) {
   t_patch *p = &patchb->p;
-  if (patchb->save_type_guess == 0 && p->save_ops == 0)
+  // The save type, and the save ops of it that are kept (0xF: none).
+  unsigned keep = 0xF;
+  if (patchb->save_type_guess == 0 && patchb->save_cnt == 0)
     p->save_mode = SaveTypeNone;         // No saving strings nor signatures found!
-  else if (patchb->save_type_guess == GUESS_SRAM) {
+  else if (patchb->save_type_guess == GUESS_SRAM)
     p->save_mode = SaveTypeSRAM;
-    filter_save_ops(p, 0xF);             // Clear all save opcodes!
-  }
   else if (patchb->save_type_guess == GUESS_EEPROM) {
     p->save_mode = SaveTypeEEPROM64K;
-    filter_save_ops(p, OPC_EEPROM_HD);   // Clear other opcodes but EEPROM
+    keep = OPC_EEPROM_HD;
   }
   else if (patchb->save_type_guess == GUESS_FLASH ||
            patchb->save_type_guess == GUESS_FLASH64 ||
@@ -273,17 +268,18 @@ void patchengine_finalize(t_patch_builder *patchb) {
     // Guess flash size.
     p->save_mode = (patchb->save_type_guess == GUESS_FLASH128) ? SaveTypeFlash1024K
                                                                : SaveTypeFlash512K;
-    filter_save_ops(p, OPC_FLASH_HD);    // Filter all opcodes but FLASH
+    keep = OPC_FLASH_HD;
   }
-  else if (p->save_ops == 0 && (patchb->save_type_guess & GUESS_SRAM)) {
-    // Could not find any signatures, but SRAM looks promising.
+  else
+    // Not a clue (or SRAM looks promising), or multiple types: SRAM
     p->save_mode = SaveTypeSRAM;
-  }
-  else {
-    // Multiple types, or not a clue, fallback to SRAM
-    p->save_mode = SaveTypeSRAM;
-    filter_save_ops(p, 0xF);             // Clear all save opcodes!
-  }
+
+  for (unsigned i = 0; i < patchb->save_cnt; i++)
+    if ((patchb->save_op[i] >> 28) == keep)
+      push_op(patchb, OpsSave, patchb->save_op[i]);
+  // Some were lost: the ones kept may not be all.
+  if (patchb->save_lost && p->save_ops)
+    patchb->overflow = true;
 
   // Process any FLASH_IDEN_HNDLR handlers into program patches.
   // These stub out the ident function to return some hardcoded device ID.
@@ -321,6 +317,14 @@ void patchengine_finalize(t_patch_builder *patchb) {
     patchb->p.hole_addr = saddrr;
     patchb->p.hole_size = size;
   }
+}
+
+void patchengine_chunk(unsigned romsize, unsigned off, unsigned chunk, t_pe_chunk *c) {
+  const unsigned size = romsize - off < chunk ? romsize - off : chunk;
+  c->start = off < PE_LOOKBACK ? 0 : off - PE_LOOKBACK;
+  c->end = (off + size + PE_LOOKAHEAD + 4095) & ~4095U;
+  c->first = (off - c->start) / 4;
+  c->count = (size + 3) / 4;
 }
 
 // Generates a patch set from a given ROM.
@@ -510,7 +514,9 @@ void patchengine_process_rom(const uint32_t *rom, unsigned first, unsigned count
 #define PATCH_MAGIC         "SUPERFWPATCHV01"
 #define PATCH_FLAGS         21          // Header byte
 #define PATCH_V1FLASH_OK    0x01
-#define PATCH_GAMECODE      26          // Header word (cache files): 0 unknown
+#define PATCH_ID            0x02        // Cache files: the game's identity is in
+#define PATCH_GAMECODE      26          //   (code: header word, version: byte):
+#define PATCH_GAMEVER       30          //   and offsets past 8MiB are right
 
 // Generates a patch buffer (for a file) so that it can be loaded later.
 int serialize_patch(const t_patch *patch, uint8_t *buffer) {
@@ -607,10 +613,12 @@ bool unserialize_patch(const uint8_t *buffer, unsigned size, t_patch *patch) {
 // PATCHDB_PATH), named after the ROM (shortened if needed to the FAT limit).
 #define PATCH_FN_SIZE   (sizeof(PATCHDB_PATH) + FF_MAX_LFN)
 
-// FR_OK if loaded. A missing file, or an unusable one (generated again, ie.
-// made for another game: gamecode, if not 0, must be its), is FR_NO_FILE;
-// card errors are returned as such.
-static FRESULT load_patch_file(const char *fn, uint32_t gamecode, t_patch *patches) {
+// FR_OK if loaded. A missing file, or an unusable one (generated again), is
+// FR_NO_FILE; card errors are returned as such. For the cache (id given) a
+// file made for another game is unusable, and one made before files carried
+// the game (their ops past 8MiB were in the wrong place) if the ROM is over
+// 8MiB.
+static FRESULT load_patch_file(const char *fn, const t_game_id *id, unsigned romfs, t_patch *patches) {
   FIL fd;
   FRESULT res = f_open(&fd, fn, FA_READ);
   if (FR_OK != res)
@@ -622,8 +630,11 @@ static FRESULT load_patch_file(const char *fn, uint32_t gamecode, t_patch *patch
   f_close(&fd);
   if (FR_OK != res)
     return res;
-  const uint32_t code = parse32le(&buf[PATCH_GAMECODE]);
-  return (!gamecode || !code || code == gamecode) && unserialize_patch(buf, rdbytes, patches) ? FR_OK : FR_NO_FILE;
+  const bool usable = !id ? true :
+                      buf[PATCH_FLAGS] & PATCH_ID ? parse32le(&buf[PATCH_GAMECODE]) == id->code &&
+                                                    buf[PATCH_GAMEVER] == id->version :
+                                                    romfs <= 8*1024*1024;
+  return usable && unserialize_patch(buf, rdbytes, patches) ? FR_OK : FR_NO_FILE;
 }
 
 FRESULT load_rom_patches(const char *romfn, t_patch *patches) {
@@ -632,25 +643,34 @@ FRESULT load_rom_patches(const char *romfn, t_patch *patches) {
   char fn[PATCH_FN_SIZE];
   const unsigned dlen = file_basename(romfn) - romfn;
   derived_fn(fn, dlen + FF_MAX_LFN < sizeof(fn) - 1 ? dlen + FF_MAX_LFN : sizeof(fn) - 1, NULL, romfn, ".patch");
-  return load_patch_file(fn, 0, patches);
+  return load_patch_file(fn, NULL, 0, patches);
 }
 
-FRESULT load_cached_patches(const char *romfn, uint32_t gamecode, t_patch *patches) {
+FRESULT load_cached_patches(const char *romfn, const t_game_id *id, unsigned romfs, t_patch *patches) {
   char fn[PATCH_FN_SIZE];
   derived_fn(fn, sizeof(fn) - 1, PATCHDB_PATH, romfn, ".patch");
-  return load_patch_file(fn, gamecode, patches);
+  return load_patch_file(fn, id, romfs, patches);
 }
 
-bool write_patches_cache(const char *romfn, uint32_t gamecode, const t_patch *patches) {
+bool write_patches_cache(const char *romfn, const t_game_id *id, const t_patch *patches) {
   char fn[PATCH_FN_SIZE];
   derived_fn(fn, sizeof(fn) - 1, PATCHDB_PATH, romfn, ".patch");
 
-  // Replace any existing patch file (whole), with its game's code (another
-  // game's of the same file name, ie. in another folder, isn't used).
+  // Replace any existing patch file (whole), with its game (another game's of
+  // the same file name, ie. in another folder or version, isn't used).
   uint8_t buf[1024];
   unsigned fs = serialize_patch(patches, buf);
-  memcpy(&buf[PATCH_GAMECODE], &gamecode, sizeof(gamecode));
+  buf[PATCH_FLAGS] |= PATCH_ID;
+  memcpy(&buf[PATCH_GAMECODE], &id->code, sizeof(id->code));
+  buf[PATCH_GAMEVER] = id->version;
   return superfw_file_write(PATCHDB_PATH, fn, buf, fs);
+}
+
+// Removes the cached patches of a ROM (ie. ones generation couldn't replace).
+void drop_patches_cache(const char *romfn) {
+  char fn[PATCH_FN_SIZE];
+  derived_fn(fn, sizeof(fn) - 1, PATCHDB_PATH, romfn, ".patch");
+  f_unlink(fn);
 }
 
 #pragma GCC pop_options

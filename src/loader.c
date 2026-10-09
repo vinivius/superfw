@@ -299,7 +299,7 @@ static void checksum_loaded_rom(uint32_t start, uint32_t end, uint32_t *st) {
 static bool load_ingame_menu(
   uint32_t base_addr, uint32_t total_size, bool useds,
   const char* savefn, const char* statefn,
-  bool rtc_patches, unsigned cheats, uint32_t gamecode, bool move_fonts
+  bool rtc_patches, unsigned cheats, t_game_id id, bool move_fonts
 ) {
   static uint32_t ck_fonts[2];    // Of the fonts and cheats moved
   const unsigned menu_size = ingame_menu_payload.menu_rsize;
@@ -338,7 +338,8 @@ static bool load_ingame_menu(
     replace_extension(hdr.savefile_pattern, "");
   }
   memcpy(hdr.statefile_pattern, statefn, sizeof(hdr.statefile_pattern));
-  hdr.game_code = gamecode;                  // (Its savestates are for it)
+  hdr.game_code = id.code;                   // (Its savestates are for it)
+  hdr.game_ver = id.version;
 
   // Copy the font pack (and the cheats after it) first, using memmove to
   // handle collisions properly (overlapping where they go, they can only be
@@ -438,7 +439,7 @@ unsigned load_gba_rom(
   bool keep_igm,
   const t_rtc_info *rtcinfo,
   unsigned cheats,
-  uint32_t gamecode,
+  t_game_id id,
   progress_fn progress
 ) {
 
@@ -470,7 +471,7 @@ unsigned load_gba_rom(
   if (ingame_menu) {
     char sfn[MAX_FN_LEN];
     savestate_filename_calc(fn, sfn);
-    if (!load_ingame_menu(igm_addr, igm_space, dsinfo, savefn, sfn, use_rtc_patches, cheats, gamecode, !keep_igm))
+    if (!load_ingame_menu(igm_addr, igm_space, dsinfo, savefn, sfn, use_rtc_patches, cheats, id, !keep_igm))
       return ERR_LOAD_VERIFY;
   }
 
@@ -714,7 +715,7 @@ unsigned launch_gba_nor(
   const t_rtc_info *rtcinfo,
   bool ingame_menu,
   unsigned cheats,
-  uint32_t gamecode
+  t_game_id id
 ) {
 
   bool use_rtc_patches = rtcinfo != NULL;
@@ -729,7 +730,7 @@ unsigned launch_gba_nor(
     char sfn[MAX_FN_LEN];
     savestate_filename_calc(romfn, sfn);
     load_writes(0, ingame_menu_payload.menu_rsize + font_block_size() + cheats);
-    if (!load_ingame_menu(igm_addr, igm_space, dsinfo, savefn, sfn, use_rtc_patches, cheats, gamecode, true))
+    if (!load_ingame_menu(igm_addr, igm_space, dsinfo, savefn, sfn, use_rtc_patches, cheats, id, true))
       return ERR_LOAD_VERIFY;
   }
 

@@ -30,7 +30,12 @@ bool read_lines(FIL *fd, char *buf, unsigned bufsize, line_fn cb, void *usr) {
   unsigned cnt = 0, pos = 0;  // Bytes in buf, where the next line starts
   bool eof = false, skipping = false;
   while (true) {
-    char *line = &buf[pos], *nl = memchr(line, '\n', cnt - pos);
+    // (A loop: memchr() brings more code than it saves.)
+    char *line = &buf[pos], *nl = line;
+    while (nl < &buf[cnt] && *nl != '\n')
+      nl++;
+    if (nl == &buf[cnt])
+      nl = NULL;
     if (!nl && !eof) {
       // Refill the buffer (the line so far moves to its start): a short read
       // is the end of the file. Full without a newline: too long, skipped

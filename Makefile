@@ -9,9 +9,10 @@ OBJDUMP		:= $(PREFIX)objdump
 OBJCOPY		:= $(PREFIX)objcopy
 
 # UART debug builds are the tightest fit in the flash, compress them harder
-# (slower build: level 11 takes ~110 s, and saves ~200 bytes over level 9).
+# (slower build: level 15, the most, takes ~140 s and saves ~120 bytes over
+# level 11, ~320 over level 9).
 ifeq ($(ENABLE_UART_LOGGING),1)
-  COMPRESSION_RATIO ?= 11
+  COMPRESSION_RATIO ?= 15
 endif
 COMPRESSION_RATIO ?= 4
 
