@@ -579,8 +579,10 @@ bool generate_patches_progress(const char *fn, unsigned fs) {
     for (unsigned j = 0; j < max_hiscratch && i + j < fs; j += 4096) {
       UINT rdbytes;
       uint32_t tmp[4096/4];
-      if (FR_OK != f_read(&fd, tmp, sizeof(tmp), &rdbytes))
+      if (FR_OK != f_read(&fd, tmp, sizeof(tmp), &rdbytes)) {
+        f_close(&fd);
         return false;
+      }
 
       set_supercard_mode(MAPPED_SDRAM, true, false);
       dma_memcpy32(&hiscratch[j], tmp, sizeof(tmp)/4);
@@ -622,8 +624,9 @@ bool dump_flashmem_backup() {
   if (!superfw_file_open(&fd, NULL, FLASHBACKUPTMP_FILEPATH, FA_CREATE_ALWAYS))
     return false;
 
+  bool ok = true;
   const unsigned fsize = flashinfo.size ? flashinfo.size : FW_MAX_SIZE_KB*1024;
-  for (unsigned i = 0; i < fsize; i += 4*1024) {
+  for (unsigned i = 0; ok && i < fsize; i += 4*1024) {
     const uint8_t *faddr = (uint8_t*)(ROM_FLASHFIRMW_ADDR + i);
 
     uint32_t tmp[4096/4];
@@ -633,18 +636,13 @@ bool dump_flashmem_backup() {
 
     sha256_transform(&st, tmp, sizeof(tmp));
 
-    UINT wrbytes;
-    if (FR_OK != f_write(&fd, tmp, sizeof(tmp), &wrbytes) || wrbytes != sizeof(tmp)) {
-      f_close(&fd);
-      return false;
-    }
+    ok = write_all(&fd, tmp, sizeof(tmp));
 
     loadrom_progress(i >> 10, fsize >> 10);
   }
 
   // The data reaches the card when it's closed.
-  if (FR_OK != f_close(&fd))
-    return false;
+  ok = FR_OK == f_close(&fd) && ok;
 
   // Calculate the final hash, use a hash prefix as the filename.
   uint8_t h256[32];
@@ -653,19 +651,25 @@ bool dump_flashmem_backup() {
   char finalfn[64];
   npf_snprintf(finalfn, sizeof(finalfn), FLASHBACKUP_FILEPTRN,
                h256[0], h256[1], h256[2], h256[3]);
-  // The same firmware backed up before keeps its file.
-  const FRESULT res = f_rename(FLASHBACKUPTMP_FILEPATH, finalfn);
-  return FR_OK == res || (FR_EXIST == res && FR_OK == f_unlink(FLASHBACKUPTMP_FILEPATH));
+  // It replaces a backup of the same firmware (that one may be damaged).
+  return file_replace(FLASHBACKUPTMP_FILEPATH, finalfn, ok);
 }
 
 void patch_gen_callback(bool confirm);
 
 void sram_battery_test_callback(bool confirm) {
   if (confirm) {
-    // Fill SRAM with some pseudorandom data to test later.
-    sram_pseudo_fill();
-    // Program a check on the next reboot!
-    spop.alert_msg = msgs[lang_id][program_sram_check() ? MSG_SRAMTST_RDY : MSG_ERR_GENERIC];
+    // A save that couldn't be written at boot is in the SRAM: written first.
+    // Then a check is programmed for the next reboot, and SRAM filled with
+    // pseudorandom data to test then.
+    if (!sram_prepare_overwrite())
+      spop.alert_msg = msgs[lang_id][MSG_ERR_SAVEWR];
+    else if (!program_sram_check())
+      spop.alert_msg = msgs[lang_id][MSG_ERR_GENERIC];
+    else {
+      sram_pseudo_fill();
+      spop.alert_msg = msgs[lang_id][MSG_SRAMTST_RDY];
+    }
   }
 }
 
@@ -1409,10 +1413,11 @@ static void browser_save_position() {
   const unsigned len = npf_snprintf(buf, sizeof(buf), "%s\n%s", smenu.browser.cpath,
                                     smenu.browser.dispentries ?
                                     sdr_state->fileorder[smenu.browser.selector]->fname : "");
+  // Replaced once written whole: a cut position would be misread.
   FIL fd;
-  if (superfw_file_open(&fd, NULL, BROWSER_POS_FILEPATH, FA_CREATE_ALWAYS) &&
-      !write_close(&fd, buf, MIN(len, sizeof(buf) - 1)))
-    f_unlink(BROWSER_POS_FILEPATH);   // A cut position would be misread
+  if (superfw_file_open(&fd, NULL, BROWSER_POS_FILEPATH ".tmp", FA_CREATE_ALWAYS))
+    file_replace(BROWSER_POS_FILEPATH ".tmp", BROWSER_POS_FILEPATH,
+                 write_close(&fd, buf, MIN(len, sizeof(buf) - 1)));
 }
 
 // The browser position file: the folder ("/.../"), then the entry to select
@@ -3314,6 +3319,11 @@ static void patch_type_normalize(t_load_gba_info *i, bool right) {
     i->patch_type = PatchNone;
 }
 
+// The direction Left/Right cycle an option in: 1 (right), -1 (left) or 0.
+static int lr_dir(unsigned newkeys) {
+  return (newkeys & KEY_BUTTRIGHT) ? 1 : (newkeys & KEY_BUTTLEFT) ? -1 : 0;
+}
+
 // Left/Right (dir) on a patch page: cycle (or toggle) the option.
 static void patch_page_cycle(t_load_gba_info *i, int dir) {
   if (spop.selector == GBALoadPatch)
@@ -3393,7 +3403,7 @@ static void keypress_popup_loadgba(unsigned newkeys) {
   spop.selector %= maxsel;
 
   // Left/Right cycle (or toggle) the option.
-  const int dir = (newkeys & KEY_BUTTRIGHT) ? 1 : (newkeys & KEY_BUTTLEFT) ? -1 : 0;
+  const int dir = lr_dir(newkeys);
   if (dir && spop.submenu == GbaLoadPopLoadS)
     load_settings_cycle(&spop.p.load.l, spop.p.load.i.use_dsaving, dir);
   else if (dir && spop.submenu == GbaLoadPopPatch)
@@ -3549,7 +3559,7 @@ static void keypress_popup_norwrite(unsigned newkeys) {
     spop.selector = MIN(GBAPatchCNT - 1, spop.selector + 1);
 
   if (spop.submenu == GbaNorWrPatch) {
-    const int dir = (newkeys & KEY_BUTTRIGHT) ? 1 : (newkeys & KEY_BUTTLEFT) ? -1 : 0;
+    const int dir = lr_dir(newkeys);
     if (dir)
       patch_page_cycle(&spop.p.norwr.i, dir);
 
@@ -3634,7 +3644,7 @@ static void keypress_popup_norload(unsigned newkeys) {
   const t_flash_game_entry *e = spop.p.norld.e;
 
   // Left/Right cycle (or toggle) the option.
-  const int dir = (newkeys & KEY_BUTTRIGHT) ? 1 : (newkeys & KEY_BUTTLEFT) ? -1 : 0;
+  const int dir = lr_dir(newkeys);
   if (dir && spop.submenu == GbaNorLoad)
     load_settings_cycle(&spop.p.norld.l, e->gattrs & GATTR_SAVEDS, dir);
   norload_normalize(newkeys);
@@ -4214,7 +4224,10 @@ static void keypress_menu_tools(unsigned newkeys) {
       set_supercard_mode(MAPPED_SDRAM, true, true);
     }
     if (smenu.tools.selector == ToolsSRAMTest) {
-      if (sram_test())
+      // A save that couldn't be written at boot is in the SRAM: written first.
+      if (!sram_prepare_overwrite())
+        spop.alert_msg = msgs[lang_id][MSG_ERR_SAVEWR];
+      else if (sram_test())
         spop.alert_msg = msgs[lang_id][MSG_BAD_SRAM];
       else
         spop.alert_msg = msgs[lang_id][MSG_GOOD_RAM];

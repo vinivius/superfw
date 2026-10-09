@@ -218,8 +218,7 @@ bool write_rom_buffer(FIL *fd, const void *buffer, unsigned size, void *tmpbuf) 
     memory_copy32((uint32_t*)tmpbuf, (uint32_t*)&ptr[off], 1024 / 4);
     set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can write to the SD card
 
-    UINT wrbytes;
-    if (FR_OK != f_write(fd, tmpbuf, 1024, &wrbytes) || wrbytes != 1024)
+    if (!write_all(fd, tmpbuf, 1024))
       return false;
   }
 
@@ -238,7 +237,6 @@ bool writefd_mem_snapshot(FIL *fd) {
   _Static_assert(sizeof(tmp.header) == 512, "The header structure is 512 bytes in size");
   _Static_assert(sizeof(tmp.regs) == 512, "The regs structure is 512 bytes in size");
   _Static_assert(sizeof(tmp.iomap) == 1024, "The I/O structure is 1024 bytes in size");
-  UINT wrbytes;
   const t_spilled_region *spill_ptr = (t_spilled_region*)spill_addr;
 
   memset(&tmp.header, 0, sizeof(tmp.header));
@@ -246,7 +244,7 @@ bool writefd_mem_snapshot(FIL *fd) {
   tmp.header.signature[1] = SIGNATURE_B;
   tmp.header.signature[2] = SIGNATURE_C;
   tmp.header.version = SAVESTATE_VERSION;
-  if (FR_OK != f_write(fd, &tmp.header, sizeof(tmp.header), &wrbytes) || wrbytes != sizeof(tmp.header))
+  if (!write_all(fd, &tmp.header, sizeof(tmp.header)))
     return false;
 
   set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can read spill area.
@@ -259,7 +257,7 @@ bool writefd_mem_snapshot(FIL *fd) {
   memory_copy32(tmp.regs.abt_regs, spill_ptr->abt_regs, sizeof(tmp.regs.abt_regs) / 4);
   memory_copy32(tmp.regs.und_regs, spill_ptr->und_regs, sizeof(tmp.regs.und_regs) / 4);
   set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can write to the SD card
-  if (FR_OK != f_write(fd, &tmp.regs, sizeof(tmp.regs), &wrbytes) || wrbytes != sizeof(tmp.regs))
+  if (!write_all(fd, &tmp.regs, sizeof(tmp.regs)))
     return false;
 
   // Write the I/O RAM but patch in the spilled registers too.
@@ -277,7 +275,7 @@ bool writefd_mem_snapshot(FIL *fd) {
     tmp.iomap.bg_cnt[i]      = spill_ptr->bg_cnt[i];
   }
   set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can write to the SD card
-  if (FR_OK != f_write(fd, &tmp.iomap, sizeof(tmp.iomap), &wrbytes) || wrbytes != sizeof(tmp.iomap))
+  if (!write_all(fd, &tmp.iomap, sizeof(tmp.iomap)))
     return false;
 
   if (!write_rom_buffer(fd, spill_ptr->palette, sizeof(spill_ptr->palette), tmp.buf))
@@ -292,7 +290,7 @@ bool writefd_mem_snapshot(FIL *fd) {
 
   if (!write_rom_buffer(fd, spill_ptr->low_vram, sizeof(spill_ptr->low_vram), tmp.buf))
     return false;
-  if (FR_OK != f_write(fd, &VRAM_BUF[sizeof(spill_ptr->low_vram)], highsize, &wrbytes) || wrbytes != highsize)
+  if (!write_all(fd, &VRAM_BUF[sizeof(spill_ptr->low_vram)], highsize))
     return false;
 
   // Same for IWRAM and EWRAM
@@ -300,14 +298,14 @@ bool writefd_mem_snapshot(FIL *fd) {
   const unsigned highsize2 = 32*1024 - sizeof(spill_ptr->low_iwram);
   if (!write_rom_buffer(fd, spill_ptr->low_iwram, sizeof(spill_ptr->low_iwram), tmp.buf))
     return false;
-  if (FR_OK != f_write(fd, &IWRAM_BUF[sizeof(spill_ptr->low_iwram)], highsize2, &wrbytes) || wrbytes != highsize2)
+  if (!write_all(fd, &IWRAM_BUF[sizeof(spill_ptr->low_iwram)], highsize2))
     return false;
 
   const uint8_t *EWRAM_BUF = (uint8_t*)0x02000000;
   const unsigned highsize3 = 256*1024 - sizeof(spill_ptr->low_ewram);
   if (!write_rom_buffer(fd, spill_ptr->low_ewram, sizeof(spill_ptr->low_ewram), tmp.buf))
     return false;
-  if (FR_OK != f_write(fd, &EWRAM_BUF[sizeof(spill_ptr->low_ewram)], highsize3, &wrbytes) || wrbytes != highsize3)
+  if (!write_all(fd, &EWRAM_BUF[sizeof(spill_ptr->low_ewram)], highsize3))
     return false;
 
   return true;
@@ -807,15 +805,18 @@ bool action_sstate_menu() {
   if (havess) {
     if (num_dsk_savestates && !diskst_init) {
       // Check if the files actually exist. A card error isn't a missing file:
-      // the slot counts as used (saving over it asks first), and the slots
-      // are checked again next time.
+      // that slot and the rest (not checked) count as used (saving over one
+      // asks first), and the slots are checked again next time.
       diskst_init = true;
       for (unsigned i = 0; i < num_dsk_savestates; i++) {
-        char tmp[256];
-        npf_snprintf(tmp, sizeof(tmp), "%s.%d.state", savestate_pattern, i + 1);
-        const FRESULT res = f_stat(tmp, NULL);
+        FRESULT res = FR_DISK_ERR;
+        if (diskst_init) {
+          char tmp[256];
+          npf_snprintf(tmp, sizeof(tmp), "%s.%d.state", savestate_pattern, i + 1);
+          res = f_stat(tmp, NULL);
+        }
         diskslot_valid[i] = !fr_missing(res);
-        diskst_init &= FR_OK == res || fr_missing(res);
+        diskst_init = FR_OK == res || fr_missing(res);
       }
     }
 

@@ -125,13 +125,9 @@ bool program_sram_check() {
 }
 
 int check_peding_sram_test() {
-  if (check_file_exists(PENDING_SRAM_TEST)) {
-    // Remove the file, avoid doing this again!
-    f_unlink(PENDING_SRAM_TEST);
-
-    return sram_pseudo_check();
-  }
-  return -1;
+  // Only once: the test runs if its marker is removed (an SD error keeps it,
+  // until a game voids it, see sram_prepare_overwrite()).
+  return FR_OK == f_unlink(PENDING_SRAM_TEST) ? (int)sram_pseudo_check() : -1;
 }
 
 // Tests the SD card by reading blocks (directly) and discarding the data.

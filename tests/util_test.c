@@ -44,6 +44,12 @@ FRESULT f_stat (const TCHAR* path, FILINFO* fno) {
 FRESULT f_chmod (const TCHAR* path, BYTE attr, BYTE mask) {
   return FR_OK;
 }
+FRESULT f_unlink (const TCHAR* path) {
+  return FR_OK;
+}
+FRESULT f_rename (const TCHAR* path_old, const TCHAR* path_new) {
+  return FR_OK;
+}
 
 static const char *rd_text;
 
@@ -133,9 +139,6 @@ int main() {
   assert(!strcmp("foo", file_basename("/foo")));
   assert(!strcmp("foo", file_basename("foo")));
   assert(!strcmp("test", file_basename("/foo/bar/lol/test")));
-
-  assert(check_file_exists("/test"));
-  assert(check_file_exists("/test/lol"));
 
   create_basepath(NULL);
   create_basepath("");

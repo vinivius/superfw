@@ -42,6 +42,13 @@ FRESULT read_lines_file(const char *fn, char *buf, unsigned bufsize, line_fn cb,
 // opens fn in them to write it (FA_WRITE | mode).
 bool superfw_file_open(FIL *fd, const char *subdir, const char *fn, BYTE mode);
 
+// Finishes writing fn through tmpfn (closed): if ok it replaces fn, else it's
+// removed. False if fn wasn't replaced.
+bool file_replace(const char *tmpfn, const char *fn, bool ok);
+
+// Writes len bytes to the open file fd. False if they weren't all written.
+bool write_all(FIL *fd, const void *buf, unsigned len);
+
 // Writes len bytes to the open file fd and closes it (the data reaches the
 // card then). False if they weren't all written.
 bool write_close(FIL *fd, const void *buf, unsigned len);

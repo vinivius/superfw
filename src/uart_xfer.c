@@ -42,6 +42,7 @@
 #include "common.h"
 #include "util.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
 #include "nanoprintf.h"
 
 #define XFER_BLK         4096
@@ -217,8 +218,7 @@ static void cmd_put(char *args) {
     if (!ok)
       break;
 
-    UINT wr;
-    if (FR_OK != f_write(&fd, xbuf, len, &wr) || wr != len) {
+    if (!write_all(&fd, xbuf, len)) {
       uart_write("F", 1);
       ok = false;
       break;
@@ -227,15 +227,8 @@ static void cmd_put(char *args) {
     remaining -= len;
   }
 
-  if (FR_OK != f_close(&fd))
-    ok = false;
-  if (ok) {
-    f_unlink(path);
-    ok = (FR_OK == f_rename(tmpfn, path));
-  }
-  if (!ok)
-    f_unlink(tmpfn);
-  uputs(ok ? "DONE\n" : "ERR transfer failed\n");
+  ok = FR_OK == f_close(&fd) && ok;
+  uputs(file_replace(tmpfn, path, ok) ? "DONE\n" : "ERR transfer failed\n");
 }
 
 void uart_xfer_mode() {

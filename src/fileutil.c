@@ -26,10 +26,6 @@
 
 #pragma GCC optimize ("Os")
 
-bool check_file_exists(const char *fn) {
-  return FR_OK == f_stat(fn, NULL);
-}
-
 bool read_lines(FIL *fd, char *buf, unsigned bufsize, line_fn cb, void *usr) {
   unsigned cnt = 0, pos = 0;  // Bytes in buf, where the next line starts
   bool eof = false, skipping = false;
@@ -91,10 +87,25 @@ bool superfw_file_open(FIL *fd, const char *subdir, const char *fn, BYTE mode) {
   return FR_OK == f_open(fd, fn, FA_WRITE | mode);
 }
 
-bool write_close(FIL *fd, const void *buf, unsigned len) {
+bool file_replace(const char *tmpfn, const char *fn, bool ok) {
+  // FAT can't rename over a file: fn is missing for a moment.
+  if (ok) {
+    f_unlink(fn);
+    ok = FR_OK == f_rename(tmpfn, fn);
+  }
+  if (!ok)
+    f_unlink(tmpfn);
+  return ok;
+}
+
+bool write_all(FIL *fd, const void *buf, unsigned len) {
   UINT wrbytes;
-  FRESULT res = f_write(fd, buf, len, &wrbytes);
-  return FR_OK == f_close(fd) && FR_OK == res && wrbytes == len;
+  return FR_OK == f_write(fd, buf, len, &wrbytes) && wrbytes == len;
+}
+
+bool write_close(FIL *fd, const void *buf, unsigned len) {
+  const bool ok = write_all(fd, buf, len);
+  return FR_OK == f_close(fd) && ok;
 }
 
 // Creates the path for a given file name.

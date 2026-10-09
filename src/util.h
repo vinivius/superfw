@@ -63,7 +63,6 @@ bool write16_checked(volatile uint16_t *p, uint16_t v);
 bool memcpy32_checked(void *dst, const void *src, unsigned count);
 
 // Just checks that a file exists.
-bool check_file_exists(const char *fn);
 
 // Creates a path to a file (recursively if needed)
 void create_basepath(const char *fn);

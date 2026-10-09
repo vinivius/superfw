@@ -104,15 +104,10 @@ bool wipe_sav_file(const char *fn) {
   uint16_t tmpbuf[4096/2];
   dma_memset16(tmpbuf, 0xFFFF, sizeof(tmpbuf) / 2);
 
-  for (unsigned i = 0; i < SRAM_CHIP_SIZE; i += sizeof(tmpbuf)) {
-    UINT wrbytes = 0;
-    res = f_write(&fd, tmpbuf, sizeof(tmpbuf), &wrbytes);
-    if (res != FR_OK || wrbytes != sizeof(tmpbuf)) {   // ie. card full
-      f_close(&fd);
-      return false;
-    }
-  }
-  if (FR_OK != f_close(&fd))
+  bool ok = true;
+  for (unsigned i = 0; ok && i < SRAM_CHIP_SIZE; i += sizeof(tmpbuf))
+    ok = write_all(&fd, tmpbuf, sizeof(tmpbuf));    // (ie. card full)
+  if (FR_OK != f_close(&fd) || !ok)
     return false;
 
   WRITE_LOG("Wiped save file: %s", fn);
@@ -126,8 +121,8 @@ bool write_save_sram(const char *fn) {
   if (res != FR_OK)
     return false;
 
-  for (unsigned i = 0; i < SRAM_CHIP_SIZE; i += 1024) {
-    UINT wrbytes = 0;
+  bool ok = true;
+  for (unsigned i = 0; ok && i < SRAM_CHIP_SIZE; i += 1024) {
     uint8_t tmpbuf[1024];
     // Read SRAM using byte access
     volatile uint8_t *sram_ptr = &SRAM_BASE_U8[i % SRAM_BANK_SIZE];
@@ -137,14 +132,10 @@ bool write_save_sram(const char *fn) {
       tmpbuf[j] = sram_ptr[j];
     set_supercard_mode(MAPPED_SDRAM, true, true);
 
-    res = f_write(&fd, tmpbuf, sizeof(tmpbuf), &wrbytes);
-    if (res != FR_OK || wrbytes != sizeof(tmpbuf)) {   // ie. card full
-      f_close(&fd);
-      return false;
-    }
+    ok = write_all(&fd, tmpbuf, sizeof(tmpbuf));      // (ie. card full)
   }
 
-  return FR_OK == f_close(&fd);
+  return FR_OK == f_close(&fd) && ok;
 }
 
 bool compare_save_sram(const char *fn) {
@@ -357,90 +348,59 @@ bool file_is_contiguous(const char *fn, LBA_t *lba) {
   return iscont;
 }
 
-// Creates a copy, or an empty FF file (contiguous)
+// Creates a contiguous file of size bytes: a copy of fn, or (without it) of
+// ones, padded with ones.
 bool copy_save_contiguous_file(const char *fn, const char *dest, unsigned size) {
   // Ensure the out path exists, create it!
   create_basepath(dest);
 
-  FIL foutput;
+  FIL foutput, finput;
   if (FR_OK != f_open(&foutput, dest, FA_WRITE | FA_CREATE_ALWAYS))
     return false;
-
-  if (FR_OK != f_expand(&foutput, size, 1)) {
-    f_close(&foutput);
-    return false;
-  }
+  bool ok = FR_OK == f_expand(&foutput, size, 1);
+  const bool copy = ok && fn && FR_OK == f_open(&finput, fn, FA_READ);
+  ok = ok && (copy || !fn);
 
   uint8_t buffer[1024*2];
-  if (fn) {
-    // File copy, block by block. Pad to "size" with ones.
-    FIL finput;
-    if (FR_OK != f_open(&finput, fn, FA_READ))
-      return false;
-
-    for (unsigned i = 0; i < size; i += sizeof(buffer)) {
-      UINT rdbytes;
-      unsigned toread = MIN(sizeof(buffer), size - i);
-      if (FR_OK != f_read(&finput, buffer, toread, &rdbytes)) {
-        f_close(&foutput);
-        f_close(&finput);
-        return false;
-      }
-
-      // Pad or clear the buffer if the input file wasn't enough!
-      if (rdbytes < sizeof(buffer))
-        memset(&buffer[rdbytes], 0xFF, sizeof(buffer) - rdbytes);
-
-      UINT wrbytes;
-      unsigned towrite = MIN(sizeof(buffer), size - i);
-      if (FR_OK != f_write(&foutput, buffer, towrite, &wrbytes) || wrbytes != towrite) {
-        f_close(&foutput);
-        f_close(&finput);
-        return false;
-      }
-    }
-
-    f_close(&foutput);
-    f_close(&finput);
-  } else {
-    // Just write some empty data!
-    memset(buffer, 0xFF, sizeof(buffer));
-
-    for (unsigned i = 0; i < size; i += sizeof(buffer)) {
-      UINT wrbytes;
-      unsigned towrite = MIN(sizeof(buffer), size - i);
-      if (FR_OK != f_write(&foutput, buffer, towrite, &wrbytes) || wrbytes != towrite) {
-        f_close(&foutput);
-        return false;
-      }
-    }
-    f_close(&foutput);
+  for (unsigned i = 0; ok && i < size; i += sizeof(buffer)) {
+    const unsigned towrite = MIN(sizeof(buffer), size - i);
+    UINT rdbytes = 0;
+    if (copy)
+      ok = FR_OK == f_read(&finput, buffer, towrite, &rdbytes);
+    memset(&buffer[rdbytes], 0xFF, towrite - rdbytes);
+    ok = ok && write_all(&foutput, buffer, towrite);
   }
+  if (copy)
+    f_close(&finput);
 
-  return true;
+  // The data reaches the card when it's closed.
+  return FR_OK == f_close(&foutput) && ok;
 }
 
 NOINLINE
-// A pending SRAM save that could not be written at boot is still in the SRAM,
-// and its sentinel is kept. Write it before a game replaces the SRAM contents
-// or the sentinel, and fail (keeping both) if it still can't be written.
-static bool flush_failed_pending_save() {
+// Before the SRAM contents are replaced (a game or a test). A pending SRAM
+// save that could not be written at boot is still in the SRAM, and its
+// sentinel is kept: it's written, and false (keeping both) if it still can't
+// be. A battery test pending (of what's in the SRAM) is void.
+bool sram_prepare_overwrite() {
   FRESULT res = f_stat(PENDING_SAVE_FILEPATH, NULL);
-  if (fr_missing(res))
-    return true;                          // Nothing pending
-  if (res != FR_OK)
-    return false;                         // Can't tell (ie. SD error), don't risk it
-  if (save_flush_retry(flush_pending_sram()))
-    return false;
-  // Written (or not recoverable, ie. an invalid sentinel): remove the sentinel
-  // before the game replaces it, and don't go on if that fails.
-  return FR_OK == f_unlink(PENDING_SAVE_FILEPATH);
+  if (FR_OK == res) {
+    if (save_flush_retry(flush_pending_sram()))
+      return false;
+    // Written (or not recoverable, ie. an invalid sentinel): remove the
+    // sentinel before the game replaces it.
+    res = f_unlink(PENDING_SAVE_FILEPATH);
+  }
+  if (FR_OK != res && !fr_missing(res))
+    return false;                         // SD error: don't risk it
+  f_unlink(PENDING_SRAM_TEST);
+  return true;
 }
 
 unsigned prepare_sram_based_savegame(t_sram_load_policy loadp, t_sram_save_policy savep, const char *savefn) {
   WRITE_LOG("Preparing SRAM-based save game. LdPol: %d SvPol: %d Save file: '%s'", loadp, savep, savefn);
 
-  if (!flush_failed_pending_save())
+  if (!sram_prepare_overwrite())
     return ERR_SAVE_CANTWRITE;
 
   // Clear the SRAM before loading any data (avoid random garbage!), unless in manual mode ofc.
@@ -476,7 +436,7 @@ unsigned prepare_savegame(t_sram_load_policy loadp, t_sram_save_policy savep, En
   WRITE_LOG("Preparing save game. LdPol: %d SvPol: %d SavType: %d Uses DirSav: %d Save file: '%s'",
             loadp, savep, stype, dsinfo ? 1 : 0, savefn);
 
-  if (!flush_failed_pending_save())
+  if (!sram_prepare_overwrite())
     return ERR_SAVE_CANTWRITE;
 
   // Branch on the two main saving modes: DirectSave and SRAM-based saving.

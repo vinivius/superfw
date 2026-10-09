@@ -32,40 +32,20 @@
 NOINLINE bool recent_flush(const t_rentry *rentries, unsigned rcount) {
   WRITE_LOG("Flushing recently played games (%d entries)", rcount);
 
-  // Flush to disk!
+  // Flush to disk, to a temporary file that replaces the list once written
+  // whole (a cut list would be misread). FatFs buffers the small writes.
   FIL fo;
-  if (!superfw_file_open(&fo, NULL, RECENT_FILEPATH, FA_CREATE_ALWAYS))
+  if (!superfw_file_open(&fo, NULL, RECENT_FILEPATH ".tmp", FA_CREATE_ALWAYS))
     return false;
-
-  // Write stuff to disk. Use a 1KiB buffer and flush as full blocks fill.
-  unsigned coff = 0;
-  char tmpbuf[1024];
-  tmpbuf[0] = 0;
-
-  for (unsigned i = 0; i < rcount; i++) {
-    unsigned fnlen = strlen(rentries[i].fpath);
-    if (rentries[i].flags & FLAG_RECENT_NOR) {
-      memcpy(&tmpbuf[coff], "nor:", 4);
-      coff += 4;
-    }
-    memcpy(&tmpbuf[coff], rentries[i].fpath, fnlen);
-    coff += fnlen;
-    tmpbuf[coff++] = '\n';
-
-    if (coff >= 512) {
-      UINT wrbytes;
-      if (FR_OK != f_write(&fo, tmpbuf, 512, &wrbytes) || wrbytes != 512) {
-        f_close(&fo);
-        return false;
-      }
-      // Consume the first 512 written bytes
-      memmove(&tmpbuf[0], &tmpbuf[512], coff - 512);
-      coff -= 512;
-    }
+  bool ok = true;
+  for (unsigned i = 0; ok && i < rcount; i++) {
+    const char *fn = rentries[i].fpath;
+    ok = (!(rentries[i].flags & FLAG_RECENT_NOR) || write_all(&fo, "nor:", 4)) &&
+         write_all(&fo, fn, strlen(fn)) && write_all(&fo, "\n", 1);
   }
-
-  // The last bytes (if any): the data reaches the card when it's closed.
-  return write_close(&fo, tmpbuf, coff);
+  // The data reaches the card when it's closed.
+  ok = FR_OK == f_close(&fo) && ok;
+  return file_replace(RECENT_FILEPATH ".tmp", RECENT_FILEPATH, ok);
 }
 
 NOINLINE unsigned insert_recent_fn(t_rentry *rentries, unsigned rcount, const char *fn, unsigned flags) {
