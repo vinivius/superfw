@@ -474,7 +474,10 @@ bool readfd_mem_snapshot(FIL *fd) {
       tmp.header.signature[2] != SIGNATURE_C)
     return false;
 
-  if (tmp.header.version != SAVESTATE_VERSION)
+  // (A state of another game, ie. a ROM of the same name elsewhere, isn't
+  // loaded; 0: a state made before states carried it.)
+  if (tmp.header.version != SAVESTATE_VERSION ||
+      (tmp.header.gamecode && tmp.header.gamecode != game_code))
     return false;
 
   if (!read_all(fd, &tmp.regs, sizeof(tmp.regs)))

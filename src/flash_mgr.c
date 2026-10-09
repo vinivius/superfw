@@ -40,23 +40,31 @@ static uint32_t xorh(const uint32_t *p, unsigned wc) {
 }
 
 // The TOC is a log of whole tables (each store appends one). Walks its
-// entries' headers (into hdr): the offsets of the newest TOC_RECENT ones
-// (newest first, -1 if none) and where the next one would go. False if it
-// couldn't be read (into the cart's SDRAM).
+// entries' headers: the newest TOC_RECENT ones (newest first, off -1 if none;
+// recent may be NULL) and where the next one would go. False if it couldn't
+// be read.
 #define TOC_RECENT 4
-static bool toc_walk(uint32_t baseaddr, unsigned maxsize, t_reg_entry *hdr,
-                     int recent[TOC_RECENT], unsigned *end) {
-  for (unsigned i = 0; i < TOC_RECENT; i++)
-    recent[i] = -1;
+typedef struct {
+  int off;
+  unsigned size;
+} t_toc_pos;
+
+static bool toc_walk(uint32_t baseaddr, unsigned maxsize, t_toc_pos *recent, unsigned *end) {
+  if (recent)
+    for (unsigned i = 0; i < TOC_RECENT; i++)
+      recent[i].off = -1;
   unsigned off = 0;
-  while (off + sizeof(*hdr) <= maxsize) {
-    if (!flash_read(baseaddr + off, (uint8_t*)hdr, sizeof(*hdr)))
+  t_reg_entry hdr;
+  while (off + sizeof(hdr) <= maxsize) {
+    if (!flash_read(baseaddr + off, (uint8_t*)&hdr, sizeof(hdr)))
       return false;
-    const unsigned esz = sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * hdr->gamecnt;
-    if (hdr->magic != NOR_ENTRY_MAGIC || hdr->gamecnt > FLASHG_MAXFN_CNT || off + esz > maxsize)
+    const unsigned esz = sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * hdr.gamecnt;
+    if (hdr.magic != NOR_ENTRY_MAGIC || hdr.gamecnt > FLASHG_MAXFN_CNT || off + esz > maxsize)
       break;
-    memmove(&recent[1], &recent[0], (TOC_RECENT - 1) * sizeof(recent[0]));
-    recent[0] = off;
+    if (recent) {
+      memmove(&recent[1], &recent[0], (TOC_RECENT - 1) * sizeof(recent[0]));
+      recent[0] = (t_toc_pos){ off, esz };
+    }
     off += esz;
   }
   *end = off;
@@ -90,15 +98,12 @@ static bool flashmgr_erase(uint32_t baseaddr, unsigned size) {
 // short): 1 if loaded, 0 if there's none, -1 if it couldn't be read (into the
 // cart's SDRAM).
 int flashmgr_load(uint32_t baseaddr, unsigned maxsize, t_reg_entry *ndata) {
-  int recent[TOC_RECENT];
+  t_toc_pos recent[TOC_RECENT];
   unsigned end;
-  if (!toc_walk(baseaddr, maxsize, ndata, recent, &end))
+  if (!toc_walk(baseaddr, maxsize, recent, &end))
     return -1;
-  for (unsigned i = 0; i < TOC_RECENT && recent[i] >= 0; i++) {
-    if (!flash_read(baseaddr + recent[i], (uint8_t*)ndata, sizeof(*ndata)))
-      return -1;
-    const unsigned esz = sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * ndata->gamecnt;
-    if (!flash_read(baseaddr + recent[i], (uint8_t*)ndata, esz))
+  for (unsigned i = 0; i < TOC_RECENT && recent[i].off >= 0; i++) {
+    if (!flash_read(baseaddr + recent[i].off, (uint8_t*)ndata, recent[i].size))
       return -1;
     if (flashmgr_check(ndata))
       return 1;
@@ -135,15 +140,13 @@ bool flashmgr_check(const t_reg_entry *ndata) {
 
 // Appends some new entries to the metada flash block.
 bool flashmgr_store(uint32_t baseaddr, unsigned maxsize, t_reg_entry *ndata) {
-  t_reg_entry hdr;
   const unsigned reqsz = sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * ndata->gamecnt;
 
   // It goes after the last entry if it fits there and that space is erased
   // (a store cut short leaves data). Else the area is wiped (the table
   // written is whole): flash looks bogus, or is full.
-  int recent[TOC_RECENT];
   unsigned off;
-  if (!toc_walk(baseaddr, maxsize, &hdr, recent, &off))
+  if (!toc_walk(baseaddr, maxsize, NULL, &off))
     return false;            // Couldn't be read: it isn't wiped
   if (off + reqsz > maxsize ||
       !flash_check_erased(baseaddr + off, MIN(ROUND_UP2(reqsz, 32), maxsize - off))) {
@@ -153,8 +156,8 @@ bool flashmgr_store(uint32_t baseaddr, unsigned maxsize, t_reg_entry *ndata) {
     off = 0;  // Start writing at the top now that it's empty.
   }
 
-  // Repurpose the last header (should contain the right block balancing data).
-  // Checked: ndata is in the cart's SDRAM.
+  // The table stored is the caller's, its wear counters too: its magic and
+  // checksum are set (checked: ndata is in the cart's SDRAM).
   const uint32_t id[2] = {
     NOR_ENTRY_MAGIC,
     xorh((uint32_t*)ndata->games, (sizeof(t_flash_game_entry) * ndata->gamecnt) / 4) ^ ndata->gamecnt
