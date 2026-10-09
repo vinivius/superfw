@@ -251,8 +251,10 @@ static void parse_file(char *buf, void(*parse_cb)(void *usr, const char*, const 
     if (e)
       *e = 0;
 
+    // A setting without a value (ie. a line cut by a write that failed) is
+    // skipped.
     char *a = strchr(p, '=');
-    if (a) {
+    if (a && a[1]) {
       *a = 0;
       parse_cb(usrptr, p, &a[1]);
       *a = '=';

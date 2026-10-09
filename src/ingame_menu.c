@@ -113,7 +113,8 @@ static bool diskst_init = false;
 static int makepers = -1;
 static int state_slot;
 // Set by the menu entry (ingame.S) when the game's state couldn't be spilled
-// to the cart's SDRAM right: no savestate is made from it.
+// to the cart's SDRAM right, and while a load that failed left it a mix: no
+// savestate is made from it.
 uint32_t ingame_spill_failed;
 static int num_mem_savestates, num_dsk_savestates;
 static uint8_t memslot_valid[MAX_MEM_SLOTS] = {0};
@@ -147,6 +148,14 @@ static inline void* get_memslot_addr(unsigned slotnum) {
   return (void*)(scratch_base + ((slotnum * 388) << 10));
 }
 
+// Copies whole 256 byte blocks to the cart's SDRAM, checked.
+static bool blocks_checked(void *dst, const void *src, unsigned count) {
+  return copy_checked(dst, src, count, fast_mem_cpy_256);
+}
+
+// The game's code (ROM header): a memory slot is only loaded into its game.
+#define GAME_CODE   (*(const uint32_t*)0x080000AC)
+
 // The save state is a bit all over the place, since entering the menu only
 // swaps some partial state (to save space and be faster). Takes a snapshot of
 // the game into buffer (a memory slot, in the cart's SDRAM), checked: false
@@ -163,16 +172,16 @@ bool take_mem_snapshot(void *buffer) {
 
   // Copy the (partially) spilled buffers first, then the remaining memory
   // chunks (high segments).
-  bool ok = memcpy32_checked(save_ptr->iwram, spill_ptr->low_iwram, sizeof(spill_ptr->low_iwram)) &&
-            memcpy32_checked(save_ptr->ewram, spill_ptr->low_ewram, sizeof(spill_ptr->low_ewram)) &&
-            memcpy32_checked(save_ptr->vram,  spill_ptr->low_vram,  sizeof(spill_ptr->low_vram)) &&
-            memcpy32_checked(save_ptr->palette, spill_ptr->palette, sizeof(spill_ptr->palette)) &&
-            memcpy32_checked(save_ptr->oamem, spill_ptr->oam, sizeof(spill_ptr->oam)) &&
-            memcpy32_checked(&save_ptr->iwram[sizeof(spill_ptr->low_iwram)], &IWRAM_BUF[sizeof(spill_ptr->low_iwram)],
+  bool ok = blocks_checked(save_ptr->iwram, spill_ptr->low_iwram, sizeof(spill_ptr->low_iwram)) &&
+            blocks_checked(save_ptr->ewram, spill_ptr->low_ewram, sizeof(spill_ptr->low_ewram)) &&
+            blocks_checked(save_ptr->vram,  spill_ptr->low_vram,  sizeof(spill_ptr->low_vram)) &&
+            blocks_checked(save_ptr->palette, spill_ptr->palette, sizeof(spill_ptr->palette)) &&
+            blocks_checked(save_ptr->oamem, spill_ptr->oam, sizeof(spill_ptr->oam)) &&
+            blocks_checked(&save_ptr->iwram[sizeof(spill_ptr->low_iwram)], &IWRAM_BUF[sizeof(spill_ptr->low_iwram)],
                       32*1024 - sizeof(spill_ptr->low_iwram)) &&
-            memcpy32_checked(&save_ptr->ewram[sizeof(spill_ptr->low_ewram)], &EWRAM_BUF[sizeof(spill_ptr->low_ewram)],
+            blocks_checked(&save_ptr->ewram[sizeof(spill_ptr->low_ewram)], &EWRAM_BUF[sizeof(spill_ptr->low_ewram)],
                       256*1024 - sizeof(spill_ptr->low_ewram)) &&
-            memcpy32_checked(&save_ptr->vram[sizeof(spill_ptr->low_vram)], &VRAM_BUF[sizeof(spill_ptr->low_vram)],
+            blocks_checked(&save_ptr->vram[sizeof(spill_ptr->low_vram)], &VRAM_BUF[sizeof(spill_ptr->low_vram)],
                       96*1024 - sizeof(spill_ptr->low_vram));
 
   // The I/O registers, then the header and CPU registers, are made here and
@@ -198,7 +207,7 @@ bool take_mem_snapshot(void *buffer) {
     tmp.iomap.dma[i].ctrl    = spill_ptr->dma_cnt[i];
     tmp.iomap.bg_cnt[i]      = spill_ptr->bg_cnt[i];
   }
-  ok = ok && memcpy32_checked(save_ptr->ioram, &tmp.iomap, sizeof(tmp.iomap));
+  ok = ok && blocks_checked(save_ptr->ioram, &tmp.iomap, sizeof(tmp.iomap));
 
   // Complete the state by clearing empty regions and completing the header
   memset(&tmp.hr, 0, sizeof(tmp.hr));
@@ -206,6 +215,7 @@ bool take_mem_snapshot(void *buffer) {
   tmp.hr.header.signature[1] = SIGNATURE_B;
   tmp.hr.header.signature[2] = SIGNATURE_C;
   tmp.hr.header.version = SAVESTATE_VERSION;
+  tmp.hr.header.gamecode = GAME_CODE;
   memory_copy32(tmp.hr.regs.cpu_regs, spill_ptr->cpu_regs, sizeof(tmp.hr.regs.cpu_regs) / 4);
   tmp.hr.regs.cpsr = spill_ptr->cpsr;
   memory_copy32(tmp.hr.regs.irq_regs, spill_ptr->irq_regs, sizeof(tmp.hr.regs.irq_regs) / 4);
@@ -213,7 +223,7 @@ bool take_mem_snapshot(void *buffer) {
   memory_copy32(tmp.hr.regs.sup_regs, spill_ptr->sup_regs, sizeof(tmp.hr.regs.sup_regs) / 4);
   memory_copy32(tmp.hr.regs.abt_regs, spill_ptr->abt_regs, sizeof(tmp.hr.regs.abt_regs) / 4);
   memory_copy32(tmp.hr.regs.und_regs, spill_ptr->und_regs, sizeof(tmp.hr.regs.und_regs) / 4);
-  return ok && memcpy32_checked(&save_ptr->header, &tmp.hr, sizeof(tmp.hr));
+  return ok && blocks_checked(&save_ptr->header, &tmp.hr, sizeof(tmp.hr));
 }
 
 bool write_rom_buffer(FIL *fd, const void *buffer, unsigned size, void *tmpbuf) {
@@ -343,19 +353,21 @@ bool load_mem_snapshot(const void *buffer) {
       save_ptr->header.signature[2] != SIGNATURE_C)
     return false;
 
-  if (save_ptr->header.version != SAVESTATE_VERSION)
+  if (save_ptr->header.version != SAVESTATE_VERSION ||
+      save_ptr->header.gamecode != GAME_CODE)       // (Another game's slot)
     return false;
 
+  // From here the game's state is a mix until it's all loaded.
+  ingame_spill_failed = 1;
   uint32_t hbuf[SPILL_HDR_WORDS];
   t_spilled_region *h = (t_spilled_region*)hbuf;
-  memory_copy32(hbuf, (uint32_t*)spill_ptr, SPILL_HDR_WORDS);
 
   // Copy the (partially) spilled buffers first.
-  bool ok = memcpy32_checked(spill_ptr->low_iwram, save_ptr->iwram, sizeof(spill_ptr->low_iwram));
-  ok = ok && memcpy32_checked(spill_ptr->low_ewram, save_ptr->ewram, sizeof(spill_ptr->low_ewram));
-  ok = ok && memcpy32_checked(spill_ptr->low_vram,  save_ptr->vram,  sizeof(spill_ptr->low_vram));
-  ok = ok && memcpy32_checked(spill_ptr->palette, save_ptr->palette, sizeof(spill_ptr->palette));
-  ok = ok && memcpy32_checked(spill_ptr->oam, save_ptr->oamem, sizeof(spill_ptr->oam));
+  bool ok = blocks_checked(spill_ptr->low_iwram, save_ptr->iwram, sizeof(spill_ptr->low_iwram));
+  ok = ok && blocks_checked(spill_ptr->low_ewram, save_ptr->ewram, sizeof(spill_ptr->low_ewram));
+  ok = ok && blocks_checked(spill_ptr->low_vram,  save_ptr->vram,  sizeof(spill_ptr->low_vram));
+  ok = ok && blocks_checked(spill_ptr->palette, save_ptr->palette, sizeof(spill_ptr->palette));
+  ok = ok && blocks_checked(spill_ptr->oam, save_ptr->oamem, sizeof(spill_ptr->oam));
 
   // Copy the remaining memory chunks (high segments)
   uint8_t *IWRAM_BUF = (uint8_t*)0x03000000;
@@ -414,7 +426,8 @@ bool load_mem_snapshot(const void *buffer) {
   memory_copy32(h->abt_regs, save_ptr->regs.abt_regs, sizeof(save_ptr->regs.abt_regs) / 4);
   memory_copy32(h->und_regs, save_ptr->regs.und_regs, sizeof(save_ptr->regs.und_regs) / 4);
 
-  return ok && memcpy32_checked(spill_ptr, hbuf, sizeof(hbuf));
+  ingame_spill_failed = !(ok && memcpy32_checked(spill_ptr, hbuf, sizeof(hbuf)));
+  return !ingame_spill_failed;
 }
 
 
@@ -440,11 +453,8 @@ bool read_rom_buffer(FIL *fd, void *buffer, unsigned size, void *tmpbuf) {
 bool readfd_mem_snapshot(FIL *fd) {
 
   t_spilled_region *spill_ptr = (t_spilled_region*)spill_addr;
-  uint32_t hbuf[SPILL_HDR_WORDS];
+  uint32_t hbuf[SPILL_HDR_WORDS];             // Its registers and I/O
   t_spilled_region *h = (t_spilled_region*)hbuf;
-  set_supercard_mode(MAPPED_SDRAM, true, false);
-  memory_copy32(hbuf, (uint32_t*)spill_ptr, SPILL_HDR_WORDS);
-  set_supercard_mode(MAPPED_SDRAM, true, true);
 
   union {
     t_savestate_header header;
@@ -470,7 +480,6 @@ bool readfd_mem_snapshot(FIL *fd) {
   if (!read_all(fd, &tmp.regs, sizeof(tmp.regs)))
     return false;
 
-  set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can write spill area.
   h->cpsr = tmp.regs.cpsr;
   memory_copy32(h->cpu_regs, tmp.regs.cpu_regs, sizeof(tmp.regs.cpu_regs) / 4);
   memory_copy32(h->irq_regs, tmp.regs.irq_regs, sizeof(tmp.regs.irq_regs) / 4);
@@ -478,12 +487,10 @@ bool readfd_mem_snapshot(FIL *fd) {
   memory_copy32(h->sup_regs, tmp.regs.sup_regs, sizeof(tmp.regs.sup_regs) / 4);
   memory_copy32(h->abt_regs, tmp.regs.abt_regs, sizeof(tmp.regs.abt_regs) / 4);
   memory_copy32(h->und_regs, tmp.regs.und_regs, sizeof(tmp.regs.und_regs) / 4);
-  set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can read from the SD card
 
   if (!read_all(fd, &tmp.iomap, sizeof(tmp.iomap)))
     return false;
 
-  set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can write spill area.
   h->dispcnt  = tmp.iomap.dispcnt;
   h->dispstat = tmp.iomap.dispstat;
   h->bldcnt   = tmp.iomap.bldcnt;
@@ -494,10 +501,14 @@ bool readfd_mem_snapshot(FIL *fd) {
     h->dma_cnt[i] = tmp.iomap.dma[i].ctrl;
     h->bg_cnt[i]  = tmp.iomap.bg_cnt[i];
   }
-  if (!memcpy32_checked(spill_ptr, hbuf, sizeof(hbuf))) {
-    set_supercard_mode(MAPPED_SDRAM, true, true);
+
+  // From here the game's state is a mix until it's all loaded.
+  ingame_spill_failed = 1;
+  set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can write spill area.
+  const bool hdr_ok = memcpy32_checked(spill_ptr, hbuf, sizeof(hbuf));
+  set_supercard_mode(MAPPED_SDRAM, true, true);    // So we can read from the SD card
+  if (!hdr_ok)
     return false;
-  }
 
   t_iomap *curr_ro_io = (t_iomap*)0x04000000;
   curr_ro_io->winin  = tmp.iomap.winin;            // LCD registers (the rest are write only!)
@@ -546,6 +557,7 @@ bool readfd_mem_snapshot(FIL *fd) {
   if (!read_all(fd, &EWRAM_BUF[sizeof(spill_ptr->low_ewram)], highsize3))
     return false;
 
+  ingame_spill_failed = 0;
   return true;
 }
 
@@ -954,7 +966,12 @@ bool action_menu_back() {
 
 void save_memstate() {
   set_supercard_mode(MAPPED_SDRAM, true, false);
-  const bool ok = !ingame_spill_failed && take_mem_snapshot(get_memslot_addr(state_slot));
+  // (Not from a game state that isn't whole: the slot is left as it is.)
+  if (ingame_spill_failed) {
+    popup.msg = msgs[ingame_menu_lang][IMENU_MSG_SAVEERR];
+    return;
+  }
+  const bool ok = take_mem_snapshot(get_memslot_addr(state_slot));
   memslot_valid[state_slot] = ok;
   popup.msg = msgs[ingame_menu_lang][ok ? IMENU_WSAV_OK : IMENU_MSG_SAVEERR];
 }

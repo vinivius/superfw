@@ -80,20 +80,33 @@ static bool flashmgr_erase(uint32_t baseaddr, unsigned size) {
   return true;
 }
 
-// Fills the most up to data TOC on flash: 1 if loaded, 0 if there's no
-// (valid) table, -1 if it couldn't be read (into the cart's SDRAM).
-int flashmgr_load(uint32_t baseaddr, unsigned maxsize, t_reg_entry *ndata) {
-  int off = find_latest(baseaddr, maxsize, ndata);
-  if (off < 0)
-    return off == -1 ? 0 : -1;
-
-  if (ndata->gamecnt > FLASHG_MAXFN_CNT)
-    return 0;
-
-  unsigned dsize = (sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * ndata->gamecnt);
-  if (!flash_read(baseaddr + off, (uint8_t*)ndata, dsize))
+// Reads the TOC entry at off (its header first, for its size): its size, 0
+// if there's no entry there, -1 if it couldn't be read (into the cart's
+// SDRAM).
+static int read_entry(uint32_t baseaddr, unsigned maxsize, unsigned off, t_reg_entry *ndata) {
+  if (!flash_read(baseaddr + off, (uint8_t*)ndata, sizeof(*ndata)))
     return -1;
-  return flashmgr_check(ndata) ? 1 : 0;
+  const unsigned esz = sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * ndata->gamecnt;
+  if (ndata->magic != NOR_ENTRY_MAGIC || ndata->gamecnt > FLASHG_MAXFN_CNT || off + esz > maxsize)
+    return 0;
+  return flash_read(baseaddr + off, (uint8_t*)ndata, esz) ? (int)esz : -1;
+}
+
+// Fills the newest valid TOC on flash (a newer entry may be damaged, ie. a
+// store cut short): 1 if loaded, 0 if there's none, -1 if it couldn't be
+// read (into the cart's SDRAM).
+int flashmgr_load(uint32_t baseaddr, unsigned maxsize, t_reg_entry *ndata) {
+  int good = -1, esz = 0;
+  for (unsigned off = 0; off < maxsize && (esz = read_entry(baseaddr, maxsize, off, ndata)) > 0; off += esz)
+    if (flashmgr_check(ndata))
+      good = off;
+  if (esz < 0)
+    return -1;
+  if (good < 0)
+    return 0;
+  // Read again (the entries after it were read over it).
+  esz = read_entry(baseaddr, maxsize, good, ndata);
+  return esz < 0 ? -1 : esz && flashmgr_check(ndata) ? 1 : 0;
 }
 
 bool flashmgr_check(const t_reg_entry *ndata) {
@@ -110,11 +123,14 @@ bool flashmgr_check(const t_reg_entry *ndata) {
     for (unsigned j = 0; j < MAX_GAME_BLOCKS; j++) {
       uint8_t n = ndata->games[i].blkmap[j];
       if (n) {
-        if (BM_TEST(blkm, n))
-          return false;      // Block is used twice!
+        if (n >= NOR_BLOCK_COUNT || BM_TEST(blkm, n))
+          return false;      // No such block, or used twice!
         BM_SET(blkm, n);
       }
     }
+    // Its name ends (it's used as a string).
+    if (!memchr(ndata->games[i].game_name, 0, sizeof(ndata->games[i].game_name)))
+      return false;
   }
 
   return true;

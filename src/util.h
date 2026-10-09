@@ -60,7 +60,13 @@ void fixdate(t_dec_date *d);
 // carts occasionally drop them), up to SDRAM_WRITE_TRIES times.
 #define SDRAM_WRITE_TRIES   8
 bool write16_checked(volatile uint16_t *p, uint16_t v);
+// Copies count bytes (whole words: a multiple of 4, both word aligned) to the
+// cart's SDRAM with copy (ie. a faster one), checked (see SDRAM_WRITE_TRIES).
+bool copy_checked(void *dst, const void *src, unsigned count,
+                  void (*copy)(void *dst, const void *src, unsigned count));
+// The same, with a word copy; and setting count bytes to value.
 bool memcpy32_checked(void *dst, const void *src, unsigned count);
+bool memset32_checked(void *dst, uint32_t value, unsigned count);
 
 // Creates a path to a file (recursively if needed)
 void create_basepath(const char *fn);

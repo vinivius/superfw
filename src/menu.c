@@ -958,12 +958,13 @@ static void browser_open_nor(const t_flash_game_entry * e) {
 }
 #endif
 
+static void patches_generate(t_load_gba_info *i);
+
 void patch_gen_callback(bool confirm) {
   // Generate patches if confirm was selected
-  if (confirm) {
-    bool ok = generate_patches_progress(spop.p.load.i.romfn, spop.p.load.i.romfs);
-    spop.alert_msg = msgs[lang_id][ok ? MSG_PATCHGEN_OK : MSG_PATCHGEN_ERR];
-  } else {
+  if (confirm)
+    patches_generate(&spop.p.load.i);
+  else {
     // Don't ask again for this ROM: remember that it loads without patches
     // (as it does now). Can be changed in the load popup's patching page.
     if (!save_rom_patchmode(spop.p.load.i.romfn, PatchNone))
@@ -1003,7 +1004,9 @@ static void load_patchdb_action(bool confirm) {
   // A partial database is unusable: its signature is cleared (the built-in
   // one comes back on reboot), or if that fails it isn't used. One not
   // written to is kept. The About tab shows the one in use.
-  if (!ok && written) {
+  if (ok)
+    patchdb_broken = false;
+  else if (written) {
     set_supercard_mode(MAPPED_SDRAM, true, false);
     patchdb_broken = !write16_checked((volatile uint16_t*)ROM_PATCHDB_U8, 0);
     set_supercard_mode(MAPPED_SDRAM, true, true);
@@ -1054,7 +1057,6 @@ static void recent_reload() {
   int n = recent_load(RECENT_FILEPATH, sdr_state->rentries);
   recent_unread = n < 0;
   smenu.recent.maxentries = MAX(n, 0);
-  recent_tab_check();
 }
 
 // A game launch (its save prepared): the browser reopens where it was next
@@ -1074,6 +1076,7 @@ static void launch_record(const char *fn, unsigned flags) {
   const int n = insert_recent_fn(sdr_state->rentries, smenu.recent.maxentries, fn, flags);
   if (n < 0) {
     recent_reload();
+    recent_tab_check();
     return;
   }
   smenu.recent.maxentries = n;
@@ -1087,6 +1090,7 @@ static bool delete_recent_flush(unsigned entry_num) {
   const int n = delete_recent(sdr_state->rentries, smenu.recent.maxentries, entry_num);
   if (n < 0) {
     recent_reload();
+    recent_tab_check();
     return false;
   }
   smenu.recent.maxentries = n;
@@ -1284,7 +1288,14 @@ static bool search_match(const char *fname, const char *q) {
   return false;
 }
 
-// Fills the visible list (fileorder) with the sorted entries matching the search.
+// The entry lists (sortorder, fileorder) are in the cart's SDRAM, and pick
+// the files that are opened, deleted, written...: written checked.
+static bool entry_list_set(t_centry **slot, t_centry *e) {
+  return memcpy32_checked(slot, &e, sizeof(e));
+}
+
+// Fills the visible list (fileorder) with the sorted entries matching the
+// search (the ones it could write).
 static void browser_apply_search() {
   art_list_gen++;
   char q[sizeof(smenu.browser.query)];
@@ -1293,8 +1304,11 @@ static void browser_apply_search() {
 
   unsigned fcount = 0;
   for (unsigned i = 0; i < smenu.browser.sortentries; i++)
-    if (search_match(sdr_state->sortorder[i]->fname, q))
-      sdr_state->fileorder[fcount++] = sdr_state->sortorder[i];
+    if (search_match(sdr_state->sortorder[i]->fname, q) &&
+        !entry_list_set(&sdr_state->fileorder[fcount++], sdr_state->sortorder[i])) {
+      fcount--;
+      break;
+    }
 
   if (smenu.browser.selector >= (int)fcount)
     smenu.browser.selector = fcount - 1;
@@ -1309,27 +1323,63 @@ static void browser_clear_search() {
   smenu.browser.qedit = false;
 }
 
-static void browser_reload_filter() {
-  // Instead of sorting the actual list of files, which requires moving lots
-  // of memory, we use a list of pointers.
+// Lists (sortorder) the entries shown (hidden ones, if so set, aren't): their
+// count, and the sum and xor of their indexes (whatever the order). False if
+// it couldn't be written.
+static bool browser_list_entries(unsigned *count, uint32_t *sum, uint32_t *xr) {
   unsigned fcount = 0;
+  *sum = *xr = 0;
   for (unsigned i = 0; i < smenu.browser.maxentries; i++) {
     if (((sdr_state->fentries[i].attr & AM_HID) || sdr_state->fentries[i].fname[0] == '.') && hide_hidden)
       continue;
-
-    sdr_state->sortorder[fcount++] = &sdr_state->fentries[i];
+    if (!entry_list_set(&sdr_state->sortorder[fcount++], &sdr_state->fentries[i]))
+      return false;
+    *sum += i;
+    *xr ^= i;
   }
+  *count = fcount;
+  return true;
+}
+
+// Whether the sorted list (sortorder) holds the entries listed (by their sum
+// and xor), each one a whole entry of the folder.
+static bool browser_list_valid(unsigned count, uint32_t sum, uint32_t xr) {
+  for (unsigned i = 0; i < count; i++) {
+    const uintptr_t off = (uintptr_t)sdr_state->sortorder[i] - (uintptr_t)sdr_state->fentries;
+    const uint32_t idx = off / sizeof(t_centry);
+    if (off % sizeof(t_centry) || idx >= smenu.browser.maxentries)
+      return false;
+    sum -= idx;
+    xr ^= idx;
+  }
+  return !sum && !xr;
+}
+
+// False if the lists couldn't be written.
+static bool browser_reload_filter() {
+  // Instead of sorting the actual list of files, which requires moving lots
+  // of memory, we use a list of pointers.
+  unsigned fcount;
+  uint32_t sum, xr;
+  if (!browser_list_entries(&fcount, &sum, &xr))
+    return false;
 
   // Folders written in order (ie. by a ROM manager) need no sorting.
   bool sorted = true;
   for (unsigned i = 1; i < fcount && sorted; i++)
     sorted = filesort(&sdr_state->sortorder[i - 1], &sdr_state->sortorder[i]) <= 0;
-  if (!sorted)
+  if (!sorted) {
+    // The sort swaps in SDRAM unchecked: a list that isn't the same entries
+    // any more is made again (unsorted).
     heapsort4(sdr_state->sortorder, fcount, sizeof(t_centry*) / sizeof(uint32_t), filesort);
+    if (!browser_list_valid(fcount, sum, xr) && !browser_list_entries(&fcount, &sum, &xr))
+      return false;
+  }
   smenu.browser.sortentries = fcount;
 
   // Searching only filters the sorted list, no need to re-sort.
   browser_apply_search();
+  return true;
 }
 
 // Loads a new directory list in the ROM browser.
@@ -1408,8 +1458,13 @@ static FRESULT browser_reload() {
   f_closedir(&d);
   smenu.browser.maxentries = fcount;
 
-  // Filter and sort list of files/dirs
-  browser_reload_filter();
+  // Filter and sort list of files/dirs (lists that couldn't be written are
+  // as an unreadable folder).
+  if (!browser_reload_filter()) {
+    smenu.browser.maxentries = smenu.browser.sortentries = smenu.browser.dispentries = 0;
+    browser_loaded = false;
+    return FR_DISK_ERR;
+  }
   browser_loaded = true;
   return FR_OK;
 }
@@ -1494,6 +1549,7 @@ static void art_cache_clear();
 void browser_refresh_after_xfer() {
   browser_reload();
   recent_reload();
+  recent_tab_check();
   art_cache_clear();       // Art files may have changed too
 }
 #endif
@@ -1518,8 +1574,8 @@ static void flashbrowser_reload() {
   // too, but games can't be written or removed then (the space they'd use
   // may hold others).
   smenu.fbrowser.unread = res < 0;
-  if (res <= 0)
-    memset(nd, 0, sizeof(sdr_state->nordata));
+  if (res <= 0 && !memset32_checked(nd, 0, sizeof(t_reg_entry)))   // (SDRAM)
+    smenu.fbrowser.unread = true;
 
   // Calculate block usage, free space, etc.
   smenu.fbrowser.usedblks = 0;
@@ -3821,9 +3877,8 @@ static void keypress_popup_filemgr(unsigned newkeys) {
     case FiMgrHide:
       {
         char tmpfn[MAX_FN_LEN];
-        if (browser_entry_path(tmpfn, e) && FR_OK == f_chmod(tmpfn, e->attr ^ AM_HID, AM_HID))
-          e->attr ^= AM_HID;
-        else
+        if (!browser_entry_path(tmpfn, e) || FR_OK != f_chmod(tmpfn, e->attr ^ AM_HID, AM_HID) ||
+            !write16_checked(&e->attr, e->attr ^ AM_HID))     // (SDRAM)
           spop.alert_msg = msgs[lang_id][MSG_ERR_GENERIC];
       }
       spop.pop_num = POPUP_NONE;
@@ -4115,8 +4170,7 @@ static void keypress_menu_norbrowse(unsigned newkeys) {
         // Remove game entry, the other games move down (checked in SDRAM:
         // it's flashed with a checksum of what's there).
         const uint32_t cnt = sdr_state->nordata.gamecnt - 1;
-        bool ok = !smenu.fbrowser.unread && sdr_state->nordata.gamecnt &&
-                  memcpy32_checked(&sdr_state->nordata.gamecnt, &cnt, sizeof(cnt));
+        bool ok = memcpy32_checked(&sdr_state->nordata.gamecnt, &cnt, sizeof(cnt));
         for (unsigned i = smenu.fbrowser.selector; ok && i < cnt; i++)
           ok = memcpy32_checked(&sdr_state->nordata.games[i], &sdr_state->nordata.games[i + 1],
                                 sizeof(t_flash_game_entry));

@@ -101,7 +101,8 @@ typedef struct {
 typedef struct {
   uint32_t signature[3];       // Some signature for the file on disk
   uint32_t version;            // Savestate version.
-  uint16_t pad[496 / 2];       // Unused header state
+  uint32_t gamecode;           // Of the game (ROM header), 0 if unknown
+  uint16_t pad[492 / 2];       // Unused header state
 } t_savestate_header;
 
 typedef struct {

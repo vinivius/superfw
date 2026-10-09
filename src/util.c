@@ -253,16 +253,39 @@ void memmove32(void *dst, void *src, unsigned count) {
   }
 }
 
-// Copies count bytes (whole words: a multiple of 4, both word aligned) to the
-// cart's SDRAM, checked (see SDRAM_WRITE_TRIES).
-bool memcpy32_checked(void *dst, const void *src, unsigned count) {
-  volatile uint32_t *d = (uint32_t*)dst;
+bool copy_checked(void *dst, const void *src, unsigned count,
+                  void (*copy)(void *dst, const void *src, unsigned count)) {
+  const volatile uint32_t *d = (uint32_t*)dst;
   const uint32_t *s = (const uint32_t*)src;
   for (unsigned t = 0; t < SDRAM_WRITE_TRIES; t++) {
+    copy(dst, src, count);
+    unsigned i = 0;
+    while (i < count / 4 && d[i] == s[i])
+      i++;
+    if (i == count / 4)
+      return true;
+  }
+  return false;
+}
+
+static void copy32(void *dst, const void *src, unsigned count) {
+  volatile uint32_t *d = (uint32_t*)dst;
+  const uint32_t *s = (const uint32_t*)src;
+  for (unsigned i = 0; i < count / 4; i++)
+    d[i] = s[i];
+}
+
+bool memcpy32_checked(void *dst, const void *src, unsigned count) {
+  return copy_checked(dst, src, count, copy32);
+}
+
+bool memset32_checked(void *dst, uint32_t value, unsigned count) {
+  for (unsigned t = 0; t < SDRAM_WRITE_TRIES; t++) {
+    volatile uint32_t *d = (uint32_t*)dst;
     unsigned i;
     for (i = 0; i < count / 4; i++)
-      d[i] = s[i];
-    for (i = 0; i < count / 4 && d[i] == s[i]; i++);
+      d[i] = value;
+    for (i = 0; i < count / 4 && d[i] == value; i++);
     if (i == count / 4)
       return true;
   }
