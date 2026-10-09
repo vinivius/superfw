@@ -182,7 +182,7 @@ class Renamer(object):
     if local_ok:
       yield rom.dir, sav, "save", ".sav", savelen                       # save_path_policy=2 (next to ROM)
       yield rom.dir, r"\.cht", "cheats", ".cht", MAX_FN_LEN - 1         # menu.c prepare_gba_cheats()
-      yield rom.dir, r"\.patch", "patch", ".patch", len("/%s/" % PATCHDB_DIR) + FF_MAX_LFN   # patchengine.c load_rom_patches()
+      yield rom.dir, r"\.patch", "patch", ".patch", min(len("/%s/" % PATCHDB_DIR), len(sd_dir(self.sd, rom.dir))) + FF_MAX_LFN   # patchengine.c load_rom_patches()
     if shared_ok:
       for d in SAVE_DIRS:
         yield os.path.join(self.sd, d), sav, "save", ".sav", savelen

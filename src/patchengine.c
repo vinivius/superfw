@@ -604,8 +604,11 @@ static FRESULT load_patch_file(const char *fn, t_patch *patches) {
 }
 
 FRESULT load_rom_patches(const char *romfn, t_patch *patches) {
+  // Next to the ROM: its name too within the FAT limit (shallow folders leave
+  // room for a longer one).
   char fn[PATCH_FN_SIZE];
-  derived_fn(fn, sizeof(fn) - 1, NULL, romfn, ".patch");
+  const unsigned dlen = file_basename(romfn) - romfn;
+  derived_fn(fn, dlen + FF_MAX_LFN < sizeof(fn) - 1 ? dlen + FF_MAX_LFN : sizeof(fn) - 1, NULL, romfn, ".patch");
   return load_patch_file(fn, patches);
 }
 

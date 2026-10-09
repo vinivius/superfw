@@ -3594,7 +3594,7 @@ static void keypress_popup_loadgba(unsigned newkeys) {
           spop.p.load.i.ingame_menu_enabled, keep_igm,
           spop.p.load.i.rtc_patch_enabled ? &rtci : NULL,
           spop.p.load.l.use_cheats ? spop.p.load.l.cheats_size : 0,
-          loadrom_progress);
+          parse32le(spop.p.load.i.romh.gcode), loadrom_progress);
       }
       load_sdram_reset();
       unsigned err = do_load(false);
@@ -3809,7 +3809,8 @@ static void keypress_popup_norload(unsigned newkeys) {
         uses_dsave ? &dsinfo : NULL,
         uses_rtc ? &rtci : NULL,
         uses_igm,
-        spop.p.norld.l.use_cheats ? spop.p.norld.l.cheats_size : 0);
+        spop.p.norld.l.use_cheats ? spop.p.norld.l.cheats_size : 0,
+        e->gamecode);
       if (err)
         menu_load_failed(err);   // Only returns if the in-game menu never verified
     }

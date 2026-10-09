@@ -31,8 +31,12 @@ all:
 		-ffunction-sections -fdata-sections -Wl,--gc-sections
 	./patcher_test.bin
 	lcov -c -d . -o patcher_test.info
+	$(CC) $(CFLAGS) $(MEMCHK_FLAGS) -o flashmgr_test.bin flashmgr_test.c ../src/flash_mgr.c ../src/util.c ../src/nanoprintf.c -I../ \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections
+	./flashmgr_test.bin
+	lcov -c -d . -o flashmgr_test.info
 
-	lcov -a cimpl_test.info -a util_test.info -a utf_util_test.info -a crc_test.info -a sha256_test.info -a cheats_test.info -a patchcache_test.info -a patcher_test.info -o total.info
+	lcov -a cimpl_test.info -a util_test.info -a utf_util_test.info -a crc_test.info -a sha256_test.info -a cheats_test.info -a patchcache_test.info -a patcher_test.info -a flashmgr_test.info -o total.info
 	rm -rf coverage/
 	genhtml -o coverage/ total.info
 

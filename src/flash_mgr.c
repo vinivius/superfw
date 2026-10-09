@@ -39,22 +39,28 @@ static uint32_t xorh(const uint32_t *p, unsigned wc) {
   return ret;
 }
 
-// Walks and finds the most up to data TOC entry and returns its offset: -1
-// if there's none, -2 if it couldn't be read (an older one isn't the latest).
-static int find_latest(uint32_t flash_addr, unsigned max_size, t_reg_entry *hdr) {
-  int ret = -1;    // No last valid entry found
-  for (unsigned off = 0; off < max_size; ) {
-    if (!flash_read(flash_addr + off, (uint8_t*)hdr, sizeof(*hdr)))
-      return -2;
-    if (hdr->magic != NOR_ENTRY_MAGIC || hdr->gamecnt > FLASHG_MAXFN_CNT)
+// The TOC is a log of whole tables (each store appends one). Walks its
+// entries' headers (into hdr): the offsets of the newest TOC_RECENT ones
+// (newest first, -1 if none) and where the next one would go. False if it
+// couldn't be read (into the cart's SDRAM).
+#define TOC_RECENT 4
+static bool toc_walk(uint32_t baseaddr, unsigned maxsize, t_reg_entry *hdr,
+                     int recent[TOC_RECENT], unsigned *end) {
+  for (unsigned i = 0; i < TOC_RECENT; i++)
+    recent[i] = -1;
+  unsigned off = 0;
+  while (off + sizeof(*hdr) <= maxsize) {
+    if (!flash_read(baseaddr + off, (uint8_t*)hdr, sizeof(*hdr)))
+      return false;
+    const unsigned esz = sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * hdr->gamecnt;
+    if (hdr->magic != NOR_ENTRY_MAGIC || hdr->gamecnt > FLASHG_MAXFN_CNT || off + esz > maxsize)
       break;
-
-    unsigned esz = (sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * hdr->gamecnt);
-    ret = off;
+    memmove(&recent[1], &recent[0], (TOC_RECENT - 1) * sizeof(recent[0]));
+    recent[0] = off;
     off += esz;
   }
-
-  return ret >= 0 && !flash_read(flash_addr + ret, (uint8_t*)hdr, sizeof(*hdr)) ? -2 : ret;
+  *end = off;
+  return true;
 }
 
 static bool flashmgr_erase(uint32_t baseaddr, unsigned size) {
@@ -80,33 +86,24 @@ static bool flashmgr_erase(uint32_t baseaddr, unsigned size) {
   return true;
 }
 
-// Reads the TOC entry at off (its header first, for its size): its size, 0
-// if there's no entry there, -1 if it couldn't be read (into the cart's
-// SDRAM).
-static int read_entry(uint32_t baseaddr, unsigned maxsize, unsigned off, t_reg_entry *ndata) {
-  if (!flash_read(baseaddr + off, (uint8_t*)ndata, sizeof(*ndata)))
-    return -1;
-  const unsigned esz = sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * ndata->gamecnt;
-  if (ndata->magic != NOR_ENTRY_MAGIC || ndata->gamecnt > FLASHG_MAXFN_CNT || off + esz > maxsize)
-    return 0;
-  return flash_read(baseaddr + off, (uint8_t*)ndata, esz) ? (int)esz : -1;
-}
-
-// Fills the newest valid TOC on flash (a newer entry may be damaged, ie. a
-// store cut short): 1 if loaded, 0 if there's none, -1 if it couldn't be
-// read (into the cart's SDRAM).
+// Fills the newest valid TOC (a newer entry may be damaged, ie. a store cut
+// short): 1 if loaded, 0 if there's none, -1 if it couldn't be read (into the
+// cart's SDRAM).
 int flashmgr_load(uint32_t baseaddr, unsigned maxsize, t_reg_entry *ndata) {
-  int good = -1, esz = 0;
-  for (unsigned off = 0; off < maxsize && (esz = read_entry(baseaddr, maxsize, off, ndata)) > 0; off += esz)
-    if (flashmgr_check(ndata))
-      good = off;
-  if (esz < 0)
+  int recent[TOC_RECENT];
+  unsigned end;
+  if (!toc_walk(baseaddr, maxsize, ndata, recent, &end))
     return -1;
-  if (good < 0)
-    return 0;
-  // Read again (the entries after it were read over it).
-  esz = read_entry(baseaddr, maxsize, good, ndata);
-  return esz < 0 ? -1 : esz && flashmgr_check(ndata) ? 1 : 0;
+  for (unsigned i = 0; i < TOC_RECENT && recent[i] >= 0; i++) {
+    if (!flash_read(baseaddr + recent[i], (uint8_t*)ndata, sizeof(*ndata)))
+      return -1;
+    const unsigned esz = sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * ndata->gamecnt;
+    if (!flash_read(baseaddr + recent[i], (uint8_t*)ndata, esz))
+      return -1;
+    if (flashmgr_check(ndata))
+      return 1;
+  }
+  return 0;
 }
 
 bool flashmgr_check(const t_reg_entry *ndata) {
@@ -141,19 +138,19 @@ bool flashmgr_store(uint32_t baseaddr, unsigned maxsize, t_reg_entry *ndata) {
   t_reg_entry hdr;
   const unsigned reqsz = sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * ndata->gamecnt;
 
-  int off = find_latest(baseaddr, maxsize, &hdr);
-  if (off == -2)
+  // It goes after the last entry if it fits there and that space is erased
+  // (a store cut short leaves data). Else the area is wiped (the table
+  // written is whole): flash looks bogus, or is full.
+  int recent[TOC_RECENT];
+  unsigned off;
+  if (!toc_walk(baseaddr, maxsize, &hdr, recent, &off))
     return false;            // Couldn't be read: it isn't wiped
-  if (off < 0 || off + reqsz > maxsize) {
-    // Flash looks bogus, or is full. Let's wipe it!
+  if (off + reqsz > maxsize ||
+      !flash_check_erased(baseaddr + off, MIN(ROUND_UP2(reqsz, 32), maxsize - off))) {
     if (!flashmgr_erase(baseaddr, maxsize))
       return false;
 
     off = 0;  // Start writing at the top now that it's empty.
-  }
-  else {
-    const unsigned currsz = sizeof(t_reg_entry) + sizeof(t_flash_game_entry) * hdr.gamecnt;
-    off += currsz;      // Skip to the end of the entry
   }
 
   // Repurpose the last header (should contain the right block balancing data).

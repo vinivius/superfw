@@ -73,6 +73,7 @@
 .globl spill_addr
 .globl savefile_pattern
 .globl savestate_pattern
+.globl game_code
 
 def_symbol(ingame_menu):
   // Writes address 0x03007ffc (actually mirror 0x03fffffc) with the ingame
@@ -127,6 +128,7 @@ savefile_backups:      .word 0x0    // Fill the number of backups to preserve.
 
 savefile_pattern:      .fill 256, 1, 0          // File name pattern (NULL terminated)
 savestate_pattern:     .fill 256, 1, 0          // File name pattern (NULL terminated)
+game_code:             .word 0x0    // The game's code (ROM header), in its savestates
 
 
 // Necessary handlers for the SC driver

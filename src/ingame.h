@@ -58,6 +58,7 @@ typedef struct {
   uint32_t savefile_backups;           // Backup count
   char savefile_pattern[256];          // File name (without the .sav) pattern
   char statefile_pattern[256];         // File name (without the .X.state) pattern
+  uint32_t game_code;                  // The game's code (ROM header)
 } t_igmenu;
 
 // Built-in assets

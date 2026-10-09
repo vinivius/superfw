@@ -282,14 +282,15 @@ bool nor_payload_space(uint32_t fs, const struct struct_t_patch *ptch, bool igm)
 unsigned load_gba_rom(const char *fn, uint32_t fs, const char *savefn,
                       const struct struct_t_patch *ptch,
                       const t_dirsave_info *dsinfo, bool ingame_menu, bool keep_igm,
-                      const t_rtc_info *rtcinfo, unsigned cheats, progress_fn progress);
+                      const t_rtc_info *rtcinfo, unsigned cheats, uint32_t gamecode,
+                      progress_fn progress);
 // Launch from NOR
 unsigned  flash_gba_nor(const char *fn, uint32_t fs, const t_rom_header *rom_header,
                         const struct struct_t_patch *ptch, bool dirsaving, bool ingame_menu, bool rtc_patches,
                         const uint8_t *blkmap, progress_fn progress, uint8_t *scratch, unsigned ssize);
 unsigned launch_gba_nor(
   const char *romfn, const char *savefn, const uint8_t *normap, unsigned blkcnts, const t_dirsave_info *dsinfo,
-  const t_rtc_info *rtcinfo, bool ingame_menu, unsigned cheats);
+  const t_rtc_info *rtcinfo, bool ingame_menu, unsigned cheats, uint32_t gamecode);
 
 unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo, progress_fn progress);
 // What the loads (that failed) wrote into SDRAM: load_sdram_end is how far the
