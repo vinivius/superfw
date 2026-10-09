@@ -583,7 +583,7 @@ bool generate_patches_progress(const char *fn, unsigned fs, const t_game_id *id)
   for (unsigned i = 0; i < fs; i += chunk) {
     t_pe_chunk c;
     patchengine_chunk(fs, i, chunk, &c);
-    const unsigned start = c.start, blksize = MIN(chunk, fs - i);
+    const unsigned start = c.start;
     if (FR_OK != f_lseek(&fd, start)) {
       f_close(&fd);
       return false;
@@ -605,12 +605,12 @@ bool generate_patches_progress(const char *fn, unsigned fs, const t_game_id *id)
         f_close(&fd);
         return false;
       }
-      if ((j - start) & ~0xFFFF)
+      if (!((j - start) & 0xFFFF))        // Every 64KiB
         loadrom_progress((i*2 + j - start) >> 8, fs >> 7);
     }
 
     void upd_pe_prog(unsigned prog) {
-      unsigned p = i*2 + blksize + prog*4;
+      unsigned p = i*2 + c.size + prog*4;
       loadrom_progress(p >> 8, fs >> 7);
     }
 

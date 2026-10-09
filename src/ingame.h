@@ -26,6 +26,8 @@
 #define IGM_ENTRYPOINT_NOCHEATS_OFF     ( 8*4)    // Offsets in ingame.S
 #define IGM_ENTRYPOINT_CHEATS_OFF       (12*4)
 
+#define IGM_HEADER_SIZE                 (652)     // The header in ingame.S (t_igmenu)
+
 #define FLASH_IGM_TRAMP_NOCHEATS_OFF    ( 8*4)    // Offsets in ingame_trampoline.S
 #define FLASH_IGM_TRAMP_CHEATS_OFF      (32*4)
 
@@ -99,13 +101,15 @@ typedef struct {
 #define SIGNATURE_A          0x45505553     // SUPERFWSNAP
 #define SIGNATURE_B          0x53574652
 #define SIGNATURE_C          0x0050414e
+#define STATE_GAMEID         0x44494D47     // "GMID": the state says its game
 
 typedef struct {
   uint32_t signature[3];       // Some signature for the file on disk
   uint32_t version;            // Savestate version.
-  uint32_t gamecode;           // Of the game (ROM header): code and version
-  uint32_t gamever;            //   (states of version SAVESTATE_V1 have none)
-  uint16_t pad[488 / 2];       // Unused header state
+  uint32_t gameid;             // STATE_GAMEID if the game is below: its ROM
+  uint32_t gamecode;           // header's code and version (zeros in older
+  uint32_t gamever;            // states, older firmware ignores them)
+  uint16_t pad[484 / 2];       // Unused header state
 } t_savestate_header;
 
 typedef struct {
@@ -215,6 +219,7 @@ _Static_assert(sizeof(t_spilled_region) <= MIN_SCRATCH_SPACE, "Reserved spilled 
 
 _Static_assert(offsetof(t_igmenu, tramp1_insts) == IGM_ENTRYPOINT_NOCHEATS_OFF, "Struct offset mismatch");
 _Static_assert(offsetof(t_igmenu, tramp2_insts) == IGM_ENTRYPOINT_CHEATS_OFF, "Struct offset mismatch");
+_Static_assert(sizeof(t_igmenu) == IGM_HEADER_SIZE, "Struct size mismatch (ingame.S checks its own)");
 
 #endif
 

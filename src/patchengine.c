@@ -277,8 +277,8 @@ void patchengine_finalize(t_patch_builder *patchb) {
   for (unsigned i = 0; i < patchb->save_cnt; i++)
     if ((patchb->save_op[i] >> 28) == keep)
       push_op(patchb, OpsSave, patchb->save_op[i]);
-  // Some were lost: the ones kept may not be all.
-  if (patchb->save_lost && p->save_ops)
+  // Some were lost: the kept type's may be among them.
+  if (patchb->save_lost && keep != 0xF)
     patchb->overflow = true;
 
   // Process any FLASH_IDEN_HNDLR handlers into program patches.
@@ -320,11 +320,11 @@ void patchengine_finalize(t_patch_builder *patchb) {
 }
 
 void patchengine_chunk(unsigned romsize, unsigned off, unsigned chunk, t_pe_chunk *c) {
-  const unsigned size = romsize - off < chunk ? romsize - off : chunk;
+  c->size = romsize - off < chunk ? romsize - off : chunk;
   c->start = off < PE_LOOKBACK ? 0 : off - PE_LOOKBACK;
-  c->end = (off + size + PE_LOOKAHEAD + 4095) & ~4095U;
+  c->end = (off + c->size + PE_LOOKAHEAD + 4095) & ~4095U;
   c->first = (off - c->start) / 4;
-  c->count = (size + 3) / 4;
+  c->count = (c->size + 3) / 4;
 }
 
 // Generates a patch set from a given ROM.
@@ -646,15 +646,20 @@ FRESULT load_rom_patches(const char *romfn, t_patch *patches) {
   return load_patch_file(fn, NULL, 0, patches);
 }
 
+// The patch cache file of a ROM (fn: PATCH_FN_SIZE bytes).
+static void cache_fn(char *fn, const char *romfn) {
+  derived_fn(fn, PATCH_FN_SIZE - 1, PATCHDB_PATH, romfn, ".patch");
+}
+
 FRESULT load_cached_patches(const char *romfn, const t_game_id *id, unsigned romfs, t_patch *patches) {
   char fn[PATCH_FN_SIZE];
-  derived_fn(fn, sizeof(fn) - 1, PATCHDB_PATH, romfn, ".patch");
+  cache_fn(fn, romfn);
   return load_patch_file(fn, id, romfs, patches);
 }
 
 bool write_patches_cache(const char *romfn, const t_game_id *id, const t_patch *patches) {
   char fn[PATCH_FN_SIZE];
-  derived_fn(fn, sizeof(fn) - 1, PATCHDB_PATH, romfn, ".patch");
+  cache_fn(fn, romfn);
 
   // Replace any existing patch file (whole), with its game (another game's of
   // the same file name, ie. in another folder or version, isn't used).
@@ -669,7 +674,7 @@ bool write_patches_cache(const char *romfn, const t_game_id *id, const t_patch *
 // Removes the cached patches of a ROM (ie. ones generation couldn't replace).
 void drop_patches_cache(const char *romfn) {
   char fn[PATCH_FN_SIZE];
-  derived_fn(fn, sizeof(fn) - 1, PATCHDB_PATH, romfn, ".patch");
+  cache_fn(fn, romfn);
   f_unlink(fn);
 }
 

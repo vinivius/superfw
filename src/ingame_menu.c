@@ -38,8 +38,7 @@
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
 
-#define SAVESTATE_VERSION       0x00010001    // With the game's identity
-#define SAVESTATE_V1            0x00010000    // Without (loaded in any game)
+#define SAVESTATE_VERSION       0x00010000
 
 // ASM functions and varibles:
 extern unsigned has_rtc_support;
@@ -167,8 +166,22 @@ static void state_header(t_savestate_header *h) {
   h->signature[1] = SIGNATURE_B;
   h->signature[2] = SIGNATURE_C;
   h->version = SAVESTATE_VERSION;
+  h->gameid = STATE_GAMEID;
   h->gamecode = game_code;
   h->gamever = game_ver;
+}
+
+// The message for loading a state of this header: IMENU_QLD_OK for this
+// game's (older states don't say their game: they load in any), IMENU_QLD_ERR
+// for another game's (ie. a ROM of the same name elsewhere, or another
+// version of it), IMENU_PLD_ERR if it isn't a state.
+static unsigned state_check(const t_savestate_header *h) {
+  if (h->signature[0] != SIGNATURE_A || h->signature[1] != SIGNATURE_B ||
+      h->signature[2] != SIGNATURE_C || h->version != SAVESTATE_VERSION)
+    return IMENU_PLD_ERR;
+  if (h->gameid == STATE_GAMEID && (h->gamecode != game_code || h->gamever != game_ver))
+    return IMENU_QLD_ERR;
+  return IMENU_QLD_OK;
 }
 
 static void state_regs(t_savestate_regs *r, const t_spilled_region *sp) {
@@ -384,20 +397,15 @@ bool writefd_mem_snapshot_clone(FIL *fd, const void *buffer, unsigned size) {
 }
 
 
-bool load_mem_snapshot(const void *buffer) {
+// Loads a state: the message it shows (IMENU_QLD_OK if loaded).
+unsigned load_mem_snapshot(const void *buffer) {
 
   t_spilled_region *spill_ptr = (t_spilled_region*)spill_addr;
   const t_savestate_snapshot *save_ptr = (t_savestate_snapshot*)buffer;
 
-  if (save_ptr->header.signature[0] != SIGNATURE_A ||
-      save_ptr->header.signature[1] != SIGNATURE_B ||
-      save_ptr->header.signature[2] != SIGNATURE_C)
-    return false;
-
-  if (save_ptr->header.version != SAVESTATE_VERSION ||
-      save_ptr->header.gamecode != game_code ||     // (Another game's slot)
-      save_ptr->header.gamever != game_ver)
-    return false;
+  const unsigned chk = state_check(&save_ptr->header);
+  if (chk != IMENU_QLD_OK)
+    return chk;
 
   // From here the game's state is a mix until it's all loaded.
   ingame_spill_failed = 1;
@@ -430,7 +438,7 @@ bool load_mem_snapshot(const void *buffer) {
   state_restore_regs(h, &save_ptr->regs);
 
   ingame_spill_failed = !(ok && memcpy32_checked(spill_ptr, hbuf, sizeof(hbuf)));
-  return !ingame_spill_failed;
+  return ingame_spill_failed ? IMENU_QLD_ERR : IMENU_QLD_OK;
 }
 
 
@@ -453,7 +461,8 @@ bool read_rom_buffer(FIL *fd, void *buffer, unsigned size, void *tmpbuf) {
 }
 
 
-bool readfd_mem_snapshot(FIL *fd) {
+// Loads a state file: the message it shows (IMENU_QLD_OK if loaded).
+unsigned readfd_mem_snapshot(FIL *fd) {
 
   t_spilled_region *spill_ptr = (t_spilled_region*)spill_addr;
   uint32_t hbuf[SPILL_HDR_WORDS];             // Its registers and I/O
@@ -470,27 +479,19 @@ bool readfd_mem_snapshot(FIL *fd) {
   _Static_assert(sizeof(tmp.iomap) == 1024, "The I/O structure is 1024 bytes in size");
 
   if (!read_all(fd, &tmp.header, sizeof(tmp.header)))
-    return false;
+    return IMENU_PLD_ERR;
 
-  if (tmp.header.signature[0] != SIGNATURE_A ||
-      tmp.header.signature[1] != SIGNATURE_B ||
-      tmp.header.signature[2] != SIGNATURE_C)
-    return false;
-
-  // A state of another game (ie. a ROM of the same name elsewhere, or
-  // another version of it) isn't loaded; older ones don't tell.
-  if (tmp.header.version == SAVESTATE_VERSION ?
-      tmp.header.gamecode != game_code || tmp.header.gamever != game_ver :
-      tmp.header.version != SAVESTATE_V1)
-    return false;
+  const unsigned chk = state_check(&tmp.header);
+  if (chk != IMENU_QLD_OK)
+    return chk;
 
   if (!read_all(fd, &tmp.regs, sizeof(tmp.regs)))
-    return false;
+    return IMENU_PLD_ERR;
 
   state_restore_regs(h, &tmp.regs);
 
   if (!read_all(fd, &tmp.iomap, sizeof(tmp.iomap)))
-    return false;
+    return IMENU_PLD_ERR;
 
   // From here the game's state is a mix until it's all loaded.
   ingame_spill_failed = 1;
@@ -499,40 +500,40 @@ bool readfd_mem_snapshot(FIL *fd) {
   const bool hdr_ok = memcpy32_checked(spill_ptr, hbuf, sizeof(hbuf));
   set_supercard_mode(MAPPED_SDRAM, true, true);    // So we can read from the SD card
   if (!hdr_ok)
-    return false;
+    return IMENU_PLD_ERR;
 
   if (!read_rom_buffer(fd, spill_ptr->palette, sizeof(spill_ptr->palette), tmp.buf))
-    return false;
+    return IMENU_PLD_ERR;
 
   if (!read_rom_buffer(fd, spill_ptr->oam, sizeof(spill_ptr->oam), tmp.buf))
-    return false;
+    return IMENU_PLD_ERR;
 
   // Use aux function for OAM/VRAM since they don't take byte writes nicely.
   // VRAM, spilled, then actual data
   uint8_t *VRAM_BUF = (uint8_t*)0x06000000;
   const unsigned highsize = 96*1024 - sizeof(spill_ptr->low_vram);
   if (!read_rom_buffer(fd, spill_ptr->low_vram, sizeof(spill_ptr->low_vram), tmp.buf))
-    return false;
+    return IMENU_PLD_ERR;
   if (!read_rom_buffer(fd, &VRAM_BUF[sizeof(spill_ptr->low_vram)], highsize, tmp.buf))
-    return false;
+    return IMENU_PLD_ERR;
 
   // Same for IWRAM and EWRAM
   uint8_t *IWRAM_BUF = (uint8_t*)0x03000000;
   const unsigned highsize2 = 32*1024 - sizeof(spill_ptr->low_iwram);
   if (!read_rom_buffer(fd, spill_ptr->low_iwram, sizeof(spill_ptr->low_iwram), tmp.buf))
-    return false;
+    return IMENU_PLD_ERR;
   if (!read_all(fd, &IWRAM_BUF[sizeof(spill_ptr->low_iwram)], highsize2))
-    return false;
+    return IMENU_PLD_ERR;
 
   uint8_t *EWRAM_BUF = (uint8_t*)0x02000000;
   const unsigned highsize3 = 256*1024 - sizeof(spill_ptr->low_ewram);
   if (!read_rom_buffer(fd, spill_ptr->low_ewram, sizeof(spill_ptr->low_ewram), tmp.buf))
-    return false;
+    return IMENU_PLD_ERR;
   if (!read_all(fd, &EWRAM_BUF[sizeof(spill_ptr->low_ewram)], highsize3))
-    return false;
+    return IMENU_PLD_ERR;
 
   ingame_spill_failed = 0;
-  return true;
+  return IMENU_QLD_OK;
 }
 
 static void draw_hline(uint8_t *fb, unsigned x, unsigned y, unsigned w, uint16_t col) {
@@ -1013,8 +1014,7 @@ bool state_load() {
   } else {
     if (state_slot >= 0 && memslot_valid[state_slot]) {
       set_supercard_mode(MAPPED_SDRAM, true, false);
-      bool success = load_mem_snapshot(get_memslot_addr(state_slot));
-      popup.msg = msgs[ingame_menu_lang][success ? IMENU_QLD_OK : IMENU_QLD_ERR];
+      popup.msg = msgs[ingame_menu_lang][load_mem_snapshot(get_memslot_addr(state_slot))];
     }
     else if (state_slot < 0 && diskslot_valid[-state_slot - 1]) {
       FIL fd;
@@ -1023,9 +1023,9 @@ bool state_load() {
       if (FR_OK == f_open(&fd, fn, FA_READ)) {
         // It's applied as it's read: a cut file (ie. by an older firmware)
         // isn't started.
-        bool success = f_size(&fd) == sizeof(t_savestate_snapshot) && readfd_mem_snapshot(&fd);
+        const unsigned msg = f_size(&fd) == sizeof(t_savestate_snapshot) ? readfd_mem_snapshot(&fd) : IMENU_PLD_ERR;
         f_close(&fd);
-        popup.msg = msgs[ingame_menu_lang][success ? IMENU_QLD_OK : IMENU_PLD_ERR];
+        popup.msg = msgs[ingame_menu_lang][msg];
       }
       else
         popup.msg = msgs[ingame_menu_lang][IMENU_WSTAR_ERR];

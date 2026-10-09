@@ -132,6 +132,10 @@ savestate_pattern:     .fill 256, 1, 0          // File name pattern (NULL termi
 game_code:             .word 0x0    // The game's code and version (ROM header),
 game_ver:              .word 0x0    // in its savestates
 
+.if (. - ingame_menu) != IGM_HEADER_SIZE
+  .error "The in-game menu header doesn't match t_igmenu (ingame.h)"
+.endif
+
 
 // Necessary handlers for the SC driver
 def_function(sc_issdhc):

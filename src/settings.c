@@ -242,37 +242,22 @@ static void parse_ui_settings(void *usr, const char *var, const char *value) {
   }
 }
 
-// Parses a config file and calls the user callback with varname+value
-// Pointers are only valid for the duration of the callback!
-static void parse_file(char *buf, void(*parse_cb)(void *usr, const char*, const char*), void *usrptr) {
-  char *p = buf;
-  while (1) {
-    char *e = strchr(p, '\n');
-    if (e)
-      *e = 0;
-
-    // A setting without a value (ie. a line cut by a write that failed) is
-    // skipped.
-    char *a = strchr(p, '=');
-    if (a && a[1]) {
-      *a = 0;
-      parse_cb(usrptr, p, &a[1]);
-      *a = '=';
-    }
-
-    if (!e)
-      break;
-
-    *e = '\n';
-    p = &e[1];  // Advance to the next line
-  }
+// Splits a config line ("var=value") at its '=': its value, NULL for a line
+// without one (ie. cut by a write that failed: it's skipped).
+static const char *split_line(char *line) {
+  char *a = line ? strchr(line, '=') : NULL;
+  if (!a || !a[1])
+    return NULL;
+  *a = 0;
+  return &a[1];
 }
 
 typedef void (*setting_fn)(void *usr, const char *var, const char *value);
 
 static bool parse_setting_line(char *line, unsigned len, void *usr) {
-  if (line)
-    parse_file(line, *(setting_fn*)usr, NULL);
+  const char *value = split_line(line);
+  if (value)
+    (*(setting_fn*)usr)(NULL, line, value);
   return true;
 }
 
@@ -338,10 +323,11 @@ typedef struct {
 
 static bool parse_rom_settings_line(char *line, unsigned len, void *usr) {
   const t_rom_settings *rs = (t_rom_settings*)usr;
-  if (line && rs->rld)
-    parse_file(line, parse_rom_load_settings, rs->rld);
-  if (line && rs->rlh)
-    parse_file(line, parse_rom_launch_settings, rs->rlh);
+  const char *value = split_line(line);
+  if (value && rs->rld)
+    parse_rom_load_settings(rs->rld, line, value);
+  if (value && rs->rlh)
+    parse_rom_launch_settings(rs->rlh, line, value);
   return true;
 }
 

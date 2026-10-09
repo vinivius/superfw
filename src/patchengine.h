@@ -95,7 +95,9 @@ void patchengine_process_rom(const uint32_t *rom, unsigned first, unsigned count
 // off loaded from start to end (its context, zeros past the ROM's end; whole
 // 4KiB blocks) and scanned from word first, count words.
 typedef struct {
-  unsigned start, end, first, count;
+  unsigned size;                  // Its bytes of the ROM, from the offset
+  unsigned start, end;            // The ROM bytes it needs (end past the ROM: zeros)
+  unsigned first, count;          // Its words to scan, from start
 } t_pe_chunk;
 void patchengine_chunk(unsigned romsize, unsigned off, unsigned chunk, t_pe_chunk *c);
 

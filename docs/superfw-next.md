@@ -120,6 +120,23 @@ SuperFW and SuperFW Next can install each other.
 - Patch files the patch engine made from a v1 flash table before the fix
   for those (upstream f170dfb) are made again. The file format stays the
   same, so SuperFW and SuperFW Next keep reading each other's files.
+- "Generate patches" placed the patches of ROMs over 8 MiB 8, 16 or 24 MiB
+  too low (the game then broke where they went); patches cached for such
+  ROMs before the fix are made again (generation is offered). A patch set
+  that doesn't fit (128 patches) fails generation instead of overwriting
+  memory, the save functions of another save type (ie. in compilations)
+  no longer count, and a constant's farthest ARM load is found.
+- Savestates and generated patches say which game they are for (the ROM
+  header's code and version): another game's (a ROM of the same name in
+  another folder, or another version of it) isn't used, the state shows
+  "Invalid savestate!". The file formats stay the same: older SuperFW
+  (Next) versions read them, and their states load in any game.
+- The NOR game table is a log that keeps working after a write cut short
+  (it falls back to the newest whole table), never writes past its area and
+  refuses NOR writes and deletes while it can't be read, instead of taking
+  it as empty (a write could then overwrite the other games).
+- "Reset without saving" in the in-game menu stays in the menu and says so
+  when it can't cancel the pending save (it would be written at boot).
 - A damaged or hand-edited recent.txt (no final newline, overlong lines,
   Windows line endings) no longer crashes or hangs the boot.
 - Firmware updates retry (up to 3 times) when erasing, writing or

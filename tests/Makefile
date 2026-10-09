@@ -35,7 +35,7 @@ all:
 		-ffunction-sections -fdata-sections -Wl,--gc-sections
 	./flashmgr_test.bin
 	lcov -c -d . -o flashmgr_test.info
-	$(CC) $(CFLAGS) $(MEMCHK_FLAGS) -o patchengine_test.bin patchengine_test.c ../src/patchengine.c ../src/util.c ../src/fileutil.c ../src/nanoprintf.c -I../ \
+	$(CC) $(CFLAGS) $(MEMCHK_FLAGS) -o patchengine_test.bin patchengine_test.c ../src/util.c ../src/fileutil.c ../src/nanoprintf.c -I../ \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections
 	./patchengine_test.bin
 	lcov -c -d . -o patchengine_test.info

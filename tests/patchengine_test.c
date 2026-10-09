@@ -1,5 +1,6 @@
 // Tests for the patch engine scan (patchengine.c) over a ROM in chunks, the
-// way generate_patches_progress() (menu.c) feeds it.
+// way generate_patches_progress() (menu.c) feeds it. (The engine is included:
+// its save signatures are used.)
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,7 +9,7 @@
 #include <assert.h>
 
 #include "common.h"
-#include "patchengine.h"
+#include "src/patchengine.c"
 
 #define WAITCNT    0x04000204
 #define IRQHADDR   0x03007FFC
@@ -76,6 +77,26 @@ int main() {
   scan((uint8_t*)rom, size, chunk, &pb);
   assert(pb.overflow);
   assert(pb.p.wcnt_ops + pb.p.save_ops + pb.p.irqh_ops + pb.p.rtc_ops <= MAX_PATCH_OPS);
+
+  // An EEPROM game with flash handlers too (ie. a compilation): only the
+  // EEPROM ones are kept, the others don't count against the cap.
+  memset(rom, 0, size);
+  rom[64] = EEPROM_V_WORD0;
+  rom[65] = EEPROM_V_WORD1;
+  for (unsigned i = 0; i < 100; i++)
+    memcpy(&rom[4096 + i * 64], flash_v1_read_sig, sizeof(flash_v1_read_sig));
+  const unsigned we = 4096 + 200 * 64;
+  memcpy(&rom[we], eeprom_v1_read_sig, sizeof(eeprom_v1_read_sig));
+  scan((uint8_t*)rom, size, chunk, &pb);
+  assert(!pb.overflow && pb.p.save_mode == SaveTypeEEPROM64K);
+  assert(pb.p.save_ops == 1 && pb.p.op[0] == ((OPC_EEPROM_HD << 28) | (EEPROM_RD_HNDLR << 25) | we * 4));
+
+  // More flash handlers than the buffer holds before it: the EEPROM one is
+  // lost, the patch would have none: unusable.
+  for (unsigned i = 0; i < 150; i++)
+    memcpy(&rom[4096 + i * 64], flash_v1_read_sig, sizeof(flash_v1_read_sig));
+  scan((uint8_t*)rom, size, chunk, &pb);
+  assert(pb.overflow);
 
   free(rom);
   printf("Patch engine tests OK\n");

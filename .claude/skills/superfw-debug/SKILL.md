@@ -264,7 +264,7 @@ expose the UART as a pty and to keep SD image writes.
   write it with a space). Check sizes after every change: the UART build had
   dropped to a few dozen bytes free; sha256.c (always) and nanoprintf.c
   (UART builds only, `#ifdef ENABLE_UART_LOGGING`) went -Os to get ~1.1 KiB
-  back. In v0.2 the release has ~100 bytes free and the UART build ~200;
+  back. In v0.2 the release has ~85 bytes free and the UART build ~170;
   code compresses poorly (a byte of code costs about a byte of flash).
   nanoprintf.c and utf_util.c are built for size in UART builds only. To
   fit, the UART build also lost the diagnostic that listed where SDRAM
@@ -295,6 +295,11 @@ expose the UART as a pty and to keep SD image writes.
   the persistent (disk) slots 1-5, files `/SAVESTATE/<game>.<n>.state`;
   confirmation popups start on "No" (`l` then `a` for Yes). Pre-create
   state files on the card to test slot handling without saving.
+  States keep format 0x10000 (older SuperFW versions read them); the game
+  (ROM header code and version) is in the header's unused space after the
+  magic "GMID" (offset 16; code at 20, version at 24). Another game's state
+  shows "Invalid savestate!", a damaged one "Corrupted savestate!". To test
+  compatibility, load a state of this build in a `fork/superfw-next` build.
 
 ## Known hardware behaviour (Supercard SD)
 

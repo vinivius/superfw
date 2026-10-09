@@ -47,12 +47,11 @@ int main(int argc, char **argv) {
     exit(1);
   }
   patchengine_process_rom((uint32_t*)tmp, 0, (st.st_size + 3) / 4, 0, &pb, dummy);
+  free(tmp);
+  patchengine_finalize(&pb);       // (It adds the save ops: they count)
+  fclose(fd);
   if (pb.overflow)
     printf("Too many patches (over %d)!\n", MAX_PATCH_OPS);
-
-  free(tmp);
-  patchengine_finalize(&pb);
-  fclose(fd);
 
   // Print patches for manual inspection:
   printf("Save type: %d\n", pb.p.save_mode);
