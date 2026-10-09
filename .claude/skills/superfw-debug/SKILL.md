@@ -326,7 +326,9 @@ expose the UART as a pty and to keep SD image writes.
   they write to those two words (`reg_words` in `loader.c`), put it back
   before checking the ROM and after their last SD access. The in-game menu
   and DirectSave still write the SD card during games over 16 MiB: check on
-  hardware.
+  hardware. UART builds log "SD command word kept/overwritten" after a load
+  that wrote data at 24 MiB (a ROM over 24 MiB): the first one says whether
+  the cart's SDRAM gets SD commands (the emulator's does: "overwritten").
 - ROMs modified by the old SCFW firmware can be misdetected by the patch
   engine; the patch database handles them.
 - Box art lives in `/.superfw/art/XX/<ROM file name>.img`, XX = FNV-1a of the

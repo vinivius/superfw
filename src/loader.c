@@ -134,7 +134,12 @@ static void reg_words_record(uint32_t offset, const uint32_t *data, unsigned byt
 static bool sdcmd_word_restore() {
   volatile uint16_t *w = (uint16_t*)&GBA_ROM_ADDR[reg_words[REG_SDCMD]];
   const uint32_t v = reg_word_data[REG_SDCMD];
-  return !sdcmd_word_recorded || (write16_checked(&w[0], v) && write16_checked(&w[1], v >> 16));
+  if (!sdcmd_word_recorded)
+    return true;
+  // Whether the cart's SDRAM really gets the SD commands, as the emulator's
+  // does (if not, the in-game menu and DirectSave can't overwrite data there).
+  WRITE_LOG("SD command word %s", (w[0] | (w[1] << 16)) == v ? "kept" : "overwritten");
+  return write16_checked(&w[0], v) && write16_checked(&w[1], v >> 16);
 }
 
 // Fixes the header checksum unconditionally (just in case we boot to BIOS).
