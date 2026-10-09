@@ -564,9 +564,11 @@ static bool loadrom_progress_abort(unsigned done, unsigned total) {
 }
 
 
-bool generate_patches_progress(const char *fn, unsigned fs) {
-  // Open ROM and load it in the SDRAM. We load it in 4MB chunks. Not ideal but
-  // we want to preserve the data loaded in the SDRAM (ie. fonts).
+bool generate_patches_progress(const char *fn, unsigned fs, uint32_t gamecode) {
+  // Open ROM and load it in the SDRAM, in chunks that fit hiscratch (we want
+  // to preserve the data loaded in the SDRAM, ie. fonts). Each chunk comes
+  // with the bytes the engine reads around it (PE_LOOKBACK before it,
+  // PE_LOOKAHEAD after it, zeros past the ROM's end).
   FIL fd;
   FRESULT res = f_open(&fd, fn, FA_READ);
   if (res != FR_OK)
@@ -575,29 +577,35 @@ bool generate_patches_progress(const char *fn, unsigned fs) {
   t_patch_builder pb;
   patchengine_init(&pb, fs);
   const unsigned max_hiscratch = 8*1024*1024;
+  const unsigned chunk = max_hiscratch - PE_LOOKBACK - PE_LOOKAHEAD;
 
-  for (unsigned i = 0; i < fs; i += max_hiscratch) {
-    for (unsigned j = 0; j < max_hiscratch && i + j < fs; j += 4096) {
-      UINT rdbytes;
+  for (unsigned i = 0; i < fs; i += chunk) {
+    const unsigned start = i < PE_LOOKBACK ? 0 : i - PE_LOOKBACK;
+    const unsigned blksize = MIN(chunk, fs - i);
+    if (FR_OK != f_lseek(&fd, start)) {
+      f_close(&fd);
+      return false;
+    }
+    for (unsigned j = start; j < i + blksize + PE_LOOKAHEAD; j += 4096) {
+      UINT rdbytes = 0;
       uint32_t tmp[4096/4];
-      if (FR_OK != f_read(&fd, tmp, sizeof(tmp), &rdbytes)) {
+      if (j < fs && FR_OK != f_read(&fd, tmp, sizeof(tmp), &rdbytes)) {
         f_close(&fd);
         return false;
       }
+      memset(&((uint8_t*)tmp)[rdbytes], 0, sizeof(tmp) - rdbytes);
 
       // The patches made from it are kept: the copy is checked.
       set_supercard_mode(MAPPED_SDRAM, true, false);
-      const bool copied = memcpy32_checked(&hiscratch[j], tmp, sizeof(tmp));
+      const bool copied = memcpy32_checked(&hiscratch[j - start], tmp, sizeof(tmp));
       set_supercard_mode(MAPPED_SDRAM, true, true);
       if (!copied) {
         f_close(&fd);
         return false;
       }
-      if (j & ~0xFFFF)
-        loadrom_progress((i*2 + j) >> 8, fs >> 7);
+      if ((j - start) & ~0xFFFF)
+        loadrom_progress((i*2 + j - start) >> 8, fs >> 7);
     }
-    // Amount to process.
-    unsigned blksize = MIN(max_hiscratch, fs - i);
 
     void upd_pe_prog(unsigned prog) {
       unsigned p = i*2 + blksize + prog*4;
@@ -606,18 +614,19 @@ bool generate_patches_progress(const char *fn, unsigned fs) {
 
     // Process patches. Adds them to the existing patchset.
     set_supercard_mode(MAPPED_SDRAM, true, false);
-    patchengine_process_rom((uint32_t*)hiscratch, blksize, &pb, upd_pe_prog);
+    patchengine_process_rom((uint32_t*)hiscratch, (i - start) / 4, (blksize + 3) / 4, start, &pb, upd_pe_prog);
     set_supercard_mode(MAPPED_SDRAM, true, true);
   }
 
   f_close(&fd);
   patchengine_finalize(&pb);
 
-  WRITE_LOG("Patch engine done. Found wcnt: %d save: %d (save mode: %d) irqh: %d rtc: %d",
-            pb.p.wcnt_ops, pb.p.save_ops, pb.p.save_mode, pb.p.irqh_ops, pb.p.rtc_ops);
+  WRITE_LOG("Patch engine done. Found wcnt: %d save: %d (save mode: %d) irqh: %d rtc: %d%s",
+            pb.p.wcnt_ops, pb.p.save_ops, pb.p.save_mode, pb.p.irqh_ops, pb.p.rtc_ops,
+            pb.overflow ? " (too many)" : "");
 
-  // Proceed to write patches to their cache.
-  return write_patches_cache(fn, &pb.p);
+  // Proceed to write patches to their cache (not a cut set: no patches).
+  return !pb.overflow && write_patches_cache(fn, gamecode, &pb.p);
 }
 
 bool dump_flashmem_backup() {
@@ -762,7 +771,7 @@ static bool prepare_gba_info(
   FRESULT res = load_rom_patches(fn, &info->patches_cache);
   if (fr_missing(res)) {
     WRITE_LOG("No patch file found for '%s'", fn);
-    res = load_cached_patches(fn, &info->patches_cache);
+    res = load_cached_patches(fn, parse32le(info->romh.gcode), &info->patches_cache);
     if (fr_missing(res))
       WRITE_LOG("No patch file found in patches cache dir for '%s'", fn);
   }
@@ -3424,8 +3433,9 @@ void start_flash_update(const char *fn, unsigned fwsize, bool validate_superfw) 
 // Generates the patches of a ROM (the "Generate patches" option) and loads
 // them: an error generating them or reading them back is shown.
 static void patches_generate(t_load_gba_info *i) {
-  const bool ok = generate_patches_progress(i->romfn, i->romfs);
-  i->patches_cache_found = FR_OK == load_cached_patches(i->romfn, &i->patches_cache);
+  const uint32_t gamecode = parse32le(i->romh.gcode);
+  const bool ok = generate_patches_progress(i->romfn, i->romfs, gamecode);
+  i->patches_cache_found = FR_OK == load_cached_patches(i->romfn, gamecode, &i->patches_cache);
   spop.alert_msg = msgs[lang_id][!ok                    ? MSG_PATCHGEN_ERR :
                                  i->patches_cache_found ? MSG_PATCHGEN_OK : MSG_ERR_READ];
 }

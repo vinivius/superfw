@@ -864,16 +864,10 @@ bool action_rtc_menu() {
   return false;
 }
 
-void create_paths(const char *fn) {
-  char dirp[256];
-  file_dirname(fn, dirp);
-  f_mkdir(dirp);
-}
-
 // Overwrites the .sav file with our data. The data is written to a temporary
 // file and checked first, so a failed write never destroys the current save.
 static bool save_overwrite() {
-  create_paths(savefile_pattern);     // Just in case it doesn't exist.
+  create_basepath(savefile_pattern);     // Just in case it doesn't exist.
   bool ok = write_save_sram_rotate(savefile_pattern, 0);
   popup.msg = msgs[ingame_menu_lang][ok ? IMENU_MSG_SAVEC : IMENU_MSG_SAVEERR];
   return ok;
@@ -886,7 +880,7 @@ bool action_save_overw() {
 }
 
 bool action_save_backup() {
-  create_paths(savefile_pattern);     // Just in case it doesn't exist.
+  create_basepath(savefile_pattern);     // Just in case it doesn't exist.
 
   // Write save generating a backup, honoring the backup_count.
   unsigned bc = MAX(savefile_backups, 1);
@@ -956,7 +950,7 @@ void save_diskstate() {
   char fn[MAX_FN_LEN], tmpfn[MAX_FN_LEN];
   state_fn(fn, -state_slot, false);
   state_fn(tmpfn, -state_slot, true);
-  create_paths(fn);
+  create_basepath(fn);
   // (A memory slot is cloned, or else the game's spilled state is saved.)
   bool success = (makepers >= 0 || !ingame_spill_failed) &&
                  FR_OK == f_open(&fd, tmpfn, FA_WRITE | FA_CREATE_ALWAYS);

@@ -56,6 +56,8 @@ typedef struct {
   bool rtc_guess;
   // Trailing data
   uint32_t ldata, ldatacnt;
+  // More ops found than a patch holds (MAX_PATCH_OPS): unusable
+  bool overflow;
   // The actual patch data.
   t_patch p;
 } t_patch_builder;
@@ -75,14 +77,21 @@ bool payload_apply_rom(uint8_t *buffer, unsigned bufsize, uint32_t baseaddr,
 void patchengine_init(t_patch_builder *patch, unsigned filesize);
 void patchengine_finalize(t_patch_builder *patch);
 // Generates a patch set from a given ROM.
-bool patchengine_process_rom(const uint32_t *rom, unsigned romsize, t_patch_builder *patch, void(*progresscb)(unsigned));
+// Scans the words rom[first .. first + count) of a ROM (rom[0] is at byte base
+// in it): a chunk of it, with the PE_LOOKBACK bytes before it (LDR searches)
+// and PE_LOOKAHEAD after it (signatures) loaded around it, as far as they're
+// in the ROM (zeros past its end).
+#define PE_LOOKBACK      4096
+#define PE_LOOKAHEAD     4096
+void patchengine_process_rom(const uint32_t *rom, unsigned first, unsigned count, uint32_t base,
+                             t_patch_builder *patch, void(*progresscb)(unsigned));
 
 // Tries to load patches from disk
 // The patch file of a ROM (next to it, or generated): see load_patch_file().
-FRESULT load_cached_patches(const char *romfn, t_patch *patches);
+FRESULT load_cached_patches(const char *romfn, uint32_t gamecode, t_patch *patches);
 FRESULT load_rom_patches(const char *romfn, t_patch *patches);
 // Saves the patches to disk
-bool write_patches_cache(const char *romfn, const t_patch *patches);
+bool write_patches_cache(const char *romfn, uint32_t gamecode, const t_patch *patches);
 
 int serialize_patch(const t_patch *patch, uint8_t *buffer);
 bool unserialize_patch(const uint8_t *buffer, unsigned size, t_patch *patch);
