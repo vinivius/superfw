@@ -641,7 +641,8 @@ sd_operation:
 // Actual implementation template. (12 insts, 48 bytes, see STACK_IRESV)
 safe_sd_operation:
   // Map SD card driver into the high address space (5 insts)
-  mov r11, $(0xD7)       // SDRAM + RW + SD iface
+  mov r11, $(0xD3)       // SDRAM + RO + SD iface (the game's in the SDRAM:
+                         // writes to the SD card's registers mustn't reach it)
   strh r9,  [r8]
   strh r9,  [r8]
   strh r11, [r8]

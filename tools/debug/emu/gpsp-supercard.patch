@@ -12,7 +12,7 @@ index 19bb692..88d6a09 100644
  
  DEFINES := -DHAVE_STRINGS_H -DHAVE_STDINT_H -DHAVE_INTTYPES_H -D__LIBRETRO__ -DINLINE=inline -Wall
 diff --git i/gba_memory.c w/gba_memory.c
-index 4b58f8f..db46a6c 100644
+index 4b58f8f..b8a83fc 100644
 --- i/gba_memory.c
 +++ w/gba_memory.c
 @@ -24,6 +24,72 @@
@@ -287,7 +287,30 @@ index 4b58f8f..db46a6c 100644
    assert(sdcardmap != NULL);
    sdcardsize = st.st_size;
  }
-@@ -3021,7 +3170,7 @@ u32 load_gamepak(const struct retro_game_info* info, const char *name,
+@@ -2930,6 +3079,22 @@ unsigned memory_write_savestate(u8 *dst)
+   return (unsigned int)(dst - startp);
+ }
+ 
++// SDRAM dump (tests): when a file named "sdram-dump" shows up in the working
++// directory, the cart's SDRAM (32MiB, ROM space order) is written to
++// "sdram.bin" and the request file is removed. Polled once per frame.
++void supercard_sdram_dump_poll(void) {
++  FILE *f;
++  if (!(f = fopen("sdram-dump", "r")))
++    return;
++  fclose(f);
++  remove("sdram-dump");
++  if ((f = fopen("sdram.bin.tmp", "wb"))) {
++    fwrite(gamepak_buffer_SDRAM, 1, 32 * 1024 * 1024, f);
++    fclose(f);
++    rename("sdram.bin.tmp", "sdram.bin");
++  }
++}
++
+ void remap_gamepak() {
+   //printf("Remapping ROM space to %s!\n", gamepak_map_sdram ? "SDRAM" : "FLASH");
+ 
+@@ -3021,7 +3186,7 @@ u32 load_gamepak(const struct retro_game_info* info, const char *name,
     flash_bank_cnt = FLASH_SIZE_64KB;
     rtc_enabled = false;
     rumble_enabled = false;
@@ -296,7 +319,7 @@ index 4b58f8f..db46a6c 100644
     serial_mode = force_serial;
  
     load_game_config_over(&gpinfo);
-@@ -3049,3 +3198,8 @@ s32 load_bios(char *name)
+@@ -3049,3 +3214,8 @@ s32 load_bios(char *name)
  }
  
  
@@ -305,3 +328,23 @@ index 4b58f8f..db46a6c 100644
 +static int uart_mode_enabled(void) {
 +  return (io_registers[REG_SIOCNT] & 0x3000) == 0x3000 && !(io_registers[REG_RCNT] & 0x8000);
 +}
+diff --git i/libretro/libretro.c w/libretro/libretro.c
+index 6afa60d..34def29 100644
+--- i/libretro/libretro.c
++++ w/libretro/libretro.c
+@@ -1174,12 +1174,15 @@ size_t retro_get_memory_size(unsigned id)
+    return 0;
+ }
+ 
++void supercard_sdram_dump_poll(void);
++
+ void retro_run(void)
+ {
+    bool updated = false;
+ 
+    input_poll_cb();
+    update_input();
++   supercard_sdram_dump_poll();
+ 
+    rumble_frame_reset();
+ 

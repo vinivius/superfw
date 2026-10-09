@@ -39,6 +39,17 @@ typedef struct {
 void write_supercard_mode(uint16_t modebits);
 void set_supercard_mode(unsigned mapped_area, bool write_access, bool sdcard_interface);
 
+// Maps the SD card for its accesses. The SD card's registers are in the ROM
+// space and writes to them reach the SDRAM while it's writable: while a game
+// runs (in-game menu builds: SD_SDRAM_READONLY) the SDRAM holds it and is
+// read-only, as in libgba's and SCFW's SD drivers. The menu's loads write the
+// SDRAM between SD accesses and put back what the registers overwrote.
+#ifdef SD_SDRAM_READONLY
+  #define set_sdcard_mode()  set_supercard_mode(MAPPED_SDRAM, false, true)
+#else
+  #define set_sdcard_mode()  set_supercard_mode(MAPPED_SDRAM, true, true)
+#endif
+
 void sram_superchis_bank(unsigned bankn);
 void set_superchis_normap(const uint8_t *blks);
 void reset_superchis_normap();

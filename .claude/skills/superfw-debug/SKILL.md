@@ -226,7 +226,11 @@ expose the UART as a pty and to keep SD image writes.
   holds "N K": after N more read commands, the next K never send data (the
   host times out), then reads work again. Use them to test save paths
   (sweep N to hit each step), as done for the in-game save and pending-save
-  fixes.
+  fixes. An empty `sdram-dump` file makes the core write the cart's SDRAM
+  (32 MiB, ROM space order) to `sdram.bin` at the next frame: ie. pad a ROM
+  with 0xFF and check its padding after an in-game menu save (the R8-19
+  test: SD register writes made with the SDRAM writable change it).
+  Rebuild the core with `HAVE_DYNAREC=0` (as setup.sh does).
 - Don't rebuild or replace the core while an emulator uses it (SIGBUS).
 - Long names: the browser can't open a path over 255 chars ("could not
   load ROM!"). The names made from a ROM name (config, patch file, save,
@@ -325,10 +329,11 @@ expose the UART as a pty and to keep SD image writes.
   purpose; read-only SD access is untested on hardware): loads record what
   they write to those two words (`reg_words` in `loader.c`), put it back
   before checking the ROM and after their last SD access. The in-game menu
-  and DirectSave still write the SD card during games over 16 MiB: check on
-  hardware. UART builds log "SD command word kept/overwritten" after a load
-  that wrote data at 24 MiB (a ROM over 24 MiB): the first one says whether
-  the cart's SDRAM gets SD commands (the emulator's does: "overwritten").
+  and DirectSave access the SD card with the SDRAM read-only (mode 0x3,
+  `set_sdcard_mode()`, as libgba's and SCFW's SD drivers do): the game in
+  the SDRAM can't be written. UART builds log "SD command word
+  kept/overwritten" after a load that wrote data at 24 MiB (a ROM over 24
+  MiB): whether the cart's SDRAM gets SD commands (the emulator's does).
 - ROMs modified by the old SCFW firmware can be misdetected by the patch
   engine; the patch database handles them.
 - Box art lives in `/.superfw/art/XX/<ROM file name>.img`, XX = FNV-1a of the

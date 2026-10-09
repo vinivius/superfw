@@ -136,6 +136,10 @@ SuperFW and SuperFW Next can install each other.
   (it falls back to the newest whole table), never writes past its area and
   refuses NOR writes and deletes while it can't be read, instead of taking
   it as empty (a write could then overwrite the other games).
+- The in-game menu and DirectSave use the SD card with the cart's RAM
+  read-only (as libgba's SD driver does): their SD card commands and data
+  could reach a running game over 16 MiB (or the in-game menu's own data
+  there) and change it.
 - "Reset without saving" in the in-game menu stays in the menu and says so
   when it can't cancel the pending save (it would be written at boot).
 - A damaged or hand-edited recent.txt (no final newline, overlong lines,
