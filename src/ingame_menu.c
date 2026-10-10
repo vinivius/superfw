@@ -193,6 +193,7 @@ static void state_regs(t_savestate_regs *r, const t_spilled_region *sp) {
   memory_copy32(r->sup_regs, sp->sup_regs, sizeof(r->sup_regs) / 4);
   memory_copy32(r->abt_regs, sp->abt_regs, sizeof(r->abt_regs) / 4);
   memory_copy32(r->und_regs, sp->und_regs, sizeof(r->und_regs) / 4);
+  memory_copy32(r->usr_regs, sp->usr_regs, sizeof(r->usr_regs) / 4);
 }
 
 static void state_iomap(t_iomap *io, const t_spilled_region *sp) {
@@ -218,6 +219,7 @@ static void state_restore_regs(t_spilled_region *h, const t_savestate_regs *r) {
   memory_copy32(h->sup_regs, r->sup_regs, sizeof(r->sup_regs) / 4);
   memory_copy32(h->abt_regs, r->abt_regs, sizeof(r->abt_regs) / 4);
   memory_copy32(h->und_regs, r->und_regs, sizeof(r->und_regs) / 4);
+  memory_copy32(h->usr_regs, r->usr_regs, sizeof(r->usr_regs) / 4);
 }
 
 // The spilled I/O registers into the spill's header (h), the rest straight to

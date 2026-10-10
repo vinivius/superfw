@@ -27,7 +27,7 @@
 #define IGM_ENTRYPOINT_CHEATS_OFF       (12*4)
 
 #define IGM_HEADER_SIZE                 (652)     // The header in ingame.S (t_igmenu)
-#define SPILL_HDR_SIZE                  (164)     // Spilled registers (t_spilled_region
+#define SPILL_HDR_SIZE                  (172)     // Spilled registers (t_spilled_region
                                                   // up to its palette)
 
 #define FLASH_IGM_TRAMP_NOCHEATS_OFF    ( 8*4)    // Offsets in ingame_trampoline.S
@@ -91,6 +91,7 @@ typedef struct {
   uint32_t sup_regs[3];        // SP, LR and SPSR for Supervisor mode
   uint32_t abt_regs[3];        // SP, LR and SPSR for abort mode
   uint32_t und_regs[3];        // SP, LR and SPSR for undefined mode
+  uint32_t usr_regs[2];        // SP and LR of the game's own (System/User) mode
 
   uint8_t palette[1024];
   uint8_t oam[1024];
@@ -124,8 +125,10 @@ typedef struct {
   uint32_t sup_regs[3];        // SP, LR and SPSR for Supervisor mode
   uint32_t abt_regs[3];        // SP, LR and SPSR for abort mode
   uint32_t und_regs[3];        // SP, LR and SPSR for undefined mode
+  uint32_t usr_regs[2];        // SP and LR of the game's own (System/User) mode
+                               // (zeros in older states: they're kept as they are)
 
-  uint16_t pad[384 / 2];      // Unused space for now
+  uint16_t pad[376 / 2];      // Unused space for now
 } t_savestate_regs;
 
 typedef struct {

@@ -140,6 +140,10 @@ SuperFW and SuperFW Next can install each other.
   read-only (as libgba's SD driver does): their SD card commands and data
   could reach a running game over 16 MiB (or the in-game menu's own data
   there) and change it.
+- Loading a savestate no longer freezes the game when it's at another point
+  than where the state was saved (ie. another screen): the game's own stack
+  pointer and return address (System mode) weren't part of the state. States
+  saved before keep the old behaviour.
 - The in-game menu's font pack is moved checked (in chunks, each written
   again if it doesn't read back): the cart's RAM loses a write now and then,
   and a lost one failed the load ("ROM verification failed").

@@ -365,6 +365,13 @@ ingame_menu_entry:
   save_moderegs(0x17)                    // abort mode.
   save_moderegs(0x1B)                    // undefined mode.
 
+  // The game's own (System/User mode) SP and LR: a savestate needs them.
+  mov r0, $(0xC0 | 0x1F)
+  msr cpsr_c, r0
+  mov r4, sp
+  mov r5, lr
+  stmia r1!, {r4, r5}
+
   msr cpsr, r2                           // Restore original mode/cpsr
 
   // Copy Palette, OAM and VRAM to the spill area (r3: whether it failed)
@@ -544,6 +551,15 @@ ingame_menu_entry:
   reload_regs(0x13, 2);              // supervisor mode
   reload_part_regs(0x17, 3);         // abort mode
   reload_part_regs(0x1B, 4);         // undefined mode
+
+  // The game's own (System/User mode) SP and LR (zeros: an older state
+  // without them was loaded, the current ones stay).
+  ldr r3, [r1, #(64 + 4 + 5*12 + 0)]
+  cmp r3, $0
+  movne r0, $(0xC0 | 0x1F)
+  msrne cpsr_c, r0
+  movne sp, r3
+  ldrne lr, [r1, #(64 + 4 + 5*12 + 4)]
 
   ldr r3, [r1, #(64 + 0)]            // CPSR (IRQ mode)
   msr cpsr, r3                       // Load CPSR, changes to IRQ mode too.
