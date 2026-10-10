@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <b>A modern, faster and more reliable menu for Supercard GBA flash carts.</b><br>
+  <b>A more stable SuperFW for cheap, unreliable Supercard GBA flash carts.</b><br>
   An unofficial fork of <a href="https://github.com/davidgfnet/superfw">SuperFW</a> by davidgf.
 </p>
 
@@ -15,21 +15,28 @@
 
 SuperFW Next (version 0.0.95) builds on [SuperFW](https://github.com/davidgfnet/superfw),
 the open source firmware for Supercard GBA flash carts written by David Guillen
-Fandos (davidgf). All the credit for SuperFW goes to him. This fork adds a
-redesigned menu, box art, search, responsiveness and reliability fixes, a ROM
-manager that prepares the SD card, and debugging tools. It is not endorsed by
+Fandos (davidgf). All the credit for SuperFW goes to him.
+
+It is a more stable version of SuperFW for cheap, unreliable flash carts:
+clones whose RAM loses a write now and then, slow or flaky SD cards. Every
+write that matters (the ROM, patches, the in-game menu, saves and
+savestates) is read back and redone if it didn't stick, loads are verified,
+and a failed save never replaces the good one. On top of that it adds a
+redesigned menu, box art, search, a ROM manager that prepares the SD card,
+and debugging tools. It is not endorsed by
 the SuperFW author, so please report problems with this fork
 [here](https://github.com/vinivius/superfw_next/issues), not upstream. Like
 SuperFW, it is free software under the GNU GPL version 3 or later.
 
 ## Download
 
-Get the `.fw` file (ie. `superfw-next-v0.2-sd.fw`) from the
-[latest release](https://github.com/vinivius/superfw_next/releases/latest),
-then follow [Installing or updating](#installing-or-updating). Only the
-Supercard SD build is published: it is the one tested on real hardware. The
-Lite and CHIS variants build from the same sources (`make BOARD=lite` /
-`BOARD=chis`) but have not been tested.
+Get your cart's `.fw` file from the
+[latest release](https://github.com/vinivius/superfw_next/releases/latest)
+(the same files as SuperFW's releases): `superfw-sd.fw` for the Supercard
+SD, `superfw-lite.fw` for the Supercard Lite, `superfw-chis.fw` for the
+SuperChis. Then follow [Installing or updating](#installing-or-updating).
+The Supercard SD build is the one tested on real hardware; the Lite and
+CHIS ones build from the same sources but have not been tested.
 
 ## What's new
 
@@ -161,7 +168,7 @@ Use fresh batteries or a power adapter: an update interrupted by a power
 loss can leave the cart unbootable (see the NDS flasher in
 [Installation](#installation) below to recover it).
 
-1. **Try it first.** Copy the `.fw` file (ie. `superfw-next-v0.2-sd.fw`) to
+1. **Try it first.** Copy the `.fw` file (ie. `superfw-sd.fw`) to
    the SD card renamed to `superfw-next.gba`, and launch it from the browser
    like a game. It runs
    from memory without touching the cart's flash: turning the console off
