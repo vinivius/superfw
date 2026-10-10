@@ -314,7 +314,7 @@ bool write_rom_buffer(FIL *fd, const void *buffer, unsigned size, void *tmpbuf) 
   for (unsigned off = 0; off < size; off += 1024) {
     set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can read spill area.
     memory_copy32((uint32_t*)tmpbuf, (uint32_t*)&ptr[off], 1024 / 4);
-    set_sdcard_mode();   // So we can write to the SD card
+    set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can write to the SD card
 
     if (!write_all(fd, tmpbuf, 1024))
       return false;
@@ -348,14 +348,14 @@ bool writefd_mem_snapshot(FIL *fd) {
 
   set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can read spill area.
   state_regs(&tmp.regs, spill_ptr);
-  set_sdcard_mode();   // So we can write to the SD card
+  set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can write to the SD card
   if (!write_all(fd, &tmp.regs, sizeof(tmp.regs)))
     return false;
 
   // Write the I/O RAM but patch in the spilled registers too.
   set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can read spill area.
   state_iomap(&tmp.iomap, spill_ptr);
-  set_sdcard_mode();   // So we can write to the SD card
+  set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can write to the SD card
   if (!write_all(fd, &tmp.iomap, sizeof(tmp.iomap)))
     return false;
 
@@ -448,14 +448,14 @@ bool read_rom_buffer(FIL *fd, void *buffer, unsigned size, void *tmpbuf) {
   // Similar to write_rom_buffer, but just in the other direction.
   uint8_t* ptr = (uint8_t*)buffer;
   for (unsigned off = 0; off < size; off += 1024) {
-    set_sdcard_mode();   // So we can read from the SD card
+    set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can read from the SD card
 
     if (!read_all(fd, tmpbuf, 1024))
       return false;
 
     set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can write spill area.
     const bool copied = memcpy32_checked(&ptr[off], tmpbuf, 1024);  // (SDRAM)
-    set_sdcard_mode();    // So we can read from the SD card
+    set_supercard_mode(MAPPED_SDRAM, true, true);    // So we can read from the SD card
     if (!copied)
       return false;
   }
@@ -500,7 +500,7 @@ unsigned readfd_mem_snapshot(FIL *fd) {
   state_restore_io(h, &tmp.iomap);
   set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can write spill area.
   const bool hdr_ok = memcpy32_checked(spill_ptr, hbuf, sizeof(hbuf));
-  set_sdcard_mode();    // So we can read from the SD card
+  set_supercard_mode(MAPPED_SDRAM, true, true);    // So we can read from the SD card
   if (!hdr_ok)
     return IMENU_PLD_ERR;
 
@@ -953,7 +953,7 @@ void save_memstate() {
 
 // Saves a disk state, capable of "cloning" an in-memory state.
 void save_diskstate() {
-  set_sdcard_mode();
+  set_supercard_mode(MAPPED_SDRAM, true, true);
 
   // Written to a temporary file that replaces the slot's once whole (a cut
   // state can't be loaded, and the one there is kept if it fails).
@@ -1037,7 +1037,7 @@ bool state_load() {
 }
 
 void del_diskstate() {
-  set_sdcard_mode();
+  set_supercard_mode(MAPPED_SDRAM, true, true);
   char tmp[MAX_FN_LEN];
   state_fn(tmp, -state_slot, false);
   const FRESULT res = f_unlink(tmp);
@@ -1301,7 +1301,7 @@ void ingame_menu_loop(uint32_t *use_cheats_hook) {
         memset(&popup, 0, sizeof(popup));
 
         if ((pressed & KEY_BUTTA) && cb) {
-          set_sdcard_mode();
+          set_supercard_mode(MAPPED_SDRAM, true, true);
           cb();
           set_supercard_mode(MAPPED_SDRAM, true, false);
         }
@@ -1316,7 +1316,7 @@ void ingame_menu_loop(uint32_t *use_cheats_hook) {
       else if (pressed & KEY_BUTTA) {
         unsigned cbnum = menudata[submenu].opt_count ? copt : 0;
 
-        set_sdcard_mode();
+        set_supercard_mode(MAPPED_SDRAM, true, true);
         const menu_action_fn cb = menudata[submenu].actions[cbnum];
         bool retn = cb ? cb() : false;
         set_supercard_mode(MAPPED_SDRAM, true, false);
@@ -1358,7 +1358,7 @@ void ingame_menu_loop(uint32_t *use_cheats_hook) {
   }
 
   // Unmount the device, ensure everything is in order
-  set_sdcard_mode();
+  set_supercard_mode(MAPPED_SDRAM, true, true);
   f_unmount("0:");
   set_supercard_mode(MAPPED_SDRAM, true, false);
 

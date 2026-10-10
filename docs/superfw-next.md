@@ -136,10 +136,6 @@ SuperFW and SuperFW Next can install each other.
   (it falls back to the newest whole table), never writes past its area and
   refuses NOR writes and deletes while it can't be read, instead of taking
   it as empty (a write could then overwrite the other games).
-- The in-game menu and DirectSave use the SD card with the cart's RAM
-  read-only (as libgba's SD driver does): their SD card commands and data
-  could reach a running game over 16 MiB (or the in-game menu's own data
-  there) and change it.
 - Loading a savestate no longer freezes the game when it's at another point
   than where the state was saved (ie. another screen): the game's own stack
   pointer and return address (System mode) weren't part of the state. States

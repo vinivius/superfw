@@ -137,8 +137,7 @@ static bool sdcmd_word_restore() {
   if (!sdcmd_word_recorded)
     return true;
   // Whether the cart's SDRAM really gets the SD commands, as the emulator's
-  // does (the in-game menu and DirectSave access the SD card with the SDRAM
-  // read-only; if it doesn't, loads needn't put this back).
+  // does (if not, the in-game menu and DirectSave can't overwrite data there).
   WRITE_LOG("SD command word %s", (w[0] | (w[1] << 16)) == v ? "kept" : "overwritten");
   return write16_checked(&w[0], v) && write16_checked(&w[1], v >> 16);
 }

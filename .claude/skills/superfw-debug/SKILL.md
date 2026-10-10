@@ -336,9 +336,11 @@ expose the UART as a pty and to keep SD image writes.
   purpose; read-only SD access is untested on hardware): loads record what
   they write to those two words (`reg_words` in `loader.c`), put it back
   before checking the ROM and after their last SD access. The in-game menu
-  and DirectSave access the SD card with the SDRAM read-only (mode 0x3,
-  `set_sdcard_mode()`, as libgba's and SCFW's SD drivers do): the game in
-  the SDRAM can't be written. UART builds log "SD command word
+  and DirectSave write the SD card during games over 16 MiB with the SDRAM
+  writable. Don't make SD accesses read-only (bit 2 off, ie. 0xD3 or 0x3,
+  as libgba's driver does): on the user's Supercard SD, DirectSave then read
+  Pokemon FireRed's save wrong ("save file corrupted", the file intact),
+  and it worked again with 0xD7. UART builds log "SD command word
   kept/overwritten" after a load that wrote data at 24 MiB (a ROM over 24
   MiB): whether the cart's SDRAM gets SD commands (the emulator's does).
 - ROMs modified by the old SCFW firmware can be misdetected by the patch

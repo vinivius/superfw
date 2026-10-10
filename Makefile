@@ -95,7 +95,6 @@ INGAME_CFLAGS=-Os -ggdb \
               $(BASEFLAGS) $(INGAMEFLAGS) \
               -DNO_SUPERCARD_INIT \
               -DSD_PREERASE_BLOCKS_WRITE \
-              -DSD_SDRAM_READONLY \
               -Wall -Isrc -I. \
               -mthumb -flto
 

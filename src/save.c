@@ -54,7 +54,7 @@ void write_sram_buffer(const uint8_t *buffer, unsigned offset, unsigned len) {
   for (unsigned i = 0; i < len; i++)
     SRAM_BASE_U8[offset + i] = buffer[i];
 
-  set_sdcard_mode();
+  set_supercard_mode(MAPPED_SDRAM, true, true);
 }
 
 void read_sram_buffer(uint8_t *buffer, unsigned offset, unsigned len) {
@@ -64,7 +64,7 @@ void read_sram_buffer(uint8_t *buffer, unsigned offset, unsigned len) {
   for (unsigned i = 0; i < len; i++)
     buffer[i] = SRAM_BASE_U8[offset + i];
 
-  set_sdcard_mode();
+  set_supercard_mode(MAPPED_SDRAM, true, true);
 }
 
 bool load_save_sram(const char *savefn) {
@@ -85,7 +85,7 @@ bool load_save_sram(const char *savefn) {
     }
 
     write_sram_buffer(buf, i, rdbytes);
-    set_sdcard_mode();
+    set_supercard_mode(MAPPED_SDRAM, true, true);
 
     if (rdbytes < sizeof(buf))
       break;   // EOF
@@ -130,7 +130,7 @@ bool write_save_sram(const char *fn) {
     SRAM_MAP_BANK(bank);
     for (unsigned j = 0; j < 1024; j++)
       tmpbuf[j] = sram_ptr[j];
-    set_sdcard_mode();
+    set_supercard_mode(MAPPED_SDRAM, true, true);
 
     ok = write_all(&fd, tmpbuf, sizeof(tmpbuf));      // (ie. card full)
   }
@@ -161,7 +161,7 @@ bool compare_save_sram(const char *fn) {
     for (unsigned j = 0; j < 1024; j++)
       if (tmpbuf[j] != sram_ptr[j])
         mism = true;
-    set_sdcard_mode();
+    set_supercard_mode(MAPPED_SDRAM, true, true);
   }
   f_close(&fd);
 
@@ -320,7 +320,7 @@ void erase_sram() {
     for (unsigned i = 0; i < SRAM_BANK_SIZE; i++)
       SRAM_BASE_U8[i] = 0xFF;
   }
-  set_sdcard_mode();
+  set_supercard_mode(MAPPED_SDRAM, true, true);
 }
 
 bool file_is_contiguous(const char *fn, LBA_t *lba) {
