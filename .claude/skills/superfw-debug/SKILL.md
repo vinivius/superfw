@@ -342,7 +342,8 @@ expose the UART as a pty and to keep SD image writes.
   Pokemon FireRed's save wrong ("save file corrupted", the file intact),
   and it worked again with 0xD7. UART builds log "SD command word
   kept/overwritten" after a load that wrote data at 24 MiB (a ROM over 24
-  MiB): whether the cart's SDRAM gets SD commands (the emulator's does).
+  MiB): on the user's Supercard SD it's "kept" (32 MiB Kingdom Hearts): the
+  real SDRAM doesn't get the SD registers' writes, only the emulator does.
 - ROMs modified by the old SCFW firmware can be misdetected by the patch
   engine; the patch database handles them.
 - Box art lives in `/.superfw/art/XX/<ROM file name>.img`, XX = FNV-1a of the
