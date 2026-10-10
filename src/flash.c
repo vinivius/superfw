@@ -467,14 +467,15 @@ bool flash_fw_is_self() {
   return self;
 }
 
-// Validates a superFW image header
-bool check_superfw(const uint8_t *h, uint32_t *ver) {
+// Validates a superFW image header: its version, and whether it's SuperFW
+// Next (marked in the header's padding; its version has three parts).
+bool check_superfw(const uint8_t *h, uint32_t *ver, bool *next) {
   const t_superfw_header *header = (t_superfw_header*)h;
 
   if (memcmp(header->magic, "SUPERFW~DAVIDGF", 16))
     return false;
-  if (ver)
-    *ver = header->version;
+  *ver = header->version;
+  *next = !memcmp(header->pad, "NEXT", 4);
   return true;
 }
 

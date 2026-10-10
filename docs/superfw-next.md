@@ -7,7 +7,7 @@ Supercard SD with a 2245/1237/653 ROM card.
 
 ## Name
 
-SuperFW Next, version 0.2: an unofficial fork, SuperFW is by davidgf. The
+SuperFW Next, version 0.0.95: an unofficial fork, SuperFW is by davidgf. The
 boot screen and the About tab show the unchanged SUPERFW logo with "NEXT"
 under it (original 80s arcade style lettering, `res/next/make_next.py`,
 converted by `res/next/next2c.py`). The firmware header is unchanged, so
@@ -173,14 +173,16 @@ the release and the UART debug firmware, with the same Arm toolchain as
 build), plus the unit tests.
 
 A pull request that changes the release firmware must bump `VERSION_WORD`
-in the Makefile (`0x00000002` is version 0.2), or the check fails. CI builds
+in the Makefile (`major << 16 | minor << 8 | patch`: `0x0000005F` is version
+0.0.95), or the check fails. CI builds
 the release for the base and for the pull request with the same commit hash
 and compares them, so docs, tools or debug-only changes don't need a bump.
 A pull request must be up to date with `superfw-next` to merge, so the
 check always runs against the latest version.
 
-Every merge publishes the release `next-vX.Y` for its version, once, in
-merge order: `superfw-next-vX.Y-sd.fw` to flash, the same image as `.gba`
-to try it from the SD card first, the debug build and `SHA256SUMS`. The
+Every merge publishes the release `next-vX.Y.Z` for its version, once, in
+merge order, with the same files as SuperFW's releases: `superfw-sd.fw`,
+`superfw-lite.fw` and `superfw-chis.fw` (renamed to `.gba`, the SD one can be
+tried from the SD card first). The UART debug build is only size-checked. The
 release scripts live in `tools/ci/`; `tools/ci/test-release.py` runs them
 against a fake `gh` in every pull request.

@@ -55,7 +55,7 @@ jobs:
         id: version
         run: |
           w=$(sed -n 's/^VERSION_WORD := //p' Makefile)
-          v="v$(( w >> 16 )).$(( w & 0xFFFF ))"
+          v="v$(( w >> 16 )).$(( (w >> 8) & 0xFF )).$(( w & 0xFF ))"   # major.minor.patch
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Version: $v ($w)"
 
@@ -80,34 +80,29 @@ jobs:
           if cmp -s superfw.gba "$RUNNER_TEMP/base/superfw.gba"; then
             echo "The release firmware is unchanged, no version bump needed."
           else
-            echo "::error file=Makefile::The release firmware changed, but VERSION_WORD was not bumped ($old). Increase it (ie. 0x00000002 is version 0.2)."
+            echo "::error file=Makefile::The release firmware changed, but VERSION_WORD was not bumped ($old). Increase it (major << 16 | minor << 8 | patch: 0x0000005F is version 0.0.95)."
             exit 1
           fi
           make clean >/dev/null
 
       - name: Build the release firmware
         run: |
-          make BOARD=sd -j"$(nproc)"
+          # The same files as upstream SuperFW's releases: one per cart.
           mkdir -p out
-          v=${{ steps.version.outputs.version }}
-          cp superfw.gba "out/superfw-next-$v-sd.fw"     # To flash
-          cp superfw.gba "out/superfw-next-$v-sd.gba"    # Same image, to try it from the SD card first
-          tools/debug/flash-free.sh superfw.gba "Release" >> "$GITHUB_STEP_SUMMARY"
+          for board in sd lite chis; do
+            make clean >/dev/null
+            make BOARD=$board -j"$(nproc)"
+            cp superfw.gba "out/superfw-$board.fw"
+          done
+          make clean >/dev/null
+          make BOARD=sd -j"$(nproc)"
+          tools/debug/flash-free.sh superfw.gba "Release (SD)" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Build the UART debug firmware
+      - name: Build the UART debug firmware (size check only)
         run: |
           make clean >/dev/null
           make BOARD=sd ENABLE_UART_LOGGING=1 -j"$(nproc)"
-          cp superfw.gba "out/superfw-next-${{ steps.version.outputs.version }}-sd-uart-debug.gba"
           tools/debug/flash-free.sh superfw.gba "UART debug" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Checksums
-        run: |
-          # Named one by one: the order of a glob depends on the locale.
-          v=${{ steps.version.outputs.version }}
-          cd out
-          sha256sum "superfw-next-$v-sd.fw" "superfw-next-$v-sd.gba" "superfw-next-$v-sd-uart-debug.gba" > SHA256SUMS
-          cat SHA256SUMS
 
       - name: Upload the firmware
         uses: actions/upload-artifact@v4

@@ -13,7 +13,7 @@
   <img src="docs/screenshots/recent.png" width="32%" alt="Recent games">
 </p>
 
-SuperFW Next (version 0.2) builds on [SuperFW](https://github.com/davidgfnet/superfw),
+SuperFW Next (version 0.0.95) builds on [SuperFW](https://github.com/davidgfnet/superfw),
 the open source firmware for Supercard GBA flash carts written by David Guillen
 Fandos (davidgf). All the credit for SuperFW goes to him. This fork adds a
 redesigned menu, box art, search, responsiveness and reliability fixes, a ROM

@@ -51,7 +51,7 @@ void flash_erase_fsm_start(t_flash_erase_state *st, uint32_t baseaddr, unsigned 
 int flash_erase_fsm_step(t_flash_erase_state *st);
 void flash_erase_fsm_stop(t_flash_erase_state *st);
 
-bool check_superfw(const uint8_t *h, uint32_t *ver);
+bool check_superfw(const uint8_t *h, uint32_t *ver, bool *next);
 bool flash_fw_is_self();
 bool validate_superfw_variant(const uint8_t *fw);
 bool validate_superfw_checksum(const uint8_t *fw, unsigned fwsize);

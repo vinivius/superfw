@@ -1,5 +1,6 @@
 
-VERSION_WORD := 0x00000002
+# major << 16 | minor << 8 | patch: 0x0000005F is 0.0.95
+VERSION_WORD := 0x0000005F
 VERSION_SLUG_WORD := $(shell git rev-parse --short=8 HEAD || echo FFFFFFFF)
 
 PREFIX		:= arm-none-eabi-

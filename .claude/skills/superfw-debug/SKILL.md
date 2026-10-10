@@ -37,7 +37,8 @@ and commit it as its own commit. Push only when the user asks.
   CI (`.github/workflows/superfw-next.yml`). Bump `VERSION_WORD` in any PR
   that changes the release firmware (CI compares release builds of the base
   and the PR made with `VERSION_SLUG_WORD=00000000`); merging publishes the
-  release `next-vX.Y` (`tools/ci/publish-release.sh`). Change the release
+  release `next-vX.Y.Z` (`tools/ci/publish-release.sh`; `VERSION_WORD` is
+  major << 16 | minor << 8 | patch, ie. `0x0000005F` is 0.0.95). Change the release
   scripts together with `tools/ci/test-release.py`, which runs them against
   a fake gh (`python3 tools/ci/test-release.py`, needs jq).
 

@@ -407,6 +407,7 @@ static struct {
     struct {
       char fn[MAX_FN_LEN];                // FW file to load and flash
       bool issfw;                         // The firmware is a superFW image.
+      bool isnext;                        // ... a SuperFW Next one.
       uint32_t superfw_ver;               // Reported FW version.
       uint32_t fw_size;                   // Size in bytes reported by stat.
       unsigned curr_state;                // Flashing FSM state.
@@ -1212,7 +1213,7 @@ NOINLINE static void browser_open(const char *fn, uint32_t fs) {
         else if (!validate_gba_header(tmp))  // Is it a valid GBA ROM header?
           spop.alert_msg = msgs[lang_id][MSG_FWUP_BADHD];
         else {
-          spop.p.update.issfw = check_superfw(tmp, &spop.p.update.superfw_ver);
+          spop.p.update.issfw = check_superfw(tmp, &spop.p.update.superfw_ver, &spop.p.update.isnext);
           spop.p.update.fw_size = fs;
           spop.p.update.curr_state = FlashingReady;
           spop.pop_num = POPUP_FWFLASH;
@@ -2399,9 +2400,11 @@ void render_fw_flash_popup(volatile uint8_t *frame) {
   draw_box_outline(frame, 16, 224, 64, 92, FG_COLOR);
   if (spop.p.update.issfw) {
     char tmp[32];
-    npf_snprintf(tmp, sizeof(tmp), "SuperFW (ver %lu.%lu)",
-                 spop.p.update.superfw_ver >> 16,
-                 spop.p.update.superfw_ver & 0xFFFF);
+    const uint32_t v = spop.p.update.superfw_ver;
+    if (spop.p.update.isnext)
+      npf_snprintf(tmp, sizeof(tmp), "SuperFW Next (ver %lu.%lu.%lu)", v >> 16, (v >> 8) & 0xFF, v & 0xFF);
+    else
+      npf_snprintf(tmp, sizeof(tmp), "SuperFW (ver %lu.%lu)", v >> 16, v & 0xFFFF);
     draw_central_text(tmp, frame, 120, 70);
   } else {
     draw_central_text(msgs[lang_id][MSG_FWUPD_UNK], frame, 120, 70);
@@ -2920,9 +2923,7 @@ static void render_next_art(volatile uint8_t *frame, unsigned x, unsigned y) {
 }
 
 void render_info(volatile uint8_t *frame) {
-  uint32_t vmaj = VERSION_WORD >> 16;
-  uint32_t vmin = VERSION_WORD & 0xFFFF;
-  uint32_t gitver = VERSION_SLUG_WORD;
+  const uint32_t gitver = VERSION_SLUG_WORD;
   char tmp[64], tmp2[32];
 
   // "SUPERFW" (unchanged, 124x28, centered) with "NEXT" rising diagonally
@@ -2933,8 +2934,9 @@ void render_info(volatile uint8_t *frame) {
 
   switch (smenu.info.selector) {
   case 0:
-    draw_central_text("by davidgf", frame, 120, 78);
-    npf_snprintf(tmp, sizeof(tmp), "Version %lu.%lu (%08lx)", vmaj, vmin, gitver);
+    draw_central_text("modded by vinivius", frame, 120, 78);
+    npf_snprintf(tmp, sizeof(tmp), "Version %u.%u.%u (%08lx)", VERSION_WORD >> 16,
+                 (VERSION_WORD >> 8) & 0xFF, VERSION_WORD & 0xFF, gitver);
     draw_central_text(tmp, frame, 120, 103);
     #ifdef ENABLE_UART_LOGGING
       draw_central_text(FW_FLAVOUR " variant - UART debug", frame, 120, 122);
