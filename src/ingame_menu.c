@@ -27,6 +27,8 @@
 #include "menu_messages.h"
 #include "res/logo.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
+#include "config.h"
 #include "supercard_driver.h"
 #include "res/icons-menu.h"
 #include "ingame.h"
@@ -110,6 +112,10 @@ const uint8_t animspd_lut[] = {
 static bool diskst_init = false;
 static int makepers = -1;
 static int state_slot;
+// Set by the menu entry (ingame.S) when the game's state couldn't be spilled
+// to the cart's SDRAM right, and while a load that failed left it a mix: no
+// savestate is made from it.
+uint32_t ingame_spill_failed;
 static int num_mem_savestates, num_dsk_savestates;
 static uint8_t memslot_valid[MAX_MEM_SLOTS] = {0};
 static uint8_t diskslot_valid[MAX_DISK_SLOTS] = {0};
@@ -142,67 +148,160 @@ static inline void* get_memslot_addr(unsigned slotnum) {
   return (void*)(scratch_base + ((slotnum * 388) << 10));
 }
 
+// Copies whole 256 byte blocks to the cart's SDRAM, checked.
+static bool blocks_checked(void *dst, const void *src, unsigned count) {
+  return copy_checked(dst, src, count, fast_mem_cpy_256);
+}
+
+// The game's code and version (from the loader): its states are only loaded
+// into it.
+extern uint32_t game_code, game_ver;
+
+// A savestate's header, registers and I/O, made from the game's state (the
+// spill holds its CPU registers and some I/O registers, the spill area must
+// be readable), and put back: one mapping for memory slots and files.
+static void state_header(t_savestate_header *h) {
+  memset(h, 0, sizeof(*h));
+  h->signature[0] = SIGNATURE_A;
+  h->signature[1] = SIGNATURE_B;
+  h->signature[2] = SIGNATURE_C;
+  h->version = SAVESTATE_VERSION;
+  h->gameid = STATE_GAMEID;
+  h->gamecode = game_code;
+  h->gamever = game_ver;
+}
+
+// The message for loading a state of this header: IMENU_QLD_OK for this
+// game's (older states don't say their game: they load in any), IMENU_QLD_ERR
+// for another game's (ie. a ROM of the same name elsewhere, or another
+// version of it), IMENU_PLD_ERR if it isn't a state.
+static unsigned state_check(const t_savestate_header *h) {
+  if (h->signature[0] != SIGNATURE_A || h->signature[1] != SIGNATURE_B ||
+      h->signature[2] != SIGNATURE_C || h->version != SAVESTATE_VERSION)
+    return IMENU_PLD_ERR;
+  if (h->gameid == STATE_GAMEID && (h->gamecode != game_code || h->gamever != game_ver))
+    return IMENU_QLD_ERR;
+  return IMENU_QLD_OK;
+}
+
+static void state_regs(t_savestate_regs *r, const t_spilled_region *sp) {
+  memset(r, 0, sizeof(*r));
+  r->cpsr = sp->cpsr;
+  memory_copy32(r->cpu_regs, sp->cpu_regs, sizeof(r->cpu_regs) / 4);
+  memory_copy32(r->irq_regs, sp->irq_regs, sizeof(r->irq_regs) / 4);
+  memory_copy32(r->fiq_regs, sp->fiq_regs, sizeof(r->fiq_regs) / 4);
+  memory_copy32(r->sup_regs, sp->sup_regs, sizeof(r->sup_regs) / 4);
+  memory_copy32(r->abt_regs, sp->abt_regs, sizeof(r->abt_regs) / 4);
+  memory_copy32(r->und_regs, sp->und_regs, sizeof(r->und_regs) / 4);
+  memory_copy32(r->usr_regs, sp->usr_regs, sizeof(r->usr_regs) / 4);
+}
+
+static void state_iomap(t_iomap *io, const t_spilled_region *sp) {
+  fast_mem_cpy_256(io, (const void*)0x04000000, sizeof(*io));
+  io->dispcnt  = sp->dispcnt;
+  io->dispstat = sp->dispstat;
+  io->bldcnt   = sp->bldcnt;
+  io->bldalpha = sp->bldalpha;
+  io->soundcnt = sp->soundcnt;
+  for (unsigned i = 0; i < 4; i++) {
+    io->tms[i].tm_cntl = sp->tm_cnt[i];
+    io->dma[i].ctrl    = sp->dma_cnt[i];
+    io->bg_cnt[i]      = sp->bg_cnt[i];
+  }
+}
+
+// Into the spill's header (h, made in RAM: written whole later).
+static void state_restore_regs(t_spilled_region *h, const t_savestate_regs *r) {
+  h->cpsr = r->cpsr;
+  memory_copy32(h->cpu_regs, r->cpu_regs, sizeof(r->cpu_regs) / 4);
+  memory_copy32(h->irq_regs, r->irq_regs, sizeof(r->irq_regs) / 4);
+  memory_copy32(h->fiq_regs, r->fiq_regs, sizeof(r->fiq_regs) / 4);
+  memory_copy32(h->sup_regs, r->sup_regs, sizeof(r->sup_regs) / 4);
+  memory_copy32(h->abt_regs, r->abt_regs, sizeof(r->abt_regs) / 4);
+  memory_copy32(h->und_regs, r->und_regs, sizeof(r->und_regs) / 4);
+  memory_copy32(h->usr_regs, r->usr_regs, sizeof(r->usr_regs) / 4);
+}
+
+// The spilled I/O registers into the spill's header (h), the rest straight to
+// the registers that can be written back.
+static void state_restore_io(t_spilled_region *h, const t_iomap *io) {
+  h->dispcnt  = io->dispcnt;
+  h->dispstat = io->dispstat;
+  h->bldcnt   = io->bldcnt;
+  h->bldalpha = io->bldalpha;
+  h->soundcnt = io->soundcnt;
+  for (unsigned i = 0; i < 4; i++) {
+    h->tm_cnt[i]  = io->tms[i].tm_cntl;
+    h->dma_cnt[i] = io->dma[i].ctrl;
+    h->bg_cnt[i]  = io->bg_cnt[i];
+  }
+
+  // We cannot restore the full I/O space, many read only, write only and weird registers.
+  // Let's restore them a bit more selectively.
+  t_iomap *curr_ro_io = (t_iomap*)0x04000000;
+  curr_ro_io->winin  = io->winin;            // LCD registers (the rest are write only!)
+  curr_ro_io->winout = io->winout;
+  curr_ro_io->sound1cnt   = io->sound1cnt;   // Sound registers
+  curr_ro_io->sound1cnt_x = io->sound1cnt_x;
+  curr_ro_io->sound2cnt_l = io->sound2cnt_l;
+  curr_ro_io->sound3cnt   = io->sound3cnt;
+  curr_ro_io->sound3cnt_x = io->sound3cnt_x;
+  curr_ro_io->sound4cnt_l = io->sound4cnt_l;
+  curr_ro_io->soundcnt_x  = io->soundcnt_x;
+  curr_ro_io->keycnt  = io->keycnt;          // Input regs
+  curr_ro_io->reg_ie  = io->reg_ie;          // IRQ regs
+  curr_ro_io->master_ie  = io->master_ie;
+
+  for (unsigned i = 0; i < 4; i++)           // Timers
+    curr_ro_io->tms[i].tm_cnth  = io->tms[i].tm_cnth;
+
+  // TODO: Restore SIO registers too?
+}
+
 // The save state is a bit all over the place, since entering the menu only
-// swaps some partial state (to save space and be faster).
-void take_mem_snapshot(void *buffer) {
+// swaps some partial state (to save space and be faster). Takes a snapshot of
+// the game into buffer (a memory slot, in the cart's SDRAM), checked: false
+// if it couldn't be written.
+bool take_mem_snapshot(void *buffer) {
   // Memory layout in ingame.h
 
   const t_spilled_region *spill_ptr = (t_spilled_region*)spill_addr;
   t_savestate_snapshot *save_ptr = (t_savestate_snapshot*)buffer;
-
-  // Copy the (partially) spilled buffers first.
-  fast_mem_cpy_256(save_ptr->iwram, spill_ptr->low_iwram, sizeof(spill_ptr->low_iwram));
-  fast_mem_cpy_256(save_ptr->ewram, spill_ptr->low_ewram, sizeof(spill_ptr->low_ewram));
-  fast_mem_cpy_256(save_ptr->vram,  spill_ptr->low_vram,  sizeof(spill_ptr->low_vram));
-  fast_mem_cpy_256(save_ptr->palette, spill_ptr->palette, sizeof(spill_ptr->palette));
-  fast_mem_cpy_256(save_ptr->oamem, spill_ptr->oam, sizeof(spill_ptr->oam));
-
-  // Copy the remaining memory chunks (high segments)
   const uint8_t *IWRAM_BUF = (uint8_t*)0x03000000;
-  fast_mem_cpy_256(&save_ptr->iwram[sizeof(spill_ptr->low_iwram)], &IWRAM_BUF[sizeof(spill_ptr->low_iwram)],
-                   32*1024 - sizeof(spill_ptr->low_iwram));
-
   const uint8_t *EWRAM_BUF = (uint8_t*)0x02000000;
-  fast_mem_cpy_256(&save_ptr->ewram[sizeof(spill_ptr->low_ewram)], &EWRAM_BUF[sizeof(spill_ptr->low_ewram)],
-                   256*1024 - sizeof(spill_ptr->low_ewram));
-
   const uint8_t *VRAM_BUF = (uint8_t*)0x06000000;
-  fast_mem_cpy_256(&save_ptr->vram[sizeof(spill_ptr->low_vram)], &VRAM_BUF[sizeof(spill_ptr->low_vram)],
-                   96*1024 - sizeof(spill_ptr->low_vram));
 
-  const uint8_t *IORAM_BUF = (uint8_t*)0x04000000;
-  fast_mem_cpy_256(save_ptr->ioram, IORAM_BUF, sizeof(save_ptr->ioram));
+  // Copy the (partially) spilled buffers first, then the remaining memory
+  // chunks (high segments).
+  bool ok = blocks_checked(save_ptr->iwram, spill_ptr->low_iwram, sizeof(spill_ptr->low_iwram)) &&
+            blocks_checked(save_ptr->ewram, spill_ptr->low_ewram, sizeof(spill_ptr->low_ewram)) &&
+            blocks_checked(save_ptr->vram,  spill_ptr->low_vram,  sizeof(spill_ptr->low_vram)) &&
+            blocks_checked(save_ptr->palette, spill_ptr->palette, sizeof(spill_ptr->palette)) &&
+            blocks_checked(save_ptr->oamem, spill_ptr->oam, sizeof(spill_ptr->oam)) &&
+            blocks_checked(&save_ptr->iwram[sizeof(spill_ptr->low_iwram)], &IWRAM_BUF[sizeof(spill_ptr->low_iwram)],
+                      32*1024 - sizeof(spill_ptr->low_iwram)) &&
+            blocks_checked(&save_ptr->ewram[sizeof(spill_ptr->low_ewram)], &EWRAM_BUF[sizeof(spill_ptr->low_ewram)],
+                      256*1024 - sizeof(spill_ptr->low_ewram)) &&
+            blocks_checked(&save_ptr->vram[sizeof(spill_ptr->low_vram)], &VRAM_BUF[sizeof(spill_ptr->low_vram)],
+                      96*1024 - sizeof(spill_ptr->low_vram));
 
-  // Some I/O registers have been spilled to the spill area, we copy them too.
-  t_iomap *siomap = (t_iomap*)save_ptr->ioram;
-  siomap->dispcnt  = spill_ptr->dispcnt;
-  siomap->dispstat = spill_ptr->dispstat;
-  siomap->bldcnt   = spill_ptr->bldcnt;
-  siomap->bldalpha = spill_ptr->bldalpha;
-  siomap->soundcnt = spill_ptr->soundcnt;
-  for (unsigned i = 0; i < 4; i++) {
-    siomap->tms[i].tm_cntl = spill_ptr->tm_cnt[i];
-    siomap->dma[i].ctrl    = spill_ptr->dma_cnt[i];
-    siomap->bg_cnt[i]      = spill_ptr->bg_cnt[i];
-  }
+  // The I/O registers, then the header and CPU registers, are made here and
+  // copied checked.
+  union {
+    t_iomap iomap;
+    struct {
+      t_savestate_header header;
+      t_savestate_regs regs;
+    } hr;
+  } tmp;
+  _Static_assert(sizeof(tmp.iomap) == sizeof(save_ptr->ioram), "The I/O structure fills its space");
 
-  memory_copy32(save_ptr->regs.cpu_regs, spill_ptr->cpu_regs, sizeof(save_ptr->regs.cpu_regs) / 4);
+  state_iomap(&tmp.iomap, spill_ptr);
+  ok = ok && blocks_checked(save_ptr->ioram, &tmp.iomap, sizeof(tmp.iomap));
 
-  save_ptr->regs.cpsr = spill_ptr->cpsr;
-
-  memory_copy32(save_ptr->regs.irq_regs, spill_ptr->irq_regs, sizeof(save_ptr->regs.irq_regs) / 4);
-  memory_copy32(save_ptr->regs.fiq_regs, spill_ptr->fiq_regs, sizeof(save_ptr->regs.fiq_regs) / 4);
-  memory_copy32(save_ptr->regs.sup_regs, spill_ptr->sup_regs, sizeof(save_ptr->regs.sup_regs) / 4);
-  memory_copy32(save_ptr->regs.abt_regs, spill_ptr->abt_regs, sizeof(save_ptr->regs.abt_regs) / 4);
-  memory_copy32(save_ptr->regs.und_regs, spill_ptr->und_regs, sizeof(save_ptr->regs.und_regs) / 4);
-
-  // Complete the state by clearing empty regions and completing the header
-  memory_set16(save_ptr->header.pad, 0, sizeof(save_ptr->header.pad) / 2);
-  memory_set16(save_ptr->regs.pad, 0, sizeof(save_ptr->regs.pad) / 2);
-  save_ptr->header.signature[0] = SIGNATURE_A;
-  save_ptr->header.signature[1] = SIGNATURE_B;
-  save_ptr->header.signature[2] = SIGNATURE_C;
-  save_ptr->header.version = SAVESTATE_VERSION;
+  state_header(&tmp.hr.header);
+  state_regs(&tmp.hr.regs, spill_ptr);
+  return ok && blocks_checked(&save_ptr->header, &tmp.hr, sizeof(tmp.hr));
 }
 
 bool write_rom_buffer(FIL *fd, const void *buffer, unsigned size, void *tmpbuf) {
@@ -217,13 +316,17 @@ bool write_rom_buffer(FIL *fd, const void *buffer, unsigned size, void *tmpbuf) 
     memory_copy32((uint32_t*)tmpbuf, (uint32_t*)&ptr[off], 1024 / 4);
     set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can write to the SD card
 
-    UINT wrbytes;
-    if (FR_OK != f_write(fd, tmpbuf, 1024, &wrbytes) || wrbytes != 1024)
+    if (!write_all(fd, tmpbuf, 1024))
       return false;
   }
 
   return true;
 }
+
+// The spill's registers and I/O (before its memory) are edited in RAM, and
+// written back checked (the spill is in the cart's SDRAM).
+#define SPILL_HDR_WORDS   (SPILL_HDR_SIZE / 4)
+_Static_assert(offsetof(t_spilled_region, palette) % 4 == 0, "The spill's memory is word aligned");
 
 // Same as above but we write directly to disk.
 bool writefd_mem_snapshot(FIL *fd) {
@@ -237,46 +340,23 @@ bool writefd_mem_snapshot(FIL *fd) {
   _Static_assert(sizeof(tmp.header) == 512, "The header structure is 512 bytes in size");
   _Static_assert(sizeof(tmp.regs) == 512, "The regs structure is 512 bytes in size");
   _Static_assert(sizeof(tmp.iomap) == 1024, "The I/O structure is 1024 bytes in size");
-  UINT wrbytes;
   const t_spilled_region *spill_ptr = (t_spilled_region*)spill_addr;
 
-  memset(&tmp.header, 0, sizeof(tmp.header));
-  tmp.header.signature[0] = SIGNATURE_A;
-  tmp.header.signature[1] = SIGNATURE_B;
-  tmp.header.signature[2] = SIGNATURE_C;
-  tmp.header.version = SAVESTATE_VERSION;
-  if (FR_OK != f_write(fd, &tmp.header, sizeof(tmp.header), &wrbytes) || wrbytes != sizeof(tmp.header))
+  state_header(&tmp.header);
+  if (!write_all(fd, &tmp.header, sizeof(tmp.header)))
     return false;
 
   set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can read spill area.
-  memset(&tmp.regs, 0, sizeof(tmp.regs));
-  tmp.regs.cpsr = spill_ptr->cpsr;
-  memory_copy32(tmp.regs.cpu_regs, spill_ptr->cpu_regs, sizeof(tmp.regs.cpu_regs) / 4);
-  memory_copy32(tmp.regs.irq_regs, spill_ptr->irq_regs, sizeof(tmp.regs.irq_regs) / 4);
-  memory_copy32(tmp.regs.fiq_regs, spill_ptr->fiq_regs, sizeof(tmp.regs.fiq_regs) / 4);
-  memory_copy32(tmp.regs.sup_regs, spill_ptr->sup_regs, sizeof(tmp.regs.sup_regs) / 4);
-  memory_copy32(tmp.regs.abt_regs, spill_ptr->abt_regs, sizeof(tmp.regs.abt_regs) / 4);
-  memory_copy32(tmp.regs.und_regs, spill_ptr->und_regs, sizeof(tmp.regs.und_regs) / 4);
+  state_regs(&tmp.regs, spill_ptr);
   set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can write to the SD card
-  if (FR_OK != f_write(fd, &tmp.regs, sizeof(tmp.regs), &wrbytes) || wrbytes != sizeof(tmp.regs))
+  if (!write_all(fd, &tmp.regs, sizeof(tmp.regs)))
     return false;
 
   // Write the I/O RAM but patch in the spilled registers too.
-  const uint32_t *IORAM_BUF = (uint32_t*)0x04000000;
-  memory_copy32((uint32_t*)&tmp.iomap, IORAM_BUF, 1024 / 4);
   set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can read spill area.
-  tmp.iomap.dispcnt  = spill_ptr->dispcnt;
-  tmp.iomap.dispstat = spill_ptr->dispstat;
-  tmp.iomap.bldcnt   = spill_ptr->bldcnt;
-  tmp.iomap.bldalpha = spill_ptr->bldalpha;
-  tmp.iomap.soundcnt = spill_ptr->soundcnt;
-  for (unsigned i = 0; i < 4; i++) {
-    tmp.iomap.tms[i].tm_cntl = spill_ptr->tm_cnt[i];
-    tmp.iomap.dma[i].ctrl    = spill_ptr->dma_cnt[i];
-    tmp.iomap.bg_cnt[i]      = spill_ptr->bg_cnt[i];
-  }
+  state_iomap(&tmp.iomap, spill_ptr);
   set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can write to the SD card
-  if (FR_OK != f_write(fd, &tmp.iomap, sizeof(tmp.iomap), &wrbytes) || wrbytes != sizeof(tmp.iomap))
+  if (!write_all(fd, &tmp.iomap, sizeof(tmp.iomap)))
     return false;
 
   if (!write_rom_buffer(fd, spill_ptr->palette, sizeof(spill_ptr->palette), tmp.buf))
@@ -291,7 +371,7 @@ bool writefd_mem_snapshot(FIL *fd) {
 
   if (!write_rom_buffer(fd, spill_ptr->low_vram, sizeof(spill_ptr->low_vram), tmp.buf))
     return false;
-  if (FR_OK != f_write(fd, &VRAM_BUF[sizeof(spill_ptr->low_vram)], highsize, &wrbytes) || wrbytes != highsize)
+  if (!write_all(fd, &VRAM_BUF[sizeof(spill_ptr->low_vram)], highsize))
     return false;
 
   // Same for IWRAM and EWRAM
@@ -299,14 +379,14 @@ bool writefd_mem_snapshot(FIL *fd) {
   const unsigned highsize2 = 32*1024 - sizeof(spill_ptr->low_iwram);
   if (!write_rom_buffer(fd, spill_ptr->low_iwram, sizeof(spill_ptr->low_iwram), tmp.buf))
     return false;
-  if (FR_OK != f_write(fd, &IWRAM_BUF[sizeof(spill_ptr->low_iwram)], highsize2, &wrbytes) || wrbytes != highsize2)
+  if (!write_all(fd, &IWRAM_BUF[sizeof(spill_ptr->low_iwram)], highsize2))
     return false;
 
   const uint8_t *EWRAM_BUF = (uint8_t*)0x02000000;
   const unsigned highsize3 = 256*1024 - sizeof(spill_ptr->low_ewram);
   if (!write_rom_buffer(fd, spill_ptr->low_ewram, sizeof(spill_ptr->low_ewram), tmp.buf))
     return false;
-  if (FR_OK != f_write(fd, &EWRAM_BUF[sizeof(spill_ptr->low_ewram)], highsize3, &wrbytes) || wrbytes != highsize3)
+  if (!write_all(fd, &EWRAM_BUF[sizeof(spill_ptr->low_ewram)], highsize3))
     return false;
 
   return true;
@@ -319,25 +399,27 @@ bool writefd_mem_snapshot_clone(FIL *fd, const void *buffer, unsigned size) {
 }
 
 
-bool load_mem_snapshot(const void *buffer) {
+// Loads a state: the message it shows (IMENU_QLD_OK if loaded).
+unsigned load_mem_snapshot(const void *buffer) {
 
   t_spilled_region *spill_ptr = (t_spilled_region*)spill_addr;
   const t_savestate_snapshot *save_ptr = (t_savestate_snapshot*)buffer;
 
-  if (save_ptr->header.signature[0] != SIGNATURE_A ||
-      save_ptr->header.signature[1] != SIGNATURE_B ||
-      save_ptr->header.signature[2] != SIGNATURE_C)
-    return false;
+  const unsigned chk = state_check(&save_ptr->header);
+  if (chk != IMENU_QLD_OK)
+    return chk;
 
-  if (save_ptr->header.version != SAVESTATE_VERSION)
-    return false;
+  // From here the game's state is a mix until it's all loaded.
+  ingame_spill_failed = 1;
+  uint32_t hbuf[SPILL_HDR_WORDS];
+  t_spilled_region *h = (t_spilled_region*)hbuf;
 
   // Copy the (partially) spilled buffers first.
-  fast_mem_cpy_256(spill_ptr->low_iwram, save_ptr->iwram, sizeof(spill_ptr->low_iwram));
-  fast_mem_cpy_256(spill_ptr->low_ewram, save_ptr->ewram, sizeof(spill_ptr->low_ewram));
-  fast_mem_cpy_256(spill_ptr->low_vram,  save_ptr->vram,  sizeof(spill_ptr->low_vram));
-  fast_mem_cpy_256(spill_ptr->palette, save_ptr->palette, sizeof(spill_ptr->palette));
-  fast_mem_cpy_256(spill_ptr->oam, save_ptr->oamem, sizeof(spill_ptr->oam));
+  bool ok = blocks_checked(spill_ptr->low_iwram, save_ptr->iwram, sizeof(spill_ptr->low_iwram));
+  ok = ok && blocks_checked(spill_ptr->low_ewram, save_ptr->ewram, sizeof(spill_ptr->low_ewram));
+  ok = ok && blocks_checked(spill_ptr->low_vram,  save_ptr->vram,  sizeof(spill_ptr->low_vram));
+  ok = ok && blocks_checked(spill_ptr->palette, save_ptr->palette, sizeof(spill_ptr->palette));
+  ok = ok && blocks_checked(spill_ptr->oam, save_ptr->oamem, sizeof(spill_ptr->oam));
 
   // Copy the remaining memory chunks (high segments)
   uint8_t *IWRAM_BUF = (uint8_t*)0x03000000;
@@ -352,51 +434,13 @@ bool load_mem_snapshot(const void *buffer) {
   fast_mem_cpy_256(&VRAM_BUF[sizeof(spill_ptr->low_vram)], &save_ptr->vram[sizeof(spill_ptr->low_vram)],
                    96*1024 - sizeof(spill_ptr->low_vram));
 
-  // Write spilled-area I/O regs so they can be restored at menu-exit point.
-  const t_iomap *saved_io = (t_iomap*)save_ptr->ioram;
-  spill_ptr->dispcnt  = saved_io->dispcnt;
-  spill_ptr->dispstat = saved_io->dispstat;
-  spill_ptr->bldcnt   = saved_io->bldcnt;
-  spill_ptr->bldalpha = saved_io->bldalpha;
-  spill_ptr->soundcnt = saved_io->soundcnt;
-  for (unsigned i = 0; i < 4; i++) {
-    spill_ptr->tm_cnt[i]  = saved_io->tms[i].tm_cntl;
-    spill_ptr->dma_cnt[i] = saved_io->dma[i].ctrl;
-    spill_ptr->bg_cnt[i]  = saved_io->bg_cnt[i];
-  }
+  // The registers and I/O (spilled ones to the spill, restored at the
+  // menu's exit).
+  state_restore_io(h, (const t_iomap*)save_ptr->ioram);
+  state_restore_regs(h, &save_ptr->regs);
 
-  // We cannot restore the full I/O space, many read only, write only and weird registers.
-  // Let's restore them a bit more selectively.
-  t_iomap *curr_ro_io = (t_iomap*)0x04000000;
-  curr_ro_io->winin  = saved_io->winin;            // LCD registers (the rest are write only!)
-  curr_ro_io->winout = saved_io->winout;
-  curr_ro_io->sound1cnt   = saved_io->sound1cnt;   // Sound registers
-  curr_ro_io->sound1cnt_x = saved_io->sound1cnt_x;
-  curr_ro_io->sound2cnt_l = saved_io->sound2cnt_l;
-  curr_ro_io->sound3cnt   = saved_io->sound3cnt;
-  curr_ro_io->sound3cnt_x = saved_io->sound3cnt_x;
-  curr_ro_io->sound4cnt_l = saved_io->sound4cnt_l;
-  curr_ro_io->soundcnt_x  = saved_io->soundcnt_x;
-  curr_ro_io->keycnt  = saved_io->keycnt;          // Input regs
-  curr_ro_io->reg_ie  = saved_io->reg_ie;          // IRQ regs
-  curr_ro_io->master_ie  = saved_io->master_ie;
-
-  for (unsigned i = 0; i < 4; i++)                 // Timers
-    curr_ro_io->tms[i].tm_cnth  = saved_io->tms[i].tm_cnth;
-
-  // TODO: Restore SIO registers too?
-
-  // Register restore
-  memory_copy32(spill_ptr->cpu_regs, save_ptr->regs.cpu_regs, sizeof(save_ptr->regs.cpu_regs) / 4);
-  spill_ptr->cpsr = save_ptr->regs.cpsr;
-
-  memory_copy32(spill_ptr->irq_regs, save_ptr->regs.irq_regs, sizeof(save_ptr->regs.irq_regs) / 4);
-  memory_copy32(spill_ptr->fiq_regs, save_ptr->regs.fiq_regs, sizeof(save_ptr->regs.fiq_regs) / 4);
-  memory_copy32(spill_ptr->sup_regs, save_ptr->regs.sup_regs, sizeof(save_ptr->regs.sup_regs) / 4);
-  memory_copy32(spill_ptr->abt_regs, save_ptr->regs.abt_regs, sizeof(save_ptr->regs.abt_regs) / 4);
-  memory_copy32(spill_ptr->und_regs, save_ptr->regs.und_regs, sizeof(save_ptr->regs.und_regs) / 4);
-
-  return true;
+  ingame_spill_failed = !(ok && memcpy32_checked(spill_ptr, hbuf, sizeof(hbuf)));
+  return ingame_spill_failed ? IMENU_QLD_ERR : IMENU_QLD_OK;
 }
 
 
@@ -406,22 +450,25 @@ bool read_rom_buffer(FIL *fd, void *buffer, unsigned size, void *tmpbuf) {
   for (unsigned off = 0; off < size; off += 1024) {
     set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can read from the SD card
 
-    UINT rdbytes;
-    if (FR_OK != f_read(fd, tmpbuf, 1024, &rdbytes) || rdbytes != 1024)
+    if (!read_all(fd, tmpbuf, 1024))
       return false;
 
     set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can write spill area.
-    memory_copy32((uint32_t*)&ptr[off], (uint32_t*)tmpbuf, 1024 / 4);
+    const bool copied = memcpy32_checked(&ptr[off], tmpbuf, 1024);  // (SDRAM)
+    set_supercard_mode(MAPPED_SDRAM, true, true);    // So we can read from the SD card
+    if (!copied)
+      return false;
   }
-
-  set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can read from the SD card
   return true;
 }
 
 
-bool readfd_mem_snapshot(FIL *fd) {
+// Loads a state file: the message it shows (IMENU_QLD_OK if loaded).
+unsigned readfd_mem_snapshot(FIL *fd) {
 
   t_spilled_region *spill_ptr = (t_spilled_region*)spill_addr;
+  uint32_t hbuf[SPILL_HDR_WORDS];             // Its registers and I/O
+  t_spilled_region *h = (t_spilled_region*)hbuf;
 
   union {
     t_savestate_header header;
@@ -432,95 +479,63 @@ bool readfd_mem_snapshot(FIL *fd) {
   _Static_assert(sizeof(tmp.header) == 512, "The header structure is 512 bytes in size");
   _Static_assert(sizeof(tmp.regs) == 512, "The regs structure is 512 bytes in size");
   _Static_assert(sizeof(tmp.iomap) == 1024, "The I/O structure is 1024 bytes in size");
-  UINT rdbytes;
 
-  if (FR_OK != f_read(fd, &tmp.header, sizeof(tmp.header), &rdbytes) || rdbytes != sizeof(tmp.header))
-    return false;
+  if (!read_all(fd, &tmp.header, sizeof(tmp.header)))
+    return IMENU_PLD_ERR;
 
-  if (tmp.header.signature[0] != SIGNATURE_A ||
-      tmp.header.signature[1] != SIGNATURE_B ||
-      tmp.header.signature[2] != SIGNATURE_C)
-    return false;
+  const unsigned chk = state_check(&tmp.header);
+  if (chk != IMENU_QLD_OK)
+    return chk;
 
-  if (tmp.header.version != SAVESTATE_VERSION)
-    return false;
+  if (!read_all(fd, &tmp.regs, sizeof(tmp.regs)))
+    return IMENU_PLD_ERR;
 
-  if (FR_OK != f_read(fd, &tmp.regs, sizeof(tmp.regs), &rdbytes) || rdbytes != sizeof(tmp.regs))
-    return false;
+  state_restore_regs(h, &tmp.regs);
 
+  if (!read_all(fd, &tmp.iomap, sizeof(tmp.iomap)))
+    return IMENU_PLD_ERR;
+
+  // From here the game's state is a mix until it's all loaded.
+  ingame_spill_failed = 1;
+  state_restore_io(h, &tmp.iomap);
   set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can write spill area.
-  spill_ptr->cpsr = tmp.regs.cpsr;
-  memory_copy32(spill_ptr->cpu_regs, tmp.regs.cpu_regs, sizeof(tmp.regs.cpu_regs) / 4);
-  memory_copy32(spill_ptr->irq_regs, tmp.regs.irq_regs, sizeof(tmp.regs.irq_regs) / 4);
-  memory_copy32(spill_ptr->fiq_regs, tmp.regs.fiq_regs, sizeof(tmp.regs.fiq_regs) / 4);
-  memory_copy32(spill_ptr->sup_regs, tmp.regs.sup_regs, sizeof(tmp.regs.sup_regs) / 4);
-  memory_copy32(spill_ptr->abt_regs, tmp.regs.abt_regs, sizeof(tmp.regs.abt_regs) / 4);
-  memory_copy32(spill_ptr->und_regs, tmp.regs.und_regs, sizeof(tmp.regs.und_regs) / 4);
-  set_supercard_mode(MAPPED_SDRAM, true, true);   // So we can read from the SD card
-
-  if (FR_OK != f_read(fd, &tmp.iomap, sizeof(tmp.iomap), &rdbytes) || rdbytes != sizeof(tmp.iomap))
-    return false;
-
-  set_supercard_mode(MAPPED_SDRAM, true, false);   // Ensure we can write spill area.
-  spill_ptr->dispcnt  = tmp.iomap.dispcnt;
-  spill_ptr->dispstat = tmp.iomap.dispstat;
-  spill_ptr->bldcnt   = tmp.iomap.bldcnt;
-  spill_ptr->bldalpha = tmp.iomap.bldalpha;
-  spill_ptr->soundcnt = tmp.iomap.soundcnt;
-  for (unsigned i = 0; i < 4; i++) {
-    spill_ptr->tm_cnt[i]  = tmp.iomap.tms[i].tm_cntl;
-    spill_ptr->dma_cnt[i] = tmp.iomap.dma[i].ctrl;
-    spill_ptr->bg_cnt[i]  = tmp.iomap.bg_cnt[i];
-  }
-
-  t_iomap *curr_ro_io = (t_iomap*)0x04000000;
-  curr_ro_io->winin  = tmp.iomap.winin;            // LCD registers (the rest are write only!)
-  curr_ro_io->winout = tmp.iomap.winout;
-  curr_ro_io->sound1cnt   = tmp.iomap.sound1cnt;   // Sound registers
-  curr_ro_io->sound1cnt_x = tmp.iomap.sound1cnt_x;
-  curr_ro_io->sound2cnt_l = tmp.iomap.sound2cnt_l;
-  curr_ro_io->sound3cnt   = tmp.iomap.sound3cnt;
-  curr_ro_io->sound3cnt_x = tmp.iomap.sound3cnt_x;
-  curr_ro_io->sound4cnt_l = tmp.iomap.sound4cnt_l;
-  curr_ro_io->soundcnt_x  = tmp.iomap.soundcnt_x;
-  curr_ro_io->keycnt  = tmp.iomap.keycnt;          // Input regs
-  curr_ro_io->reg_ie  = tmp.iomap.reg_ie;          // IRQ regs
-  curr_ro_io->master_ie  = tmp.iomap.master_ie;
-
-  for (unsigned i = 0; i < 4; i++)                 // Timers
-    curr_ro_io->tms[i].tm_cnth  = tmp.iomap.tms[i].tm_cnth;
+  const bool hdr_ok = memcpy32_checked(spill_ptr, hbuf, sizeof(hbuf));
+  set_supercard_mode(MAPPED_SDRAM, true, true);    // So we can read from the SD card
+  if (!hdr_ok)
+    return IMENU_PLD_ERR;
 
   if (!read_rom_buffer(fd, spill_ptr->palette, sizeof(spill_ptr->palette), tmp.buf))
-    return false;
+    return IMENU_PLD_ERR;
 
   if (!read_rom_buffer(fd, spill_ptr->oam, sizeof(spill_ptr->oam), tmp.buf))
-    return false;
+    return IMENU_PLD_ERR;
 
   // Use aux function for OAM/VRAM since they don't take byte writes nicely.
   // VRAM, spilled, then actual data
   uint8_t *VRAM_BUF = (uint8_t*)0x06000000;
   const unsigned highsize = 96*1024 - sizeof(spill_ptr->low_vram);
   if (!read_rom_buffer(fd, spill_ptr->low_vram, sizeof(spill_ptr->low_vram), tmp.buf))
-    return false;
+    return IMENU_PLD_ERR;
   if (!read_rom_buffer(fd, &VRAM_BUF[sizeof(spill_ptr->low_vram)], highsize, tmp.buf))
-    return false;
+    return IMENU_PLD_ERR;
 
   // Same for IWRAM and EWRAM
   uint8_t *IWRAM_BUF = (uint8_t*)0x03000000;
   const unsigned highsize2 = 32*1024 - sizeof(spill_ptr->low_iwram);
   if (!read_rom_buffer(fd, spill_ptr->low_iwram, sizeof(spill_ptr->low_iwram), tmp.buf))
-    return false;
-  if (FR_OK != f_read(fd, &IWRAM_BUF[sizeof(spill_ptr->low_iwram)], highsize2, &rdbytes) || rdbytes != highsize2)
-    return false;
+    return IMENU_PLD_ERR;
+  if (!read_all(fd, &IWRAM_BUF[sizeof(spill_ptr->low_iwram)], highsize2))
+    return IMENU_PLD_ERR;
 
   uint8_t *EWRAM_BUF = (uint8_t*)0x02000000;
   const unsigned highsize3 = 256*1024 - sizeof(spill_ptr->low_ewram);
   if (!read_rom_buffer(fd, spill_ptr->low_ewram, sizeof(spill_ptr->low_ewram), tmp.buf))
-    return false;
-  if (FR_OK != f_read(fd, &EWRAM_BUF[sizeof(spill_ptr->low_ewram)], highsize3, &rdbytes) || rdbytes != highsize3)
-    return false;
+    return IMENU_PLD_ERR;
+  if (!read_all(fd, &EWRAM_BUF[sizeof(spill_ptr->low_ewram)], highsize3))
+    return IMENU_PLD_ERR;
 
-  return true;
+  ingame_spill_failed = 0;
+  return IMENU_QLD_OK;
 }
 
 static void draw_hline(uint8_t *fb, unsigned x, unsigned y, unsigned w, uint16_t col) {
@@ -784,8 +799,12 @@ bool action_reset_fw() {
   return false;
 }
 bool action_reset_fw_nosave() {
-  // Skip saving on reboot!
-  program_sram_dump(NULL, 0);
+  // Skip saving on reboot! If the save is still due (its sentinel can't be
+  // removed) the menu stays: it would be written at boot.
+  if (!program_sram_dump(NULL, 0)) {
+    popup.msg = msgs[ingame_menu_lang][IMENU_MSG_SAVEERR];
+    return false;
+  }
   // Go ahead and reboot to flash.
   reset_fw();
   return false;
@@ -801,17 +820,30 @@ bool action_save_menu() {
   return false;
 }
 
+// The file of persistent (disk) savestate slot n (1 to num_dsk_savestates),
+// or its temporary one (within STATE_FN_RESERVE).
+static void state_fn(char *fn, int n, bool tmp) {
+  npf_snprintf(fn, MAX_FN_LEN, tmp ? "%s.%d.tmp" : "%s.%d.state", savestate_pattern, n);
+}
+
 bool action_sstate_menu() {
   bool havess = num_mem_savestates || num_dsk_savestates;
   if (havess) {
     if (num_dsk_savestates && !diskst_init) {
-      // Check if the files actually exist
-      for (unsigned i = 0; i < num_dsk_savestates; i++) {
-        char tmp[256];
-        npf_snprintf(tmp, sizeof(tmp), "%s.%d.state", savestate_pattern, i + 1);
-        diskslot_valid[i] = check_file_exists(tmp);
-      }
+      // Check if the files actually exist. A card error isn't a missing file:
+      // that slot and the rest (not checked) count as used (saving over one
+      // asks first), and the slots are checked again next time.
       diskst_init = true;
+      for (unsigned i = 0; i < num_dsk_savestates; i++) {
+        FRESULT res = FR_DISK_ERR;
+        if (diskst_init) {
+          char tmp[MAX_FN_LEN];
+          state_fn(tmp, i + 1, false);
+          res = f_stat(tmp, NULL);
+        }
+        diskslot_valid[i] = !fr_missing(res);
+        diskst_init = FR_OK == res || fr_missing(res);
+      }
     }
 
     makepers = -1;
@@ -843,16 +875,10 @@ bool action_rtc_menu() {
   return false;
 }
 
-void create_paths(const char *fn) {
-  char dirp[256];
-  file_dirname(fn, dirp);
-  f_mkdir(dirp);
-}
-
 // Overwrites the .sav file with our data. The data is written to a temporary
 // file and checked first, so a failed write never destroys the current save.
 static bool save_overwrite() {
-  create_paths(savefile_pattern);     // Just in case it doesn't exist.
+  create_basepath(savefile_pattern);     // Just in case it doesn't exist.
   bool ok = write_save_sram_rotate(savefile_pattern, 0);
   popup.msg = msgs[ingame_menu_lang][ok ? IMENU_MSG_SAVEC : IMENU_MSG_SAVEERR];
   return ok;
@@ -865,7 +891,7 @@ bool action_save_overw() {
 }
 
 bool action_save_backup() {
-  create_paths(savefile_pattern);     // Just in case it doesn't exist.
+  create_basepath(savefile_pattern);     // Just in case it doesn't exist.
 
   // Write save generating a backup, honoring the backup_count.
   unsigned bc = MAX(savefile_backups, 1);
@@ -915,32 +941,39 @@ bool action_menu_back() {
 
 void save_memstate() {
   set_supercard_mode(MAPPED_SDRAM, true, false);
-  take_mem_snapshot(get_memslot_addr(state_slot));
-  memslot_valid[state_slot] = 1;
-  popup.msg = msgs[ingame_menu_lang][IMENU_WSAV_OK];
+  // (Not from a game state that isn't whole: the slot is left as it is.)
+  if (ingame_spill_failed) {
+    popup.msg = msgs[ingame_menu_lang][IMENU_MSG_SAVEERR];
+    return;
+  }
+  const bool ok = take_mem_snapshot(get_memslot_addr(state_slot));
+  memslot_valid[state_slot] = ok;
+  popup.msg = msgs[ingame_menu_lang][ok ? IMENU_WSAV_OK : IMENU_MSG_SAVEERR];
 }
 
 // Saves a disk state, capable of "cloning" an in-memory state.
 void save_diskstate() {
   set_supercard_mode(MAPPED_SDRAM, true, true);
 
+  // Written to a temporary file that replaces the slot's once whole (a cut
+  // state can't be loaded, and the one there is kept if it fails).
   FIL fd;
-  char fn[256];
-  npf_snprintf(fn, sizeof(fn), "%s.%d.state", savestate_pattern, -state_slot);
-  create_paths(fn);
-  if (FR_OK == f_open(&fd, fn, FA_WRITE | FA_CREATE_ALWAYS)) {
-    bool success = (makepers >= 0) ? writefd_mem_snapshot_clone(&fd, get_memslot_addr(makepers), sizeof(t_savestate_snapshot))
-                                   : writefd_mem_snapshot(&fd);
-    if (success) {
-      popup.msg = msgs[ingame_menu_lang][IMENU_WSTAF_OK];
-      diskslot_valid[-state_slot - 1] = 1;
-    } else {
-      popup.msg = msgs[ingame_menu_lang][IMENU_WSTAF_ERR];
-    }
-    f_close(&fd);
-  } else {
-    popup.msg = msgs[ingame_menu_lang][IMENU_WSTAF_ERR];
+  char fn[MAX_FN_LEN], tmpfn[MAX_FN_LEN];
+  state_fn(fn, -state_slot, false);
+  state_fn(tmpfn, -state_slot, true);
+  create_basepath(fn);
+  // (A memory slot is cloned, or else the game's spilled state is saved.)
+  bool success = (makepers >= 0 || !ingame_spill_failed) &&
+                 FR_OK == f_open(&fd, tmpfn, FA_WRITE | FA_CREATE_ALWAYS);
+  if (success) {
+    success = (makepers >= 0) ? writefd_mem_snapshot_clone(&fd, get_memslot_addr(makepers), sizeof(t_savestate_snapshot))
+                              : writefd_mem_snapshot(&fd);
+    // The data reaches the card when it's closed.
+    success = file_replace(tmpfn, fn, FR_OK == f_close(&fd) && success);
   }
+  popup.msg = msgs[ingame_menu_lang][success ? IMENU_WSTAF_OK : IMENU_WSTAF_ERR];
+  if (success)
+    diskslot_valid[-state_slot - 1] = 1;
 
   if (makepers >= 0)
     state_slot = makepers;
@@ -983,16 +1016,18 @@ bool state_load() {
   } else {
     if (state_slot >= 0 && memslot_valid[state_slot]) {
       set_supercard_mode(MAPPED_SDRAM, true, false);
-      bool success = load_mem_snapshot(get_memslot_addr(state_slot));
-      popup.msg = msgs[ingame_menu_lang][success ? IMENU_QLD_OK : IMENU_QLD_ERR];
+      popup.msg = msgs[ingame_menu_lang][load_mem_snapshot(get_memslot_addr(state_slot))];
     }
     else if (state_slot < 0 && diskslot_valid[-state_slot - 1]) {
       FIL fd;
-      char fn[256];
-      npf_snprintf(fn, sizeof(fn), "%s.%d.state", savestate_pattern, -state_slot);
+      char fn[MAX_FN_LEN];
+      state_fn(fn, -state_slot, false);
       if (FR_OK == f_open(&fd, fn, FA_READ)) {
-        bool success = readfd_mem_snapshot(&fd);
-        popup.msg = msgs[ingame_menu_lang][success ? IMENU_QLD_OK : IMENU_PLD_ERR];
+        // It's applied as it's read: a cut file (ie. by an older firmware)
+        // isn't started.
+        const unsigned msg = f_size(&fd) == sizeof(t_savestate_snapshot) ? readfd_mem_snapshot(&fd) : IMENU_PLD_ERR;
+        f_close(&fd);
+        popup.msg = msgs[ingame_menu_lang][msg];
       }
       else
         popup.msg = msgs[ingame_menu_lang][IMENU_WSTAR_ERR];
@@ -1003,10 +1038,13 @@ bool state_load() {
 
 void del_diskstate() {
   set_supercard_mode(MAPPED_SDRAM, true, true);
-  char tmp[256];
-  npf_snprintf(tmp, sizeof(tmp), "%s.%d.state", savestate_pattern, -state_slot - 1);
-  f_unlink(tmp);
-  diskslot_valid[-state_slot - 1] = 0;
+  char tmp[MAX_FN_LEN];
+  state_fn(tmp, -state_slot, false);
+  const FRESULT res = f_unlink(tmp);
+  if (FR_OK == res || fr_missing(res))
+    diskslot_valid[-state_slot - 1] = 0;
+  else
+    popup.msg = msgs[ingame_menu_lang][IMENU_WSTAF_ERR];
 }
 
 // Deletes persistent slots or converts a slot into persistent.

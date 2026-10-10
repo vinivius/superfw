@@ -21,6 +21,7 @@
 
 #include "settings.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
 #include "common.h"
 #include "nanoprintf.h"
 #include "util.h"
@@ -106,17 +107,18 @@ uint8_t rtcspeed_default = 3;
 uint32_t rtcvalue_default = 45568800U;
 
 // Setting loading/saving routines
+
+// The settings files that couldn't be read (SD card errors; bit 0: settings,
+// bit 1: UI settings): they aren't written over with the defaults (a reboot
+// reads them again).
+static unsigned settings_unread;
+
+// Writes a settings file (in SUPERFW_DIR) whole, unless it couldn't be read.
+static bool settings_write(const char *fn, unsigned unread_bit, const char *buf) {
+  return !(settings_unread & unread_bit) && superfw_file_write(NULL, fn, buf, strlen(buf));
+}
+
 bool save_ui_settings() {
-  // Create the directory (just in case it doesn't exist
-  f_mkdir(SUPERFW_DIR);
-  // Make it hidden
-  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
-
-  // Proceed to create the file
-  FIL fd;
-  if (FR_OK != f_open(&fd, UISETTINGS_FILEPATH, FA_WRITE | FA_CREATE_ALWAYS))
-    return false;
-
   // Serialize the settings
   uint16_t lc = lang_getcode();
   char buf[512];
@@ -130,24 +132,10 @@ bool save_ui_settings() {
     "hide_ext=%u\n",
     menu_theme, (lc & 0xFF), (lc >> 8), recent_menu, anim_speed, hide_hidden, boxart_enabled, hide_ext);
 
-  UINT wrbytes;
-  FRESULT res = f_write(&fd, buf, strlen(buf), &wrbytes);
-  f_close(&fd);
-
-  return FR_OK == res;
+  return settings_write(UISETTINGS_FILEPATH, 2, buf);
 }
 
 bool save_settings() {
-  // Create the directory (just in case it doesn't exist
-  f_mkdir(SUPERFW_DIR);
-  // Make it hidden
-  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
-
-  // Proceed to create the file
-  FIL fd;
-  if (FR_OK != f_open(&fd, SETTINGS_FILEPATH, FA_WRITE | FA_CREATE_ALWAYS))
-    return false;
-
   // Serialize the settings
   char buf[512];
   npf_snprintf(buf, sizeof(buf),
@@ -176,11 +164,7 @@ bool save_settings() {
     rtcspeed_default, autoload_default, autosave_default, autosave_prefer_ds,
     rtcvalue_default);
 
-  UINT wrbytes;
-  FRESULT res = f_write(&fd, buf, strlen(buf), &wrbytes);
-  f_close(&fd);
-
-  return FR_OK == res;
+  return settings_write(SETTINGS_FILEPATH, 1, buf);
 }
 
 static void parse_settings(void *usr, const char *var, const char *value) {
@@ -258,70 +242,48 @@ static void parse_ui_settings(void *usr, const char *var, const char *value) {
   }
 }
 
-// Parses a config file and calls the user callback with varname+value
-// Pointers are only valid for the duration of the callback!
-static void parse_file(char *buf, void(*parse_cb)(void *usr, const char*, const char*), void *usrptr) {
-  char *p = buf;
-  while (1) {
-    char *e = strchr(p, '\n');
-    if (e)
-      *e = 0;
+// Splits a config line ("var=value") at its '=': its value, NULL for a line
+// without one (ie. cut by a write that failed: it's skipped).
+static const char *split_line(char *line) {
+  char *a = line ? strchr(line, '=') : NULL;
+  if (!a || !a[1])
+    return NULL;
+  *a = 0;
+  return &a[1];
+}
 
-    char *a = strchr(p, '=');
-    if (a) {
-      *a = 0;
-      parse_cb(usrptr, p, &a[1]);
-      *a = '=';
-    }
+typedef void (*setting_fn)(void *usr, const char *var, const char *value);
 
-    if (!e)
-      break;
+static bool parse_setting_line(char *line, unsigned len, void *usr) {
+  const char *value = split_line(line);
+  if (value)
+    (*(setting_fn*)usr)(NULL, line, value);
+  return true;
+}
 
-    *e = '\n';
-    p = &e[1];  // Advance to the next line
-  }
+// Settings files are read line by line, however long (hand edited) they are.
+// Lines too long for a setting are skipped. False on SD card errors.
+static bool load_settings_file(const char *fn, setting_fn parse_cb) {
+  char buf[64];
+  FRESULT res = read_lines_file(fn, buf, sizeof(buf), parse_setting_line, &parse_cb);
+  return FR_OK == res || fr_missing(res);
 }
 
 void load_settings() {
-  FIL fd;
-  UINT rdbytes;
-  char buf[512];
-  if (FR_OK == f_open(&fd, SETTINGS_FILEPATH, FA_READ)) {
-    if (FR_OK == f_read(&fd, buf, sizeof(buf) - 1, &rdbytes)) {
-      buf[rdbytes] = 0;
-      parse_file(buf, parse_settings, NULL);
-    }
-    f_close(&fd);
-  }
-
-  if (FR_OK == f_open(&fd, UISETTINGS_FILEPATH, FA_READ)) {
-    if (FR_OK == f_read(&fd, buf, sizeof(buf) - 1, &rdbytes)) {
-      buf[rdbytes] = 0;
-      parse_file(buf, parse_ui_settings, NULL);
-    }
-    f_close(&fd);
-  }
+  settings_unread = (load_settings_file(SETTINGS_FILEPATH, parse_settings) ? 0 : 1) |
+                    (load_settings_file(UISETTINGS_FILEPATH, parse_ui_settings) ? 0 : 2);
 }
 
 void sram_filename_calc(const char *rom, char *savefn, unsigned save_path) {
-  if (save_path == SaveRomName) {
-    strcpy(savefn, rom);   // Use the full ROM path
-  }
-  else {
-    const char *p = file_basename(rom);
-    const char *path = save_paths[save_path];
-    strcpy(savefn, path);   // Add the base path
-    strcat(savefn, p);      // Append just the basename
-  }
-
-  replace_extension(savefn, ".sav");
+  // Next to the ROM, or in a saves folder (also when the ROM's folder leaves
+  // no room for its name).
+  const unsigned maxlen = MAX_FN_LEN - 1 - SAVE_FN_RESERVE;
+  if (save_path != SaveRomName || !derived_fn(savefn, maxlen, NULL, rom, ".sav"))
+    derived_fn(savefn, maxlen, save_paths[save_path == SaveRomName ? SaveSavegameDir : save_path], rom, ".sav");
 }
 
 void savestate_filename_calc(const char *rom, char *statefn) {
-  const char *p = file_basename(rom);
-  strcpy(statefn, savestates_paths[state_path_default]);   // Add the base path
-  strcat(statefn, p);               // Append just the basename
-  replace_extension(statefn, "");
+  derived_fn(statefn, MAX_FN_LEN - 1 - STATE_FN_RESERVE, savestates_paths[state_path_default], rom, "");
 }
 
 static void parse_rom_load_settings(void *usr, const char *var, const char *value) {
@@ -346,70 +308,58 @@ static void parse_rom_launch_settings(void *usr, const char *var, const char *va
     rs->rtcts = valu;
 }
 
-bool load_rom_settings(const char *fn, t_rom_load_settings *rld, t_rom_launch_settings *rlh) {
-  char buf[512];
-  strcpy(buf, ROMCONFIG_PATH);
-  strcat(buf, file_basename(fn));
-  replace_extension(buf, ".config");
+// The config file of a ROM: ROMCONFIG_PATH + its name + .config, the name
+// shortened if needed to the FAT limit (FF_MAX_LFN).
+#define ROM_CONFIG_FN_SIZE   (sizeof(ROMCONFIG_PATH) + FF_MAX_LFN)
+static void rom_config_fn(char *cfgfn, const char *romfn) {
+  derived_fn(cfgfn, ROM_CONFIG_FN_SIZE - 1, ROMCONFIG_PATH, romfn, ".config");
+}
 
-  // Attempt to open and read the file.
-  FIL fd;
-  if (FR_OK != f_open(&fd, buf, FA_READ))
-    return false;
 
-  UINT rdbytes;
-  if (FR_OK == f_read(&fd, buf, sizeof(buf) - 1, &rdbytes)) {
-    buf[rdbytes] = 0;
-    if (rld)
-      parse_file(buf, parse_rom_load_settings, rld);
-    if (rlh)
-      parse_file(buf, parse_rom_launch_settings, rlh);
-  }
-  f_close(&fd);
+typedef struct {
+  t_rom_load_settings *rld;
+  t_rom_launch_settings *rlh;
+} t_rom_settings;
 
+static bool parse_rom_settings_line(char *line, unsigned len, void *usr) {
+  const t_rom_settings *rs = (t_rom_settings*)usr;
+  const char *value = split_line(line);
+  if (value && rs->rld)
+    parse_rom_load_settings(rs->rld, line, value);
+  if (value && rs->rlh)
+    parse_rom_launch_settings(rs->rlh, line, value);
   return true;
+}
+
+// False on SD card errors (without a config, the defaults are kept).
+bool load_rom_settings(const char *fn, t_rom_load_settings *rld, t_rom_launch_settings *rlh) {
+  // Line by line, however long the (hand edited) file is: lines appended by
+  // save_rom_patchmode() come last. Lines too long for a setting are skipped.
+  char cfgfn[ROM_CONFIG_FN_SIZE], buf[64];
+  rom_config_fn(cfgfn, fn);
+  t_rom_settings rs = { rld, rlh };
+  FRESULT res = read_lines_file(cfgfn, buf, sizeof(buf), parse_rom_settings_line, &rs);
+  return FR_OK == res || fr_missing(res);
 }
 
 // Records the patch mode for a ROM, appended to its config (created if
 // needed): later lines win, and the other settings keep following the
 // global defaults unless the config already sets them.
 bool save_rom_patchmode(const char *fn, unsigned mode) {
-  f_mkdir(SUPERFW_DIR);
-  f_mkdir(ROMCONFIG_PATH);
-  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
-
-  char buf[MAX_FN_LEN + 32];
-  strcpy(buf, ROMCONFIG_PATH);
-  strcat(buf, file_basename(fn));
-  replace_extension(buf, ".config");
-
+  char cfgfn[ROM_CONFIG_FN_SIZE];
+  rom_config_fn(cfgfn, fn);
   FIL fd;
-  if (FR_OK != f_open(&fd, buf, FA_WRITE | FA_OPEN_APPEND))
+  if (!superfw_file_open(&fd, ROMCONFIG_PATH, cfgfn, FA_OPEN_APPEND))
     return false;
-  npf_snprintf(buf, sizeof(buf), "patchmode=%u\n", mode);
-  UINT wrbytes;
-  FRESULT res = f_write(&fd, buf, strlen(buf), &wrbytes);
-  return (FR_OK == f_close(&fd)) && res == FR_OK && wrbytes == strlen(buf);
+  // On a line of its own (a hand-edited file may not end in a newline).
+  char buf[32];
+  npf_snprintf(buf, sizeof(buf), "\npatchmode=%u\n", mode);
+  return write_close(&fd, buf, strlen(buf));
 }
 
 bool save_rom_settings(const char *fn, const t_rom_load_settings *rld, const t_rom_launch_settings *rlh) {
-  // Create the directory (just in case it doesn't exist
-  f_mkdir(SUPERFW_DIR);
-  f_mkdir(ROMCONFIG_PATH);
-  // Make it hidden
-  f_chmod(SUPERFW_DIR, AM_HID, AM_HID);
-
-  char buf[MAX_FN_LEN + 32];
-  strcpy(buf, ROMCONFIG_PATH);
-  strcat(buf, file_basename(fn));
-  replace_extension(buf, ".config");
-
-  // Proceed to create the file
-  FIL fd;
-  if (FR_OK != f_open(&fd, buf, FA_WRITE | FA_CREATE_ALWAYS))
-    return false;
-
   // Serialize the ROM settings
+  char buf[128];
   npf_snprintf(buf, sizeof(buf),
     "patchmode=%u\n"
     "igm=%u\n"
@@ -424,11 +374,9 @@ bool save_rom_settings(const char *fn, const t_rom_load_settings *rld, const t_r
     rlh->use_cheats ? 1 : 0,
     (unsigned int)rlh->rtcts);
 
-  UINT wrbytes;
-  FRESULT res = f_write(&fd, buf, strlen(buf), &wrbytes);
-  f_close(&fd);
-
-  return FR_OK == res;
+  char cfgfn[ROM_CONFIG_FN_SIZE];
+  rom_config_fn(cfgfn, fn);
+  return superfw_file_write(ROMCONFIG_PATH, cfgfn, buf, strlen(buf));
 }
 
 

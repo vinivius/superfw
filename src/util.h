@@ -34,6 +34,15 @@ const char *file_basename(const char *fullpath);
 void file_dirname(const char *fullpath, char *dirname);
 void replace_extension(char *fn, const char *newext);
 const char *find_extension(const char *s);
+bool derived_fn(char *out, unsigned maxlen, const char *dir, const char *path, const char *ext);
+
+// The length of s cut to at most n bytes (at a UTF-8 character start).
+static inline unsigned utf8_cut(const char *s, unsigned n) {
+  while (n && (s[n] & 0xC0) == 0x80)
+    n--;
+  return n;
+}
+uint32_t fnv1a(const char *s, unsigned len, bool nocase);
 
 unsigned parseuint(const char *s);
 void human_size(char *s, unsigned ml, uint32_t sz);
@@ -47,8 +56,17 @@ uint32_t date2timestamp(const t_dec_date *d);
 void timestamp2date(uint32_t ts, t_dec_date *out);
 void fixdate(t_dec_date *d);
 
-// Just checks that a file exists.
-bool check_file_exists(const char *fn);
+// SDRAM (cart) writes are read back and rewritten if they did not stick (some
+// carts occasionally drop them), up to SDRAM_WRITE_TRIES times.
+#define SDRAM_WRITE_TRIES   8
+bool write16_checked(volatile uint16_t *p, uint16_t v);
+// Copies count bytes (whole words: a multiple of 4, both word aligned) to the
+// cart's SDRAM with copy (ie. a faster one), checked (see SDRAM_WRITE_TRIES).
+bool copy_checked(void *dst, const void *src, unsigned count,
+                  void (*copy)(void *dst, const void *src, unsigned count));
+// The same, with a word copy; and setting count bytes to value.
+bool memcpy32_checked(void *dst, const void *src, unsigned count);
+bool memset32_checked(void *dst, uint32_t value, unsigned count);
 
 // Creates a path to a file (recursively if needed)
 void create_basepath(const char *fn);

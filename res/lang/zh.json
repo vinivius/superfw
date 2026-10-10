@@ -116,7 +116,7 @@
     "MSG_FWUP_ERRPG": "刷写错误!",
     "MSG_FWUP_ERRVR": "验证失败!",
     "MSG_ERR_READ": "错误: 无法加载 ROM!",
-    "MSG_ERR_TOOBIG": "GBA 文件体积过大!",
+    "MSG_ERR_TOOBIG": "文件体积过大!",
     "MSG_ERR_SAVERD": "错误: 无法读取存档",
     "MSG_ERR_SAVEWR": "错误: 无法写入存档",
     "MSG_ERR_SAVEPR": "错误: 无法创建存档",

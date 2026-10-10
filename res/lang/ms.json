@@ -116,7 +116,7 @@
     "MSG_FWUP_ERRPG": "Ralat flashing!",
     "MSG_FWUP_ERRVR": "Pengesahan gagal!",
     "MSG_ERR_READ": "Ralat memuatkan ROM!",
-    "MSG_ERR_TOOBIG": "Fail GBA terlalu besar!",
+    "MSG_ERR_TOOBIG": "Fail terlalu besar!",
     "MSG_ERR_SAVERD": "Ralat membaca simpanan",
     "MSG_ERR_SAVEWR": "Ralat menulis simpanan",
     "MSG_ERR_SAVEPR": "Ralat menyediakan simpanan",

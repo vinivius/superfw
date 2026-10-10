@@ -16,14 +16,31 @@ all:
 	$(CC) $(CFLAGS) $(MEMCHK_FLAGS) -o sha256_test.bin sha256_test.c ../src/sha256.c -lcrypto
 	./sha256_test.bin
 	lcov -c -d . -o sha256_test.info
-	$(CC) $(CFLAGS) -o cheats_test.bin cheats_test.c ../src/cheats.c ../src/util.c ../src/nanoprintf.c -I../
+	$(CC) $(CFLAGS) $(MEMCHK_FLAGS) -o cheats_test.bin cheats_test.c ../src/cheats.c ../src/util.c ../src/nanoprintf.c ../src/fileutil.c -I../ \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections
 	./cheats_test.bin
 	lcov -c -d . -o cheats_test.info
 	$(CC) $(CFLAGS) $(MEMCHK_FLAGS) -o crc_test.bin crc_test.c ../src/crc.c
 	./crc_test.bin
 	lcov -c -d . -o crc_test.info
+	$(CC) $(CFLAGS) $(MEMCHK_FLAGS) -o patchcache_test.bin patchcache_test.c ../src/patchengine.c ../src/util.c -I../ \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections
+	./patchcache_test.bin
+	lcov -c -d . -o patchcache_test.info
+	$(CC) $(CFLAGS) $(MEMCHK_FLAGS) -o patcher_test.bin patcher_test.c ../src/patcher.c ../src/patchengine.c ../src/util.c -I../ \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections
+	./patcher_test.bin
+	lcov -c -d . -o patcher_test.info
+	$(CC) $(CFLAGS) $(MEMCHK_FLAGS) -o flashmgr_test.bin flashmgr_test.c ../src/flash_mgr.c ../src/util.c ../src/nanoprintf.c -I../ \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections
+	./flashmgr_test.bin
+	lcov -c -d . -o flashmgr_test.info
+	$(CC) $(CFLAGS) $(MEMCHK_FLAGS) -o patchengine_test.bin patchengine_test.c ../src/util.c ../src/fileutil.c ../src/nanoprintf.c -I../ \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections
+	./patchengine_test.bin
+	lcov -c -d . -o patchengine_test.info
 
-	lcov -a cimpl_test.info -a util_test.info -a utf_util_test.info -a crc_test.info -a sha256_test.info -a cheats_test.info -o total.info
+	lcov -a cimpl_test.info -a util_test.info -a utf_util_test.info -a crc_test.info -a sha256_test.info -a cheats_test.info -a patchcache_test.info -a patcher_test.info -a flashmgr_test.info -a patchengine_test.info -o total.info
 	rm -rf coverage/
 	genhtml -o coverage/ total.info
 

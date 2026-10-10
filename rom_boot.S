@@ -165,7 +165,7 @@ entry_point:
   .word 0                      @ 32 bit firmware file size (patched)
   .ascii FW_FLAVOUR; .balign 4 @ Device variant
   .ascii "WRLD"                @ Firmware variant (no variants atm.)
-  .word 0                      @ Unused
+  .ascii "NEXT"                @ SuperFW Next (SuperFW: zeros; version a.b.c)
   .word 0                      @ Unused
   .fill 16, 1, 0               @ 16 byte hash (patched)
   .asciz "SUPERFW~DAVIDGF"     @ Name/author
@@ -753,6 +753,7 @@ assets_start:
   #ifdef BUNDLE_GBC_EMULATOR
   .ascii "GCEM"                                        @ GB/C emulator (GoombaColor)
   .word (goomba_emu_end - goomba_emu_start)            @ Payload size
+  .include "emu/jagoombacolor_v0.5.gba.ck"             @ Checksum of the unpacked file
   goomba_emu_start:
     .incbin "emu/jagoombacolor_v0.5.gba.comp"
   goomba_emu_end:
@@ -762,6 +763,7 @@ assets_start:
   #ifdef BUNDLE_OTHER_EMULATOR
   .ascii "PNES"
   .word (pocketnes_emu_end - pocketnes_emu_start)
+  .include "emu/pocketnes_20130701.gba.ck"             @ Checksum of the unpacked file
   pocketnes_emu_start:
     .incbin "emu/pocketnes_20130701.gba.comp"
   pocketnes_emu_end:
@@ -769,6 +771,7 @@ assets_start:
 
   .ascii "WASA"
   .word (wasabi_emu_end - wasabi_emu_start)
+  .include "emu/wasabigba_v0.2.4.gba.ck"               @ Checksum of the unpacked file
   wasabi_emu_start:
     .incbin "emu/wasabigba_v0.2.4.gba.comp"
   wasabi_emu_end:
@@ -776,6 +779,7 @@ assets_start:
 
   .ascii "NGPG"
   .word (ngpgba_emu_end - ngpgba_emu_start)
+  .include "emu/NGPGBA_v0.5.7.gba.ck"                  @ Checksum of the unpacked file
   ngpgba_emu_start:
     .incbin "emu/NGPGBA_v0.5.7.gba.comp"
   ngpgba_emu_end:
@@ -783,6 +787,7 @@ assets_start:
 
   .ascii "PCEA"
   .word (pceadv_emu_end - pceadv_emu_start)
+  .include "emu/pceadvance-v7.5-scptch.gba.ck"         @ Checksum of the unpacked file
   pceadv_emu_start:
     .incbin "emu/pceadvance-v7.5-scptch.gba.comp"
   pceadv_emu_end:
@@ -790,6 +795,7 @@ assets_start:
 
   .ascii "SMSA"
   .word (smsadv_emu_end - smsadv_emu_start)
+  .include "emu/smsadvance-v2.5-scptch.gba.ck"         @ Checksum of the unpacked file
   smsadv_emu_start:
     .incbin "emu/smsadvance-v2.5-scptch.gba.comp"
   smsadv_emu_end:

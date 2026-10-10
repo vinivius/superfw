@@ -116,7 +116,7 @@
     "MSG_FWUP_ERRPG": "Err. durante l'installazione!",
     "MSG_FWUP_ERRVR": "Verifica fallita!",
     "MSG_ERR_READ": "Err: impossibile caricare ROM!",
-    "MSG_ERR_TOOBIG": "Il file GBA è troppo grande!",
+    "MSG_ERR_TOOBIG": "Il file è troppo grande!",
     "MSG_ERR_SAVERD": "Err: lettura salvataggio",
     "MSG_ERR_SAVEWR": "Err: scrittura salvataggio",
     "MSG_ERR_SAVEPR": "Err: preparazione salvataggio",

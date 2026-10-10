@@ -24,6 +24,7 @@
 #include "util.h"
 
 #include "fatfs/ff.h"
+#include "fileutil.h"
 
 unsigned mkdir_cnt = 0;
 const char *expected_mkdirs[] = {
@@ -40,9 +41,94 @@ FRESULT f_mkdir (const TCHAR* path) {
 FRESULT f_stat (const TCHAR* path, FILINFO* fno) {
   return FR_OK;
 }
+FRESULT f_chmod (const TCHAR* path, BYTE attr, BYTE mask) {
+  return FR_OK;
+}
+FRESULT f_unlink (const TCHAR* path) {
+  return FR_OK;
+}
+FRESULT f_rename (const TCHAR* path_old, const TCHAR* path_new) {
+  return FR_OK;
+}
+
+static const char *rd_text;
+
+// f_open() opens rd_text (unless rd_text is NULL: a missing file).
+FRESULT f_open (FIL* fp, const TCHAR* path, BYTE mode) {
+  return rd_text ? FR_OK : FR_NO_FILE;
+}
+
+// f_read() serves this text (all that's asked, as FatFs does, unless at its end).
+static unsigned rd_off;
+FRESULT f_read (FIL* fp, void* buff, UINT btr, UINT* br) {
+  unsigned n = strlen(&rd_text[rd_off]);
+  *br = n < btr ? n : btr;
+  memcpy(buff, &rd_text[rd_off], *br);
+  rd_off += *br;
+  return FR_OK;
+}
+
+// f_write() takes up to wr_room bytes, f_close() returns cl_res.
+static unsigned wr_room;
+static FRESULT cl_res;
+FRESULT f_write (FIL* fp, const void* buff, UINT btw, UINT* bw) {
+  *bw = btw < wr_room ? btw : wr_room;
+  return FR_OK;
+}
+FRESULT f_close (FIL* fp) {
+  return cl_res;
+}
+
+static char rd_lines[256];
+static unsigned rd_count;
+static bool collect_line(char *line, unsigned len, void *usr) {
+  assert(!line || strlen(line) == len);
+  strcat(rd_lines, line ? line : "~");       // ~: a line too long, skipped
+  strcat(rd_lines, "|");
+  return ++rd_count < *(unsigned*)usr;
+}
+
+static const char *lines_of(const char *text, unsigned bufsize, unsigned maxlines) {
+  char buf[64];
+  rd_text = text;
+  rd_off = rd_count = 0;
+  rd_lines[0] = 0;
+  assert(read_lines(NULL, buf, bufsize, collect_line, &maxlines));
+  return rd_lines;
+}
 
 int main() {
   char tmp[1024];
+
+  // Lines (CRLF too) without their newline, the last one with or without
+  // one; lines that don't fit the buffer (9 bytes, a newline included) are
+  // skipped whole (the callback gets NULL for them); the callback can stop it.
+  assert(!strcmp(lines_of("a=1\nbb=2\r\n\nlast", 10, 99), "a=1|bb=2||last|"));
+  assert(!strcmp(lines_of("12345678\n123456789\nx\n1234567890123456789012\ny", 10, 99), "12345678|~|x|~|y|"));
+  assert(!strcmp(lines_of("toolongforit", 10, 99), "~|"));
+  assert(!strcmp(lines_of("1\n2\n3\n4\n5\n6\n7\n8\n9", 10, 99), "1|2|3|4|5|6|7|8|9|"));
+  assert(!strcmp(lines_of("a\nb\nc\n", 10, 2), "a|b|"));
+  assert(!strcmp(lines_of("", 10, 99), ""));
+
+  // read_lines_file(): opens the file (or says it's missing).
+  {
+    char buf[16];
+    unsigned max = 99;
+    rd_text = "a\nb";
+    rd_off = rd_count = 0;
+    rd_lines[0] = 0;
+    assert(FR_OK == read_lines_file("x", buf, sizeof(buf), collect_line, &max) && !strcmp(rd_lines, "a|b|"));
+    rd_text = NULL;
+    assert(FR_NO_FILE == read_lines_file("x", buf, sizeof(buf), collect_line, &max));
+  }
+
+  // write_close(): the data must be all written and the file closed.
+  wr_room = 100; cl_res = FR_OK;
+  assert(write_close(NULL, "abc", 3));
+  cl_res = FR_DISK_ERR;
+  assert(!write_close(NULL, "abc", 3));
+  wr_room = 2; cl_res = FR_OK;
+  assert(!write_close(NULL, "abc", 3));
 
   assert(0 == parseuint("0"));
   assert(1 == parseuint("1"));
@@ -53,9 +139,6 @@ int main() {
   assert(!strcmp("foo", file_basename("/foo")));
   assert(!strcmp("foo", file_basename("foo")));
   assert(!strcmp("test", file_basename("/foo/bar/lol/test")));
-
-  assert(check_file_exists("/test"));
-  assert(check_file_exists("/test/lol"));
 
   create_basepath(NULL);
   create_basepath("");
@@ -90,6 +173,52 @@ int main() {
   assert(!strcmp(find_extension("/foo/bar."), ""));
   assert(!strcmp(find_extension("/foo/bar.lol/test.123"), "123"));
   assert(find_extension("/foo/bar.lol/beef") == NULL);
+
+  // Paths derived from a ROM name (ie. saves, configs).
+  assert(derived_fn(tmp, 255, "/.superfw/config/", "/GBA/Game.gba", ".config"));
+  assert(!strcmp(tmp, "/.superfw/config/Game.config"));
+  assert(derived_fn(tmp, 255, NULL, "/GBA/Game.gba", ".sav"));
+  assert(!strcmp(tmp, "/GBA/Game.sav"));
+  assert(derived_fn(tmp, 255, NULL, "/GBA/Game", ".sav"));
+  assert(!strcmp(tmp, "/GBA/Game.sav"));
+  assert(derived_fn(tmp, 255, "/SAVESTATE/", "Game.v1.gba", ""));
+  assert(!strcmp(tmp, "/SAVESTATE/Game.v1"));
+  assert(derived_fn(tmp, 255, NULL, "/GBA/.hidden", ".sav"));     // As replace_extension()
+  assert(!strcmp(tmp, "/GBA/.sav"));
+  // Names that don't fit are cut short (never in the middle of a UTF-8
+  // character) and end in "~" and a hash of the whole name, so they differ.
+  assert(derived_fn(tmp, 26, "/SAVES/", "/x/ABCDEFGHIJKLMNOPQRSTUVWXYZ.gba", ".sav"));
+  assert(strlen(tmp) == 26 && !memcmp(tmp, "/SAVES/ABCDEF~", 14) && !strcmp(&tmp[22], ".sav"));
+  {
+    // Other names differ; names differing only in case hash the same (FAT
+    // compares names that way).
+    char other[64];
+    assert(derived_fn(other, 26, "/SAVES/", "/x/ABCDEFGHIJKLMNOPQRSTUVWXYQ.gba", ".sav"));
+    assert(strlen(other) == 26 && !memcmp(other, "/SAVES/ABCDEF~", 14) && strcmp(tmp, other));
+    assert(derived_fn(other, 26, "/SAVES/", "/x/ABCDEFGHIJKLMNOPQRSTUVWXYz.gba", ".sav"));
+    assert(!strcmp(tmp, other));
+  }
+  #define AE6 "a\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9.gba"    // 13 bytes before .gba
+  assert(derived_fn(tmp, 12, "/", AE6, ""));
+  assert(strlen(tmp) == 11 && !memcmp(tmp, "/a~", 3));
+  assert(derived_fn(tmp, 13, "/", AE6, ""));
+  assert(strlen(tmp) == 13 && !memcmp(tmp, "/a\xc3\xa9~", 5));
+  // Not even the directory, the hash and the extension fit.
+  assert(!derived_fn(tmp, 9, "/SAVES/", "/GBA/Game.gba", ".sav"));
+  assert(!strcmp(tmp, ""));
+  assert(!derived_fn(tmp, 19, "/SAVES/", "/GBA/LongerGame.gba", ".sav"));
+  assert(derived_fn(tmp, 20, "/SAVES/", "/GBA/LongerGame.gba", ".sav"));
+  assert(!memcmp(tmp, "/SAVES/~", 8) && strlen(tmp) == 20);
+  {
+    // The longest FAT name, into a buffer of exactly maxlen + 1 bytes.
+    char name[257], *out = malloc(256);
+    name[0] = '/';
+    memset(&name[1], 'N', 255);
+    name[256] = 0;
+    assert(derived_fn(out, 255, "/.superfw/savestate/", name, ""));
+    assert(strlen(out) == 255 && !memcmp(out, "/.superfw/savestate/NNN", 23) && out[246] == '~');
+    free(out);
+  }
 
   human_size(tmp, sizeof(tmp), 0); assert(!strcmp(tmp, "1K"));
   human_size(tmp, sizeof(tmp), 100); assert(!strcmp(tmp, "1K"));

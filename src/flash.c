@@ -97,6 +97,12 @@
   #define FLASH_WE_MODE() write_supercard_mode(0x1510)
 #endif
 
+// Returns the flash to read mode (its reset command, for a few cycles).
+static void flash_read_mode() {
+  for (unsigned i = 0; i < 32; i++)
+    SLOT2_BASE_U16[0] = 0x00F0;
+}
+
 // Checks flash device and extracts info about it
 bool flash_identify(t_flash_info *info) {
   memset(info, 0, sizeof(*info));
@@ -105,8 +111,7 @@ bool flash_identify(t_flash_info *info) {
   FLASH_WE_MODE();
 
   // Reset any previous command that might be ongoing.
-  for (unsigned i = 0; i < 32; i++)
-    SLOT2_BASE_U16[0] = 0x00F0;
+  flash_read_mode();
 
   SLOT2_BASE_U16[addr_perm(0x555)] = 0x00AA;
   SLOT2_BASE_U16[addr_perm(0x2AA)] = 0x0055;
@@ -115,8 +120,7 @@ bool flash_identify(t_flash_info *info) {
   info->deviceid = (SLOT2_BASE_U16[addr_perm(0x000)] << 16) |
                     SLOT2_BASE_U16[addr_perm(0x001)];
 
-  for (unsigned i = 0; i < 32; i++)
-    SLOT2_BASE_U16[0] = 0x00F0;
+  flash_read_mode();
 
   // Enter CFI mode and extract flash information
   SLOT2_BASE_U16[addr_perm(0x555)] = 0x0098;
@@ -140,8 +144,7 @@ bool flash_identify(t_flash_info *info) {
     info->blkwrite = (info->blkwrite ? (1 << info->blkwrite) : 0);
   }
 
-  for (unsigned i = 0; i < 32; i++)
-    SLOT2_BASE_U16[0] = 0x00F0;
+  flash_read_mode();
 
   // Go back to R/W SDRAM.
   set_supercard_mode(MAPPED_SDRAM, true, true);
@@ -154,8 +157,7 @@ bool flash_erase_chip() {
   FLASH_WE_MODE();
 
   // Reset any previous command that might be ongoing.
-  for (unsigned i = 0; i < 32; i++)
-    SLOT2_BASE_U16[0] = 0x00F0;
+  flash_read_mode();
 
   SLOT2_BASE_U16[addr_perm(0x555)] = 0x00AA;
   SLOT2_BASE_U16[addr_perm(0x2AA)] = 0x0055;
@@ -172,8 +174,7 @@ bool flash_erase_chip() {
   }
   bool retok = (SLOT2_BASE_U16[0] == SLOT2_BASE_U16[0]);
 
-  for (unsigned i = 0; i < 32; i++)
-    SLOT2_BASE_U16[0] = 0x00F0;            // Reset for a few cycles
+  flash_read_mode();
 
   set_supercard_mode(MAPPED_SDRAM, true, true);
   return retok;
@@ -195,8 +196,7 @@ bool flash_erase_sector(uintptr_t addr) {
   FLASH_WE_MODE();
 
   // Reset any previous command that might be ongoing.
-  for (unsigned i = 0; i < 32; i++)
-    SLOT2_BASE_U16[0] = 0x00F0;
+  flash_read_mode();
 
   SLOT2_BASE_U16[addr_perm(0x555)] = 0x00AA;
   SLOT2_BASE_U16[addr_perm(0x2AA)] = 0x0055;
@@ -214,8 +214,7 @@ bool flash_erase_sector(uintptr_t addr) {
   }
   bool retok = (SLOT2_BASE_U16[0] == SLOT2_BASE_U16[0]);
 
-  for (unsigned i = 0; i < 32; i++)
-    SLOT2_BASE_U16[0] = 0x00F0;            // Reset for a few cycles
+  flash_read_mode();
 
   set_supercard_mode(MAPPED_SDRAM, true, true);
   return retok;
@@ -236,17 +235,19 @@ void flash_erase_fsm_start(t_flash_erase_state *st, uint32_t baseaddr, unsigned 
   st->sectorcount = sectorcnt;
   st->currsect = 0;
   st->timeout = 0;
+  st->failed = false;
 }
 
 int flash_erase_fsm_step(t_flash_erase_state *st) {
+  if (st->failed)
+    return -1;
   if (st->currsect & 0x80000000) {
     // Check if the erasing operation is done.
     FLASH_WE_MODE();
     bool complete = (SLOT2_BASE_U16[0] == SLOT2_BASE_U16[0]);
 
     if (complete) {
-      for (unsigned i = 0; i < 32; i++)
-        SLOT2_BASE_U16[0] = 0x00F0;            // Reset for a few cycles
+      flash_read_mode();
 
       st->currsect = (st->currsect & 0x7FFFFFFF) + 1;
       set_supercard_mode(MAPPED_SDRAM, true, true);
@@ -254,8 +255,11 @@ int flash_erase_fsm_step(t_flash_erase_state *st) {
       return flash_erase_fsm_step(st);     // Start the next erase operation!
     }
     else if (systime() > st->timeout) {
+      // Error timeout: the erase can't complete (the sector isn't erased).
+      flash_read_mode();            // Back to read mode (if it gave up)
+      st->failed = true;
       set_supercard_mode(MAPPED_SDRAM, true, true);
-      return -1;   // Error timeout.
+      return -1;
     }
   } else {
     while (1) {
@@ -273,8 +277,7 @@ int flash_erase_fsm_step(t_flash_erase_state *st) {
     // Start wiping the current sector.
     FLASH_WE_MODE();
 
-    for (unsigned i = 0; i < 32; i++)
-      SLOT2_BASE_U16[0] = 0x00F0;
+    flash_read_mode();
 
     SLOT2_BASE_U16[addr_perm(0x555)] = 0x00AA;
     SLOT2_BASE_U16[addr_perm(0x2AA)] = 0x0055;
@@ -291,6 +294,16 @@ int flash_erase_fsm_step(t_flash_erase_state *st) {
 
   set_supercard_mode(MAPPED_SDRAM, true, true);
   return 0; // Work in progress
+}
+
+// Stops an erase (ie. on errors): the sector being erased, if any, finishes
+// (or times out, see above), and no other one is started, so the flash can be
+// read.
+void flash_erase_fsm_stop(t_flash_erase_state *st) {
+  if (st->currsect & 0x80000000) {
+    st->sectorcount = (st->currsect & 0x7FFFFFFF) + 1;
+    while (!flash_erase_fsm_step(st));
+  }
 }
 
 
@@ -391,23 +404,26 @@ bool flash_program_buffered(uint32_t baseaddr, const uint8_t *buf, unsigned size
 
 // Reads data into a buffer, even if it's on SDRAM.
 // Size must be multiple of 4 bytes!
-void flash_read(uint32_t baseaddr, uint8_t *buf, unsigned size) {
+bool flash_read(uint32_t baseaddr, uint8_t *buf, unsigned size) {
   // Reset any previous command that might be ongoing.
   FLASH_WE_MODE();
   SLOT2_BASE_U16[0] = 0x00F0;
 
-  for (unsigned i = 0; i < size; i += 512) {
+  // buf may be in the cart's SDRAM: the copy is checked.
+  bool ok = true;
+  for (unsigned i = 0; ok && i < size; i += 512) {
     unsigned tocpy = MIN(512U, size - i);
     uint16_t tmp[256];
     const uint8_t *ptr = (uint8_t*)(baseaddr + i);
     memcpy32(tmp, ptr, 512);
 
     set_supercard_mode(MAPPED_SDRAM, true, true);
-    memcpy32(&buf[i], tmp, tocpy);
+    ok = memcpy32_checked(&buf[i], tmp, tocpy);
     FLASH_WE_MODE();
   }
 
   set_supercard_mode(MAPPED_SDRAM, true, true);
+  return ok;
 }
 
 // Programs the built-in flash memory. 
@@ -441,14 +457,25 @@ typedef struct {
   uint8_t  magic[16];        // SUPERFW~DAVIDGF
 } t_superfw_header;
 
-// Validates a superFW image header
-bool check_superfw(const uint8_t *h, uint32_t *ver) {
+// True if the firmware in flash is this build (same version and commit): a
+// reboot comes back to it (it isn't when this one runs from the SD card).
+bool flash_fw_is_self() {
+  const volatile t_superfw_header *h = (const volatile t_superfw_header*)ROM_FLASHFIRMW_ADDR;
+  set_supercard_mode(MAPPED_FIRMWARE, false, false);
+  bool self = h->version == VERSION_WORD && h->git_version == VERSION_SLUG_WORD;
+  set_supercard_mode(MAPPED_SDRAM, true, true);
+  return self;
+}
+
+// Validates a superFW image header: its version, and whether it's SuperFW
+// Next (marked in the header's padding; its version has three parts).
+bool check_superfw(const uint8_t *h, uint32_t *ver, bool *next) {
   const t_superfw_header *header = (t_superfw_header*)h;
 
   if (memcmp(header->magic, "SUPERFW~DAVIDGF", 16))
     return false;
-  if (ver)
-    *ver = header->version;
+  *ver = header->version;
+  *next = !memcmp(header->pad, "NEXT", 4);
   return true;
 }
 

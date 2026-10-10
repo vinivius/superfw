@@ -26,6 +26,10 @@
 #define IGM_ENTRYPOINT_NOCHEATS_OFF     ( 8*4)    // Offsets in ingame.S
 #define IGM_ENTRYPOINT_CHEATS_OFF       (12*4)
 
+#define IGM_HEADER_SIZE                 (652)     // The header in ingame.S (t_igmenu)
+#define SPILL_HDR_SIZE                  (172)     // Spilled registers (t_spilled_region
+                                                  // up to its palette)
+
 #define FLASH_IGM_TRAMP_NOCHEATS_OFF    ( 8*4)    // Offsets in ingame_trampoline.S
 #define FLASH_IGM_TRAMP_CHEATS_OFF      (32*4)
 
@@ -58,6 +62,8 @@ typedef struct {
   uint32_t savefile_backups;           // Backup count
   char savefile_pattern[256];          // File name (without the .sav) pattern
   char statefile_pattern[256];         // File name (without the .X.state) pattern
+  uint32_t game_code;                  // The game's code and version (ROM
+  uint32_t game_ver;                   // header)
 } t_igmenu;
 
 // Built-in assets
@@ -85,6 +91,7 @@ typedef struct {
   uint32_t sup_regs[3];        // SP, LR and SPSR for Supervisor mode
   uint32_t abt_regs[3];        // SP, LR and SPSR for abort mode
   uint32_t und_regs[3];        // SP, LR and SPSR for undefined mode
+  uint32_t usr_regs[2];        // SP and LR of the game's own (System/User) mode
 
   uint8_t palette[1024];
   uint8_t oam[1024];
@@ -97,11 +104,15 @@ typedef struct {
 #define SIGNATURE_A          0x45505553     // SUPERFWSNAP
 #define SIGNATURE_B          0x53574652
 #define SIGNATURE_C          0x0050414e
+#define STATE_GAMEID         0x44494D47     // "GMID": the state says its game
 
 typedef struct {
   uint32_t signature[3];       // Some signature for the file on disk
   uint32_t version;            // Savestate version.
-  uint16_t pad[496 / 2];       // Unused header state
+  uint32_t gameid;             // STATE_GAMEID if the game is below: its ROM
+  uint32_t gamecode;           // header's code and version (zeros in older
+  uint32_t gamever;            // states, older firmware ignores them)
+  uint16_t pad[484 / 2];       // Unused header state
 } t_savestate_header;
 
 typedef struct {
@@ -114,8 +125,10 @@ typedef struct {
   uint32_t sup_regs[3];        // SP, LR and SPSR for Supervisor mode
   uint32_t abt_regs[3];        // SP, LR and SPSR for abort mode
   uint32_t und_regs[3];        // SP, LR and SPSR for undefined mode
+  uint32_t usr_regs[2];        // SP and LR of the game's own (System/User) mode
+                               // (zeros in older states: they're kept as they are)
 
-  uint16_t pad[384 / 2];      // Unused space for now
+  uint16_t pad[376 / 2];      // Unused space for now
 } t_savestate_regs;
 
 typedef struct {
@@ -211,6 +224,8 @@ _Static_assert(sizeof(t_spilled_region) <= MIN_SCRATCH_SPACE, "Reserved spilled 
 
 _Static_assert(offsetof(t_igmenu, tramp1_insts) == IGM_ENTRYPOINT_NOCHEATS_OFF, "Struct offset mismatch");
 _Static_assert(offsetof(t_igmenu, tramp2_insts) == IGM_ENTRYPOINT_CHEATS_OFF, "Struct offset mismatch");
+_Static_assert(sizeof(t_igmenu) == IGM_HEADER_SIZE, "Struct size mismatch (ingame.S checks its own)");
+_Static_assert(offsetof(t_spilled_region, palette) == SPILL_HDR_SIZE, "Spill header size mismatch");
 
 #endif
 

@@ -7,6 +7,7 @@
 #include "gbahw.h"
 #include "nanoprintf.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
 
 typedef struct { char *dst; size_t cap; size_t cur; } log_buf_t;
 
@@ -28,12 +29,10 @@ void write_log(const char *fname, int line, const char *format, ...) {
 
   buffer[buf.cur++] = '\n';
 
+  // Best effort (there's nowhere to report it).
   FIL fil;
-  UINT written;
-  if (f_open(&fil, "/superfwlog.txt", FA_OPEN_APPEND | FA_WRITE) != FR_OK)
-    return;
-  f_write(&fil, buffer, buf.cur, &written);
-  f_close(&fil);
+  if (f_open(&fil, "/superfwlog.txt", FA_OPEN_APPEND | FA_WRITE) == FR_OK)
+    write_close(&fil, buffer, buf.cur);
 }
 
 void write_log_emu(const char *fname, int line, const char *format, ...) {

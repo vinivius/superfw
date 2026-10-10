@@ -1,25 +1,24 @@
 #!/bin/bash
 # publish-release.sh: publishes the firmware in out/ as the release next-$V,
 # once per version. Run by .github/workflows/superfw-next.yml under its
-# release lock, after a merge into superfw-next. Needs V (ie. v0.2),
+# release lock, after a merge into superfw-next. Needs V (ie. v0.0.95),
 # GITHUB_SHA and gh with write access. Tested by tools/ci/test-release.py.
 set -e
 
 tag="next-$V"
-files=("out/superfw-next-$V-sd.fw" "out/superfw-next-$V-sd.gba" "out/superfw-next-$V-sd-uart-debug.gba" out/SHA256SUMS)
+# The same files as upstream SuperFW's releases: one firmware per cart.
+files=(out/superfw-sd.fw out/superfw-lite.fw out/superfw-chis.fw)
 for f in "${files[@]}"; do
   [ -f "$f" ] || { echo "::error::$f is missing"; exit 1; }
 done
 
 if ! gh release view "$tag" >/dev/null 2>&1; then
   cat > notes.md <<NOTES
-SuperFW Next ${V#v} for the Supercard SD, built from ${GITHUB_SHA::8}.
+SuperFW Next ${V#v}, built from ${GITHUB_SHA::8}: \`superfw-sd.fw\` for the Supercard SD, \`superfw-lite.fw\` for the Supercard Lite, \`superfw-chis.fw\` for the SuperChis (the same files as SuperFW's releases).
 
-**Try it first:** copy \`superfw-next-$V-sd.gba\` to the SD card and launch it from the browser like a game. It runs from memory; turning the console off brings back your current firmware.
+**Try it first** (Supercard SD): copy \`superfw-sd.fw\` to the SD card renamed to \`superfw-sd.gba\` and launch it from the browser like a game. It runs from memory; turning the console off brings back your current firmware.
 
-**Flash it:** with fresh batteries or a power adapter, copy \`superfw-next-$V-sd.fw\` to the SD card (keep only one \`.fw\` there). On the About tab press Down + B + START, pick the \`.fw\` in the browser, press A, then L + R + Up, and wait for "Flash update complete!".
-
-\`superfw-next-$V-sd-uart-debug.gba\` is the serial debug build (see tools/debug). Checksums are in SHA256SUMS.
+**Flash it:** with fresh batteries or a power adapter, copy your cart's \`.fw\` to the SD card (keep only one \`.fw\` there). On the About tab press Down + B + START, pick the \`.fw\` in the browser, press A, then L + R + Up, and wait for "Flash update complete!".
 NOTES
   # An earlier version can still be published after a later one (ie.
   # rerunning an old run): notes start at the highest existing version below

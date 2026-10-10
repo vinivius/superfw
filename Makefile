@@ -1,5 +1,6 @@
 
-VERSION_WORD := 0x00000001
+# major << 16 | minor << 8 | patch: 0x0000005F is 0.0.95
+VERSION_WORD := 0x0000005F
 VERSION_SLUG_WORD := $(shell git rev-parse --short=8 HEAD || echo FFFFFFFF)
 
 PREFIX		:= arm-none-eabi-
@@ -8,12 +9,13 @@ CXX		:= $(PREFIX)g++
 OBJDUMP		:= $(PREFIX)objdump
 OBJCOPY		:= $(PREFIX)objcopy
 
-# UART debug builds are the tightest fit in the flash, compress them harder
-# (slower build).
+# The firmware fills the flash: it's compressed hard. Level 9 takes ~35 s and
+# saves ~1.1KiB over level 4; UART debug builds are the tightest fit, they
+# use level 15, the most (~140 s, ~250 bytes smaller than level 9).
 ifeq ($(ENABLE_UART_LOGGING),1)
-  COMPRESSION_RATIO ?= 9
+  COMPRESSION_RATIO ?= 15
 endif
-COMPRESSION_RATIO ?= 4
+COMPRESSION_RATIO ?= 9
 
 GLOBAL_DEFINES = -D__GBA__
 
@@ -78,7 +80,7 @@ ifeq ($(BUNDLE_OTHER_EMULATORS),1)
                 emu/smsadvance-v2.5-scptch.gba.comp
 endif
 
-BASEFLAGS=$(GLOBAL_DEFINES) -mcpu=arm7tdmi -mtune=arm7tdmi
+BASEFLAGS=$(GLOBAL_DEFINES) -mcpu=arm7tdmi -mtune=arm7tdmi -fno-ipa-ra -fno-strict-aliasing
 
 CFLAGS=-O2 -ggdb \
        $(BASEFLAGS) $(PAYLOADFLAGS) \
@@ -175,7 +177,7 @@ INFILES=src/gba_ewram_crt0.S \
         src/fonts/font_render.c \
         ${FATFSFILES}
 
-all:	$(FWBINFILES) $(BIEMUFILES) directsave.payload ingame_trampoline.payload
+all:	$(FWBINFILES) $(BIEMUFILES) $(BIEMUFILES:.comp=.ck) directsave.payload ingame_trampoline.payload
 	# Wrap the firmware around a ROM->EWRAM loader
 	$(CC) $(CFLAGS) -o firmware.elf rom_boot.S -T ldscripts/gba_romboot.ld -nostartfiles -nostdlib -Wl,--defsym,MAX_FLASH_SIZE=$(MAXFSIZE)K
 	$(OBJCOPY) --output-target=binary firmware.elf superfw.gba
@@ -220,6 +222,10 @@ firmware.ewram.gba.comp:	firmware.ewram.gba ./upkr.elf
 %.gba.comp:	%.gba.bin ./upkr.elf
 	./upkr.elf -l $(COMPRESSION_RATIO) $< $@
 
+# Checksum of a bundled emulator, to verify it once unpacked.
+%.gba.ck:	%.gba.bin tools/vfs-checksum.py
+	./tools/vfs-checksum.py $< > $@.tmp && mv $@.tmp $@ || { rm -f $@.tmp; false; }
+
 %.db.comp:	%.db ./upkr.elf
 	./upkr.elf -l $(COMPRESSION_RATIO) $< $@
 
@@ -236,5 +242,5 @@ upkr.elf:	tools/upkr.cc
 	g++ -o $@ $< -O3 -ffast-math
 
 clean:
-	rm -f ldscripts/*.i *.gba *.elf *.payload *.map res/*.comp emu/*.comp *.comp src/menu_messages.h src/messages_data.h
+	rm -f ldscripts/*.i *.gba *.elf *.payload *.map res/*.comp emu/*.comp emu/*.ck emu/*.ck.tmp *.comp src/menu_messages.h src/messages_data.h
 

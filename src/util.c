@@ -62,6 +62,57 @@ void replace_extension(char *fn, const char *newext) {
   strcat(fn, newext);
 }
 
+// FNV-1a (32 bit) hash of s, up to len chars (~0U: the whole string). With
+// nocase, ASCII letters hash the same in either case (like FAT names).
+uint32_t fnv1a(const char *s, unsigned len, bool nocase) {
+  uint32_t h = 0x811C9DC5;
+  for (; len && *s; len--) {
+    uint8_t c = *s++;
+    if (nocase && c >= 'A' && c <= 'Z')
+      c += 'a' - 'A';
+    h = (h ^ c) * 0x01000193;
+  }
+  return h;
+}
+
+// Builds dir + the name of path without its extension + ext into out, at
+// most maxlen chars (plus the terminator). A NULL dir keeps the directory of
+// path. A name that doesn't fit is cut short (at a UTF-8 character boundary)
+// and ends in "~" and a hash of the whole name (case aside, as FAT compares
+// names), so different names never end up the same. Returns false, leaving
+// out empty, if not even that fits.
+bool derived_fn(char *out, unsigned maxlen, const char *dir, const char *path, const char *ext) {
+  const char *name = file_basename(path);
+  unsigned dlen = dir ? strlen(dir) : (unsigned)(name - path);
+  unsigned elen = strlen(ext);
+  const char *e = strrchr(name, '.');     // As replace_extension() (a leading dot too)
+  unsigned nlen = e ? (unsigned)(e - name) : strlen(name);
+
+  uint32_t h = 0;
+  const bool cut = dlen + nlen + elen > maxlen;
+  if (cut) {
+    if (dlen + 9 + elen > maxlen) {       // "~" and 8 hex digits
+      out[0] = 0;
+      return false;
+    }
+    h = fnv1a(name, nlen, true);          // Of the whole name, case aside (FAT)
+    nlen = utf8_cut(name, maxlen - dlen - 9 - elen);   // Don't split a character
+  }
+
+  memcpy(out, dir ? dir : path, dlen);
+  char *o = &out[dlen];
+  memcpy(o, name, nlen);
+  o += nlen;
+  if (cut) {
+    *o = '~';
+    for (unsigned i = 8; i; i--, h >>= 4)
+      o[i] = "0123456789abcdef"[h & 15];
+    o += 9;
+  }
+  memcpy(o, ext, elen + 1);
+  return true;
+}
+
 unsigned parseuint(const char *s) {
   unsigned ret = 0;
   while (*s)
@@ -202,4 +253,51 @@ void memmove32(void *dst, void *src, unsigned count) {
   }
 }
 
+bool copy_checked(void *dst, const void *src, unsigned count,
+                  void (*copy)(void *dst, const void *src, unsigned count)) {
+  const volatile uint32_t *d = (uint32_t*)dst;
+  const uint32_t *s = (const uint32_t*)src;
+  for (unsigned t = 0; t < SDRAM_WRITE_TRIES; t++) {
+    copy(dst, src, count);
+    unsigned i = 0;
+    while (i < count / 4 && d[i] == s[i])
+      i++;
+    if (i == count / 4)
+      return true;
+  }
+  return false;
+}
 
+static void copy32(void *dst, const void *src, unsigned count) {
+  volatile uint32_t *d = (uint32_t*)dst;
+  const uint32_t *s = (const uint32_t*)src;
+  for (unsigned i = 0; i < count / 4; i++)
+    d[i] = s[i];
+}
+
+bool memcpy32_checked(void *dst, const void *src, unsigned count) {
+  return copy_checked(dst, src, count, copy32);
+}
+
+bool memset32_checked(void *dst, uint32_t value, unsigned count) {
+  for (unsigned t = 0; t < SDRAM_WRITE_TRIES; t++) {
+    volatile uint32_t *d = (uint32_t*)dst;
+    unsigned i;
+    for (i = 0; i < count / 4; i++)
+      d[i] = value;
+    for (i = 0; i < count / 4 && d[i] == value; i++);
+    if (i == count / 4)
+      return true;
+  }
+  return false;
+}
+
+// Writes a half word to the cart's SDRAM, checked (see SDRAM_WRITE_TRIES).
+bool write16_checked(volatile uint16_t *p, uint16_t v) {
+  for (unsigned t = 0; t < SDRAM_WRITE_TRIES; t++) {
+    *p = v;
+    if (*p == v)
+      return true;
+  }
+  return false;
+}

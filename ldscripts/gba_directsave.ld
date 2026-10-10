@@ -10,8 +10,10 @@ OUTPUT_ARCH(arm)
 
 /* Link at 0x0 for easy relocation (if needed) */
 
+/* DIRSAVE_REQ_SPACE (7 KiB), but its last word: placed last in the 32 MiB,
+   that's the cart's mode register (mode changes overwrite it). */
 MEMORY {
-    ROM     : ORIGIN = 0x00000000, LENGTH = 7K
+    ROM     : ORIGIN = 0x00000000, LENGTH = 7K - 4
 }
 
 ASSERT(__bss_start - __bss_end == 0, "bss section should be empty")

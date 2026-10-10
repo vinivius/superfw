@@ -22,8 +22,6 @@
 
 #include "patchengine.h"
 
-#define BLK_SIZE     4*1024*1024
-
 static void dummy(unsigned) {}
 
 int main(int argc, char **argv) {
@@ -42,19 +40,18 @@ int main(int argc, char **argv) {
 
   t_patch_builder pb;
   patchengine_init(&pb, st.st_size);
-  char *tmp = malloc(BLK_SIZE + 64);   // FIXME: the scanner overruns the buffer sometimes.
-
-  while (true) {
-    int r = fread(tmp, 1, BLK_SIZE, fd);
-    if (r <= 0)
-      break;
-
-    patchengine_process_rom((uint32_t*)tmp, r, &pb, dummy);
+  // The whole ROM at once, with the zeros the engine may read past its end.
+  char *tmp = calloc(1, st.st_size + PE_LOOKAHEAD);
+  if (fread(tmp, 1, st.st_size, fd) != (size_t)st.st_size) {
+    printf("Could not read file %s\n", argv[1]);
+    exit(1);
   }
-
+  patchengine_process_rom((uint32_t*)tmp, 0, (st.st_size + 3) / 4, 0, &pb, dummy);
   free(tmp);
-  patchengine_finalize(&pb);
+  patchengine_finalize(&pb);       // (It adds the save ops: they count)
   fclose(fd);
+  if (pb.overflow)
+    printf("Too many patches (over %d)!\n", MAX_PATCH_OPS);
 
   // Print patches for manual inspection:
   printf("Save type: %d\n", pb.p.save_mode);

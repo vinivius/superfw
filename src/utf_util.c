@@ -16,6 +16,12 @@
  * <http://www.gnu.org/licenses/>.
  */
 
+// UART debug builds are the tightest fit in the flash: built for size there
+// (sort keys are made while a folder loads, which the SD card reads dominate).
+#ifdef ENABLE_UART_LOGGING
+#pragma GCC optimize ("Os")
+#endif
+
 #include "utf_util.h"
 
 // Decodes the pointed string and returns the number of bytes it takes.

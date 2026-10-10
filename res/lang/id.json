@@ -116,7 +116,7 @@
     "MSG_FWUP_ERRPG": "Galat mem-flash!",
     "MSG_FWUP_ERRVR": "Verifikasinya gagal!",
     "MSG_ERR_READ": "Galat memuat ROM!",
-    "MSG_ERR_TOOBIG": "Berkas GBA terlalu besar!",
+    "MSG_ERR_TOOBIG": "Berkas terlalu besar!",
     "MSG_ERR_SAVERD": "Galat membaca simpanan",
     "MSG_ERR_SAVEWR": "Galat menulis simpanan",
     "MSG_ERR_SAVEPR": "Galat menyiapkan simpanan",

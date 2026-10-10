@@ -191,6 +191,7 @@ typedef struct {
   char creator[33];
 } t_patchdb_info;
 extern t_patchdb_info pdbinfo;
+void pdbinfo_load();
 extern volatile unsigned frame_count;
 uint32_t systime();
 
@@ -259,6 +260,8 @@ struct struct_t_patch;
 #define ERR_LOAD_NOEMU          0x4
 #define ERR_FLASH_OP            0x5
 #define ERR_LOAD_VERIFY         0x6
+#define ERR_LOAD_EMUERR         0x7     // The emulator can't be read or unpacked
+#define ERR_LOAD_TOOBIG         0x8
 
 // Prepares the save game files, readin and writing files in some cases.
 unsigned prepare_savegame(t_sram_load_policy loadp, t_sram_save_policy savep, EnumSavetype stype, t_dirsave_info *dsinfo, const char *savefn);
@@ -266,20 +269,45 @@ unsigned prepare_savegame(t_sram_load_policy loadp, t_sram_save_policy savep, En
 unsigned prepare_sram_based_savegame(t_sram_load_policy loadp, t_sram_save_policy savep, const char *savefn);
 // Loads ROM header
 unsigned preload_gba_rom(const char *fn, uint32_t fs, t_rom_header *romh);
+// Where load_gba_rom() places the DirectSave payload and the in-game menu
+// (ROM offsets): the ROM isn't loaded in [ds_addr, end).
+typedef struct {
+  uint32_t ds_addr, igm_addr, end;
+  uint32_t igm_size;              // The menu, with its fonts and cheats
+} t_payload_space;
+bool gba_payload_space(uint32_t fs, const struct struct_t_patch *ptch, bool ds, bool igm, unsigned cheats,
+                       t_payload_space *ps);
+bool nor_payload_space(uint32_t fs, const struct struct_t_patch *ptch, bool igm);
+// A game's identity (ROM header): its code and version.
+typedef struct {
+  uint32_t code;
+  uint32_t version;
+} t_game_id;
+
 // Loads a ROM file and launches it.
 unsigned load_gba_rom(const char *fn, uint32_t fs, const char *savefn,
                       const struct struct_t_patch *ptch,
-                      const t_dirsave_info *dsinfo, bool ingame_menu,
-                      const t_rtc_info *rtcinfo, unsigned cheats, progress_fn progress);
+                      const t_dirsave_info *dsinfo, bool ingame_menu, bool keep_igm,
+                      const t_rtc_info *rtcinfo, unsigned cheats, t_game_id id,
+                      progress_fn progress);
 // Launch from NOR
 unsigned  flash_gba_nor(const char *fn, uint32_t fs, const t_rom_header *rom_header,
                         const struct struct_t_patch *ptch, bool dirsaving, bool ingame_menu, bool rtc_patches,
                         const uint8_t *blkmap, progress_fn progress, uint8_t *scratch, unsigned ssize);
 unsigned launch_gba_nor(
   const char *romfn, const char *savefn, const uint8_t *normap, unsigned blkcnts, const t_dirsave_info *dsinfo,
-  const t_rtc_info *rtcinfo, bool ingame_menu, unsigned cheats);
+  const t_rtc_info *rtcinfo, bool ingame_menu, unsigned cheats, t_game_id id);
 
 unsigned load_extemu_rom(const char *fn, uint32_t fs, const t_emu_loader *ldinfo, progress_fn progress);
+// What the loads (that failed) wrote into SDRAM: load_sdram_end is how far the
+// menu data below the fonts is gone (an offset from 0x08000000), and
+// load_sdram_lost tells whether what a reboot restores was overwritten (the
+// fonts and cheats, the patch databases or the bundled emulators);
+// load_fonts_lost, whether the fonts and cheats were. The loaders only add to
+// them, load_sdram_reset() clears them.
+extern uint32_t load_sdram_end;
+extern bool load_sdram_lost, load_fonts_lost;
+void load_sdram_reset(void);
 bool validate_gba_header(const uint8_t *header);
 bool validate_gb_header(const uint8_t *header);
 
@@ -291,9 +319,15 @@ bool validate_gb_header(const uint8_t *header);
 #define ERR_NDS_BADHEADER      0x5
 unsigned load_nds(const char *filename, const void *dldi_driver);
 
-// Asset management
-const void *get_vfile_ptr(const char *fname);
-int get_vfile_size(const char *fname);
+// Asset management: files bundled in the firmware (ie. emulators), placed in
+// SDRAM by the bootloader (rom_boot.S).
+typedef struct {
+  char fn[4];
+  uint32_t size;          // Payload size
+  uint32_t ck[2];         // checksum_words() of the unpacked file
+  uint8_t payload[];      // upkr packed
+} t_vfile;
+const t_vfile *get_vfile(const char *fname);
 
 // Test/validation stuff
 unsigned sram_test();
@@ -301,7 +335,7 @@ int sdram_test(progress_abort_fn progcb);
 void sram_pseudo_fill();
 unsigned sram_pseudo_check();
 int check_peding_sram_test();
-void program_sram_check();
+bool program_sram_check();
 int sdbench_read(progress_abort_fn progcb);
 
 // Logging

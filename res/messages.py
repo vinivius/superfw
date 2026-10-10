@@ -231,7 +231,7 @@ en_strings = [
   "MSG_ERR_READ":    "Error: could not load ROM!",         # alertmsg
   "MSG_ERR_VERIFY":  "Error: ROM verification failed!",    # alertmsg
   "MSG_ERR_NOEMU":   "Can't find emulator!",               # alertmsg
-  "MSG_ERR_TOOBIG":  "The GBA file is too big!",           # alertmsg
+  "MSG_ERR_TOOBIG":  "The file is too big!",               # alertmsg
   "MSG_ERR_SAVERD":  "Error: can't read save file",        # alertmsg
   "MSG_ERR_SAVEWR":  "Error: can't write save file",       # alertmsg
   "MSG_ERR_SAVEPR":  "Error: can't prepare save file",     # alertmsg

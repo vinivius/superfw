@@ -35,21 +35,24 @@ typedef struct {
   uint32_t sectorcount;
   uint32_t currsect;
   uint32_t timeout;
+  bool failed;          // A sector erase timed out: the erase can't complete
 } t_flash_erase_state;
 
 bool flash_identify(t_flash_info *info);
 bool flash_erase_chip();
 bool flash_erase_sector(uintptr_t addr);
 bool flash_erase_sectors(uint32_t baseaddr, unsigned sectsize, unsigned sectcount);
-void flash_read(uint32_t baseaddr, uint8_t *buf, unsigned size);
+bool flash_read(uint32_t baseaddr, uint8_t *buf, unsigned size);
 bool flash_check_erased(uintptr_t addr, unsigned size);
 bool flash_program(uint32_t baseaddr, const uint8_t *buf, unsigned size);
 bool flash_program_buffered(uint32_t baseaddr, const uint8_t *buf, unsigned size, unsigned bufsize);
 bool flash_verify(uint32_t baseaddr, const uint8_t *buf, unsigned size);
 void flash_erase_fsm_start(t_flash_erase_state *st, uint32_t baseaddr, unsigned sectsize, unsigned sectorcnt);
 int flash_erase_fsm_step(t_flash_erase_state *st);
+void flash_erase_fsm_stop(t_flash_erase_state *st);
 
-bool check_superfw(const uint8_t *h, uint32_t *ver);
+bool check_superfw(const uint8_t *h, uint32_t *ver, bool *next);
+bool flash_fw_is_self();
 bool validate_superfw_variant(const uint8_t *fw);
 bool validate_superfw_checksum(const uint8_t *fw, unsigned fwsize);
 

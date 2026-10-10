@@ -26,6 +26,7 @@
 #include "save.h"
 #include "supercard_driver.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
 
 static const uint32_t start_seed = 0xdeadbeef;
 static uint32_t lcg32(uint32_t s) {
@@ -117,23 +118,16 @@ unsigned sram_test() {
   return sram_pseudo_check();
 }
 
-void program_sram_check() {
+bool program_sram_check() {
   // Just drop a file to schedule an SRAM test next boot.
-  f_mkdir(SUPERFW_DIR);
-
   FIL fout;
-  if (FR_OK == f_open(&fout, PENDING_SRAM_TEST, FA_WRITE | FA_CREATE_ALWAYS))
-    f_close(&fout);
+  return superfw_file_open(&fout, NULL, PENDING_SRAM_TEST, FA_CREATE_ALWAYS) && FR_OK == f_close(&fout);
 }
 
 int check_peding_sram_test() {
-  if (check_file_exists(PENDING_SRAM_TEST)) {
-    // Remove the file, avoid doing this again!
-    f_unlink(PENDING_SRAM_TEST);
-
-    return sram_pseudo_check();
-  }
-  return -1;
+  // Only once: the test runs if its marker is removed (an SD error keeps it,
+  // until a game voids it, see sram_prepare_overwrite()).
+  return FR_OK == f_unlink(PENDING_SRAM_TEST) ? (int)sram_pseudo_check() : -1;
 }
 
 // Tests the SD card by reading blocks (directly) and discarding the data.

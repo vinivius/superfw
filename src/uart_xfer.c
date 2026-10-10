@@ -42,6 +42,7 @@
 #include "common.h"
 #include "util.h"
 #include "fatfs/ff.h"
+#include "fileutil.h"
 #include "nanoprintf.h"
 
 #define XFER_BLK         4096
@@ -117,9 +118,11 @@ static void cmd_ls(const char *path) {
     return;
   }
   uputs("OK\n");
+  FRESULT res;
   while (1) {
     FILINFO info;
-    if (FR_OK != f_readdir(&d, &info) || !info.fname[0])
+    res = f_readdir(&d, &info);
+    if (FR_OK != res || !info.fname[0])
       break;
     char line[300];
     if (info.fattrib & AM_DIR)
@@ -129,7 +132,7 @@ static void cmd_ls(const char *path) {
     uputs(line);
   }
   f_closedir(&d);
-  uputs("END\n");
+  uputs(FR_OK == res ? "END\n" : "ERR read error\n");    // (A cut listing isn't whole)
 }
 
 static void cmd_get(const char *path) {
@@ -145,8 +148,7 @@ static void cmd_get(const char *path) {
   uint32_t remaining = f_size(&fd);
   while (remaining) {
     unsigned len = MIN(XFER_BLK, remaining);
-    UINT rd;
-    if (FR_OK != f_read(&fd, xbuf, len, &rd) || rd != len) {
+    if (!read_all(&fd, xbuf, len)) {
       uart_write("F", 1);
       break;
     }
@@ -181,7 +183,10 @@ static void cmd_put(char *args) {
 
   // Write to a temporary file, replace the target once complete.
   char tmpfn[MAX_FN_LEN];
-  npf_snprintf(tmpfn, sizeof(tmpfn), "%s.part", path);
+  if (npf_snprintf(tmpfn, sizeof(tmpfn), "%s.part", path) >= (int)sizeof(tmpfn)) {
+    uputs("ERR path too long\n");
+    return;
+  }
   create_basepath(path);
   FIL fd;
   if (FR_OK != f_open(&fd, tmpfn, FA_WRITE | FA_CREATE_ALWAYS)) {
@@ -217,8 +222,7 @@ static void cmd_put(char *args) {
     if (!ok)
       break;
 
-    UINT wr;
-    if (FR_OK != f_write(&fd, xbuf, len, &wr) || wr != len) {
+    if (!write_all(&fd, xbuf, len)) {
       uart_write("F", 1);
       ok = false;
       break;
@@ -227,15 +231,8 @@ static void cmd_put(char *args) {
     remaining -= len;
   }
 
-  if (FR_OK != f_close(&fd))
-    ok = false;
-  if (ok) {
-    f_unlink(path);
-    ok = (FR_OK == f_rename(tmpfn, path));
-  }
-  if (!ok)
-    f_unlink(tmpfn);
-  uputs(ok ? "DONE\n" : "ERR transfer failed\n");
+  ok = FR_OK == f_close(&fd) && ok;
+  uputs(file_replace(tmpfn, path, ok) ? "DONE\n" : "ERR transfer failed\n");
 }
 
 void uart_xfer_mode() {

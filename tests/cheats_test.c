@@ -45,7 +45,7 @@ const t_cheat_predec cheat3[] = {
   { .opcode = 3, .blen = 8, .value = 0x0040, .address = 0x0300AB04},
 };
 const t_cheat_predec cheat4[] = {{ .opcode = 4, .blen = 16, .value = 0x0101, .address = 0x03002C2E}};
-const t_cheat_predec cheat5[] = {{ .opcode = 5, .blen = 24, .value = 0x0002, .address = 0x03002C2E }};
+const t_cheat_predec cheat5[] = {{ .opcode = 5, .blen = 24, .value = 0x0006, .address = 0x03002C2E }};
 
 const struct {
   const char *title;
@@ -64,11 +64,54 @@ const struct {
 int main() {
   uint8_t tmp[32*1024];
 
-  // Check for corner cases
-  assert(open_read_cheats(tmp, sizeof(tmp), "data/bad1.cht") < 0);
-  assert(open_read_cheats(tmp, sizeof(tmp), "data/bad2.cht") < 0);
+  // A cheat whose codes can't be used is left out, the others load; a file
+  // without any usable cheat (or empty) isn't used.
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/bad1.cht") > 0 && *(uint32_t*)tmp == 1);
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/bad2.cht") > 0 && *(uint32_t*)tmp == 1);
   assert(open_read_cheats(tmp, sizeof(tmp), "data/bad3.cht") < 0);
   assert(open_read_cheats(tmp, sizeof(tmp), "data/bad4.cht") < 0);
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/bad5.cht") < 0);    // Over MAX_CHEAT_CODES codes
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/bad6.cht") < 0);    // A super code's values missing
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/zero.cht") < 0);    // Counts of 0 (cheat_exec loops)
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/empty.cht") < 0);
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/mixed.cht") > 0 && *(uint32_t*)tmp == 1);
+
+  // Titles and codes pair by what they are: a title without codes, or one too
+  // long to read (and its codes), is left out, the cheats after it load.
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/pairing.cht") > 0 && *(uint32_t*)tmp == 1);
+  assert(!strcmp((char*)((t_cheathdr*)&tmp[4])->data, "Second"));
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/longtitle.cht") > 0 && *(uint32_t*)tmp == 2);
+  assert(!strcmp((char*)((t_cheathdr*)&tmp[4])->data, "Second"));
+  // Titles made of hex letters are titles; a code line that can't be used
+  // drops its cheat (the next code line isn't taken for it).
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/hextitle.cht") > 0 && *(uint32_t*)tmp == 1);
+  assert(!strcmp((char*)((t_cheathdr*)&tmp[4])->data, "Face"));
+  // Tabs between and after codes.
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/tabs.cht") > 0 && *(uint32_t*)tmp == 1 &&
+         ((t_cheathdr*)&tmp[4])->codelen == 3 * 8);
+
+  // Windows line endings, tabs, no final newline.
+  assert(open_read_cheats(tmp, sizeof(tmp), "data/crlf.cht") > 0 && *(uint32_t*)tmp == 2);
+  assert(!strcmp((char*)((t_cheathdr*)&tmp[4])->data, "CRLF title"));
+
+  // A super code: its value counts halfwords, 3 a line.
+  {
+    assert(open_read_cheats(tmp, sizeof(tmp), "data/super.cht") > 0 && *(uint32_t*)tmp == 1);
+    const t_cheathdr *e = (t_cheathdr*)&tmp[4];
+    const t_cheat_predec *pc = (t_cheat_predec*)&e->data[e->slen];
+    assert(pc->opcode == 5 * 2 && pc->value == 3 && pc->blen == 16 && e->codelen == 24);
+  }
+
+  // The limits: MAX_CHEAT_CODES codes, titles cut to MAX_CHEAT_TITLE bytes
+  // (at a character start: the 2 byte one that would be cut is left out).
+  {
+    assert(open_read_cheats(tmp, sizeof(tmp), "data/limits.cht") > 0 && *(uint32_t*)tmp == 2);
+    const t_cheathdr *e = (t_cheathdr*)&tmp[4];
+    assert(strlen((char*)e->data) == MAX_CHEAT_TITLE && e->slen == 252);
+    assert(e->codelen == (MAX_CHEAT_CODES + 1) * 8);
+    e = (t_cheathdr*)&e->data[e->slen + e->codelen];
+    assert(strlen((char*)e->data) == 250 && e->codelen == 16);
+  }
 
   int ret = open_read_cheats(tmp, sizeof(tmp), "data/test.cht");
   assert(ret >= 0);

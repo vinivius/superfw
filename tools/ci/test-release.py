@@ -5,18 +5,12 @@
 import hashlib, json, os, shutil, subprocess, sys, tempfile, types
 
 CI = os.path.dirname(os.path.abspath(__file__))
-FILES = ["sd.fw", "sd.gba", "sd-uart-debug.gba"]
+FILES = ["superfw-sd.fw", "superfw-lite.fw", "superfw-chis.fw"]   # As upstream's releases
 failures = []
-
-def names(v):
-    return ["superfw-next-%s-%s" % (v, f) for f in FILES] + ["SHA256SUMS"]
 
 def build(v, sha):
     # The files a build of commit sha makes: {name: content}
-    out = {"superfw-next-%s-%s" % (v, f): ("%s %s\n" % (sha, f)).encode() for f in FILES}
-    out["SHA256SUMS"] = "".join("%s  %s\n" % (hashlib.sha256(c).hexdigest(), n)
-                                for n, c in out.items()).encode()
-    return out
+    return {f: ("%s %s %s\n" % (v, sha, f)).encode() for f in FILES}
 
 def release(v, sha, starter=None, author="github-actions[bot]"):
     assets = [{"name": n, "state": "uploaded", "digest": "sha256:" + hashlib.sha256(c).hexdigest()}
@@ -93,13 +87,13 @@ publish("this commit's release with a wrong file: replaced", V2, "aaa1",
         {"next-v0.2": dict(release(V2, "zzz9"), targetCommitish="aaa1")}, True, test=lambda r, c: complete(r, V2, "aaa1"))
 publish("another commit's release with a starter asset: error, untouched", V2, "bbb2",
         {"next-v0.2": release(V2, "aaa1", starter="sd.fw")}, False, test=lambda r, c: not writes(c))
-# ie. next-v0.1, published before CI with only the .fw and SHA256SUMS
+# ie. next-v0.1, published before CI with only the SD card's firmware
 hand = release(V2, "aaa1", author="vinivius")
-hand["assets"] = [x for x in hand["assets"] if x["name"].endswith((".fw", "SHA256SUMS"))]
+hand["assets"] = [x for x in hand["assets"] if x["name"] == "superfw-sd.fw"]
 publish("a release made by hand: left as it is", V2, "bbb2", {"next-v0.2": hand}, True,
         test=lambda r, c: not writes(c))
 publish("a build file is missing: error", V2, "aaa1", {}, False,
-        out={n: c for n, c in build(V2, "aaa1").items() if not n.endswith("sd.gba")},
+        out={n: c for n, c in build(V2, "aaa1").items() if n != "superfw-lite.fw"},
         test=lambda r, c: not writes(c))
 
 def wait(name, runs, expect_ok, calls, api="ok"):

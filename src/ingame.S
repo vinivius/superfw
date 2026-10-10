@@ -73,6 +73,8 @@
 .globl spill_addr
 .globl savefile_pattern
 .globl savestate_pattern
+.globl game_code
+.globl game_ver
 
 def_symbol(ingame_menu):
   // Writes address 0x03007ffc (actually mirror 0x03fffffc) with the ingame
@@ -127,6 +129,15 @@ savefile_backups:      .word 0x0    // Fill the number of backups to preserve.
 
 savefile_pattern:      .fill 256, 1, 0          // File name pattern (NULL terminated)
 savestate_pattern:     .fill 256, 1, 0          // File name pattern (NULL terminated)
+game_code:             .word 0x0    // The game's code and version (ROM header),
+game_ver:              .word 0x0    // in its savestates
+
+.if (. - ingame_menu) != IGM_HEADER_SIZE
+  .error "The in-game menu header doesn't match t_igmenu (ingame.h)"
+.endif
+.if (igm_trampoline_nocheats - ingame_menu) != IGM_ENTRYPOINT_NOCHEATS_OFF || (igm_trampoline_cheats - ingame_menu) != IGM_ENTRYPOINT_CHEATS_OFF
+  .error "The in-game menu entry points moved (IGM_ENTRYPOINT_*_OFF, ingame.h)"
+.endif
 
 
 // Necessary handlers for the SC driver
@@ -151,6 +162,8 @@ set_cpld_mode:  // (r0: mode)
 // After running the menu code, some .data/.bss variables might have changed.
 // This copies them back into the SD-RAM memory, so they are preserved across
 // calls (menu entry and exit). We could just copy all data, but that's faster.
+// Each word is read back and written again if it doesn't match (SDRAM), up
+// to 8 times.
 save_data_iwram:
   ldr r0, =__DATAS_START__
   ldr r1, =__DATAS_END__
@@ -163,21 +176,48 @@ save_data_iwram:
 
 1:
   ldr r3, [r0], #4
-  str r3, [r2], #4
+  mov r5, $8
+2:
+  str r3, [r2]
+  ldr r4, [r2]
+  cmp r3, r4
+  subnes r5, $1
+  bne 2b
+  add r2, $4
   subs r1, #4
   bne 1b
 
   bx lr
 
 // r0: source buffer
-// r1: dest buffer
+// r1: dest buffer (the cart's SDRAM, which can drop writes: each block is
+//     read back, and copied again if it doesn't match, up to 8 times)
 // r2: number of 32byte blocks to copy
+// r3: set to 1 if a block never matched (else kept). Uses r4-r12.
 do_spill_data:
-  ldmia r0!, {r4-r11}
-  stmia r1!, {r4-r11}
+  mov r12, $8                // Tries for this block
+1:
+  ldmia r0, {r4-r11}
+  stmia r1, {r4-r11}
+  mov r4, $28
+2:
+  ldr r5, [r0, r4]
+  ldr r6, [r1, r4]
+  cmp r5, r6
+  bne 3f
+  subs r4, $4
+  bpl 2b
+4:
+  add r0, $32
+  add r1, $32
   subs r2, $1
   bne do_spill_data
   bx lr
+3:
+  subs r12, $1
+  bne 1b
+  mov r3, $1                 // Never matched: noted, the copy goes on
+  b 4b
 
 // r0: dest buffer
 // r1: source buffer
@@ -325,9 +365,17 @@ ingame_menu_entry:
   save_moderegs(0x17)                    // abort mode.
   save_moderegs(0x1B)                    // undefined mode.
 
+  // The game's own (System/User mode) SP and LR: a savestate needs them.
+  mov r0, $(0xC0 | 0x1F)
+  msr cpsr_c, r0
+  mov r4, sp
+  mov r5, lr
+  stmia r1!, {r4, r5}
+
   msr cpsr, r2                           // Restore original mode/cpsr
 
-  // Copy Palette, OAM and VRAM to the spill area
+  // Copy Palette, OAM and VRAM to the spill area (r3: whether it failed)
+  mov r3, $0
   mov r0, $0x05000000
   mov r2, $(1024 / 8 / 4)
   bl do_spill_data
@@ -349,6 +397,7 @@ ingame_menu_entry:
   mov r0, $0x02000000
   mov r2, $(EWRAM_SPILL_SIZE / 8 / 4)
   bl do_spill_data
+  mov r12, r3                // Whether the spill failed (the copies keep r12)
 
   // Proceed to copy the menu payload into IWRAM and EWRAM.
   ldr r0, sob_addr
@@ -370,6 +419,10 @@ ingame_menu_entry:
   stmia r1!, {r4-r11}
   subs r2, $(8*4)
   bgt 1b
+
+  // The menu knows whether the game's state was spilled right.
+  ldr r0, =ingame_spill_failed
+  str r12, [r0]
 
   // Setup stack (add some clearance) at the bottom of the first 16KB
   ldr sp, =0x03003E00
@@ -396,7 +449,7 @@ ingame_menu_entry:
 
   // Start restoring the saved state.
   ldr r1, spill_addr
-  add r1, $(8 + 8 + 16 + 2+2 + 64 + 64)   // Skip register save to RAM buffers.
+  add r1, $(SPILL_HDR_SIZE)          // Skip register save to RAM buffers.
 
   // Restore palette and OAM
   mov r0, $0x05000000
@@ -498,6 +551,15 @@ ingame_menu_entry:
   reload_regs(0x13, 2);              // supervisor mode
   reload_part_regs(0x17, 3);         // abort mode
   reload_part_regs(0x1B, 4);         // undefined mode
+
+  // The game's own (System/User mode) SP and LR (zeros: an older state
+  // without them was loaded, the current ones stay).
+  ldr r3, [r1, #(64 + 4 + 5*12 + 0)]
+  cmp r3, $0
+  movne r0, $(0xC0 | 0x1F)
+  msrne cpsr_c, r0
+  movne sp, r3
+  ldrne lr, [r1, #(64 + 4 + 5*12 + 4)]
 
   ldr r3, [r1, #(64 + 0)]            // CPSR (IRQ mode)
   msr cpsr, r3                       // Load CPSR, changes to IRQ mode too.

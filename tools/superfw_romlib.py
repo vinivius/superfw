@@ -90,6 +90,9 @@ PATCHDB_DIR = ".superfw/patches"                        # config.h PATCHDB_PATH
 RECENT_FILE = ".superfw/recent.txt"                     # config.h RECENT_FILEPATH
 PENDING_SAVE_FILE = ".superfw/pending-save.txt"         # config.h PENDING_SAVE_FILEPATH
 MAX_FN_LEN = 256                                        # config.h MAX_FN_LEN
+FF_MAX_LFN = 255                                        # FatFs: longest file name
+SAVE_FN_RESERVE = 4                                     # config.h SAVE_FN_RESERVE
+STATE_FN_RESERVE = 8                                    # config.h STATE_FN_RESERVE
 # Longest file name (UTF-8 bytes) we generate. Leaves room for SuperFW's
 # derived paths (eg. "/.superfw/savestate/<stem>.9.state", "/.superfw/art/<fn>.img").
 MAX_NAME_BYTES = 200
@@ -532,13 +535,35 @@ def fat_sanitize(name):
   return out or "_"
 
 
+def fnv1a(data):
+  """FNV-1a (32 bit) of bytes, as util.c fnv1a()."""
+  h = 0x811C9DC5
+  for b in data:
+    h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+  return h
+
+
 def art_bucket(rom_fname):
   """Art subfolder (00..3F) for a ROM file name. Must match the firmware:
      FNV-1a (32 bit) over the UTF-8 file name, modulo ART_BUCKETS."""
-  h = 0x811C9DC5
-  for b in rom_fname.encode("utf-8"):
-    h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
-  return "%02X" % (h % ART_BUCKETS)
+  return "%02X" % (fnv1a(rom_fname.encode("utf-8")) % ART_BUCKETS)
+
+
+def derived_stem(sd_dir, rom_fname, ext, maxlen):
+  """The name (without ext) SuperFW gives a file made from a ROM name in
+     sd_dir, as util.c derived_fn(): the ROM name without its extension, cut
+     short with "~" and a hash of the whole name (ASCII case aside) when
+     sd_dir + name + ext is over maxlen bytes. None if not even that fits."""
+  d, e = len(sd_dir.encode("utf-8")), len(ext.encode("utf-8"))
+  name = sfw_stem(rom_fname).encode("utf-8")
+  if d + len(name) + e <= maxlen:
+    return name.decode("utf-8")
+  if d + 9 + e > maxlen:
+    return None
+  n = maxlen - d - 9 - e
+  while n and (name[n] & 0xC0) == 0x80:      # Don't split a character
+    n -= 1
+  return name[:n].decode("utf-8") + "~%08x" % fnv1a(name.lower())
 
 
 def art_relpath(rom_fname):

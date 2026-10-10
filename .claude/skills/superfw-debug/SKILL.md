@@ -28,7 +28,7 @@ and commit it as its own commit. Push only when the user asks.
 
 - Always `make clean` when changing build flags.
 - The SD board firmware must fit 512 KiB (enforced at link time). UART builds
-  are within a few hundred bytes of the limit, keep debug features small.
+  are tight (v0.2: UART ~300 bytes free, release ~2.3KiB), keep debug features small.
   `superfw.gba` is padded to the next 512 byte block (`tools/fw-fixer.py`),
   so `stat` doesn't show the free space;
   measure where the content ends with `tools/debug/flash-free.sh superfw.gba`
@@ -37,7 +37,8 @@ and commit it as its own commit. Push only when the user asks.
   CI (`.github/workflows/superfw-next.yml`). Bump `VERSION_WORD` in any PR
   that changes the release firmware (CI compares release builds of the base
   and the PR made with `VERSION_SLUG_WORD=00000000`); merging publishes the
-  release `next-vX.Y` (`tools/ci/publish-release.sh`). Change the release
+  release `next-vX.Y.Z` (`tools/ci/publish-release.sh`; `VERSION_WORD` is
+  major << 16 | minor << 8 | patch, ie. `0x0000005F` is 0.0.95). Change the release
   scripts together with `tools/ci/test-release.py`, which runs them against
   a fake gh (`python3 tools/ci/test-release.py`, needs jq).
 
@@ -191,6 +192,18 @@ expose the UART as a pty and to keep SD image writes.
   (mounts it); unmount and `udisksctl loop-delete` before running the
   emulator. The emulator writes to the image, so work on a copy.
 - Interactive: `cd DIR && retroarch -L $SUPERFW_DEV/gpsp-supercard/gpsp_libretro.so superfw.gba`.
+  To show the user a test on screen while you drive it,
+  `tools/debug/emu/pad.py STEP...` presses buttons through RetroArch's
+  Network RetroPad (needs the retroarch.cfg settings in its header), ie.
+  `pad.py down*2 a 1.5 shot:2-open b`. Screenshot after each step that can
+  open a prompt: a press meant for a prompt that didn't appear lands on the
+  next screen (and may launch a game). RetroArch sometimes segfaults at
+  startup (empty log, often right after another instance was killed):
+  `pad.py` then stops with "RetroArch is not running"; start it again.
+- RetroArch itself may segfault when killed (`timeout`, `pkill`), which
+  raises a "Process crashed: retroarch" notification: if
+  `coredumpctl info PID` shows frames in `retroarch`, not in
+  `gpsp_libretro.so`, it isn't the firmware or the core.
 - `GPSP_SIO_TRACE=1` (environment of `run.sh`) prints every SIOCNT/RCNT
   write and every Supercard mode write to stderr: shows what a game does to
   the link port, and whether a reset reached the cartridge mode switch.
@@ -207,16 +220,65 @@ expose the UART as a pty and to keep SD image writes.
   writes to the card image (patch answers, settings): keep a pristine copy
   and restore it before each capture run. Take list shots right after moving
   the cursor, before long names start scrolling.
+- SD fault injection (`gba_memory.c`): a file in the emulator folder (the
+  core's working directory) makes SD accesses fail from then on.
+  `sd-write-fail` holds N: after N more data blocks, every write gets a CRC
+  error token and isn't stored (until the emulator exits). `sd-read-fail`
+  holds "N K": after N more read commands, the next K never send data (the
+  host times out), then reads work again. Use them to test save paths
+  (sweep N to hit each step), as done for the in-game save and pending-save
+  fixes. An empty `sdram-dump` file makes the core write the cart's SDRAM
+  (32 MiB, ROM space order) to `sdram.bin` at the next frame: ie. pad a ROM
+  with 0xFF and check its padding after an in-game menu save (the R8-19
+  test: SD register writes made with the SDRAM writable change it).
+  Rebuild the core with `HAVE_DYNAREC=0` (as setup.sh does).
 - Don't rebuild or replace the core while an emulator uses it (SIGBUS).
+- Long names: the browser can't open a path over 255 chars ("could not
+  load ROM!"). The names made from a ROM name (config, patch file, save,
+  savestate) are built by derived_fn(): when they don't fit (the FAT limit
+  for config and patch files, MAX_FN_LEN minus the suffixes added later for
+  saves and savestates) they are cut short and end in "~" and a hash.
+- SD read fault injection: each failing read takes ~1 s to time out, and
+  the card keeps failing until K reads failed. A K larger than what the
+  test reads leaves the card failing afterwards, which looks like the
+  firmware never recovers: use a small K (2 covers a fast and a slow load
+  attempt). Keys injected during that timeout are lost: wait ~3 s after the
+  action that hits the fault before the next key.
+- Counting reads to place a fault: a read command covers at most one FAT
+  cluster, and `mkfs.fat` gives a 128 MiB FAT32 image 512-byte clusters
+  (an 8 KiB ROM chunk is 16 reads). Format a 4 GiB sparse image with
+  `-s 64` (32 KiB clusters) to make a chunk one read, then N ~ the chunk
+  number (the fonts start at chunk 1856, 14.5 MiB).
+- `run.sh`'s MINUTES stops the emulator: a load that seems stuck at the
+  same progress for longer than that is just the last frame. And when
+  waiting on the UART log, "ROM load failed" also matches the slow retry's
+  "Fast ROM load failed (n)": match "ROM load failed:" for the final one.
 
 ## Firmware memory budgets
 
 - Flash: 512 KiB for the SD board (`stat -c %s superfw.gba` < 524288); the
-  UART build is the tight one, so it is compressed at level 9 by default
-  (~65 s per build instead of ~12; pass `COMPRESSION_RATIO=4` for quick
-  emulator iterations, but check the final size at 9). Cold files use
-  `#pragma GCC optimize("Os")`. Check sizes after every visual change: with
-  the NEXT logo the UART build has ~250 bytes free, the release ~2.3 KiB.
+  UART build is the tight one, so it is compressed at upkr level 15 by
+  default, the most it does (~140 s per build instead of ~12; level 11 was
+  ~110 s and ~120 bytes bigger, level 9 ~65 s and ~320 bigger). Library
+  routines are big for one call: strstr() was ~1.5KiB, memchr()/strspn()/
+  strpbrk() ~250 bytes; a loop is smaller (see the linker map: build with
+  -Wl,-Map and look at the libc/libgcc objects). Compression varies: smaller code can compress worse by ~100
+  bytes, so keep a margin. `COMPRESSION_RATIO=4` (~12 s) no longer fits the
+  UART build and leaves the release ~60 bytes; use it for quick release-build
+  iterations only (the default release level is 9). Cold files use
+  `#pragma GCC optimize("Os")` (grep for `optimize *("Os")`, some files
+  write it with a space). Check sizes after every change: the UART build had
+  dropped to a few dozen bytes free; sha256.c (always) and nanoprintf.c
+  (UART builds only, `#ifdef ENABLE_UART_LOGGING`) went -Os to get ~1.1 KiB
+  back. In v0.2 the release has ~2.3KiB free (upkr level 9) and the UART
+  build ~300 (level 15);
+  code compresses poorly (a byte of code costs about a byte of flash).
+  nanoprintf.c and utf_util.c are built for size in UART builds only. To
+  fit, the UART build also lost the diagnostic that listed where SDRAM
+  differs from the file after a failed final ROM verify (git log -S
+  log_rom_mismatches brings it back for a hardware investigation). The
+  ENABLE_DISK_LOGGING build hasn't fit the SD board since v0.2. Measure the
+  overflow with a temporary `MAXFSIZE=600` build instead of guessing.
 - Bootloader (`rom_boot.S`, draws the boot screen and unpacks the firmware):
   3 KiB, asserted at link time; check `arm-none-eabi-nm -n firmware.elf |
   grep _end_bootloader` (< 0x08000c00, it was 0x08000bb0). Bigger data it
@@ -235,6 +297,16 @@ expose the UART as a pty and to keep SD image writes.
   payload with a build of the previous commit (`git worktree add` + `make
   ingamemenu.payload`) to know whether the in-game menu changed and needs
   testing (open it in the emulator with `keys.sh DIR '<LRs20>'`).
+  Its items: Resume, Reset, Save to SD card, Savestates (4th: `ddd` then
+  `a`), RTC clock, Cheats. In Savestates, Left from memory slot 1 goes to
+  the persistent (disk) slots 1-5, files `/SAVESTATE/<game>.<n>.state`;
+  confirmation popups start on "No" (`l` then `a` for Yes). Pre-create
+  state files on the card to test slot handling without saving.
+  States keep format 0x10000 (older SuperFW versions read them); the game
+  (ROM header code and version) is in the header's unused space after the
+  magic "GMID" (offset 16; code at 20, version at 24). Another game's state
+  shows "Invalid savestate!", a damaged one "Corrupted savestate!". To test
+  compatibility, load a state of this build in a `fork/superfw-next` build.
 
 ## Known hardware behaviour (Supercard SD)
 
@@ -242,9 +314,37 @@ expose the UART as a pty and to keep SD image writes.
   the start bit is scanned for (`supercard_io.S`, `directsaver.S`).
 - SDRAM writes are occasionally dropped (seen at 0x200000, 0x800000,
   0x1000000): ROM loading verifies and rewrites each chunk, then checksums
-  the whole ROM (`loader.c`, "Verify ROM loading" setting).
+  the whole ROM (`loader.c`, "Verify ROM loading" setting). The in-game menu,
+  patches, payloads, cheats and NOR flashing's scratch copies are checked
+  too (`write16_checked()`, `memcpy32_checked()`, `copy_chunk_verified()`);
+  UART builds log each chunk rewrite ("Chunk at 0x... needed N extra
+  writes").
 - Fast ROM loading through the 0x0A000000 mirror is unreliable on some
   carts: there is an automatic fallback to slow loading.
+- The cart's SDRAM loses a write now and then (seen on the user's Supercard
+  SD: "Chunk at ... needed 1 extra writes" in the load log): every SDRAM
+  write that matters goes through a checked, retrying copy
+  (copy_verified(), memcpy32_checked(), write16_checked()); a plain copy
+  (the font pack's memmove used to be one) fails loads at random. The
+  emulator never drops writes and boots the firmware as if flashed, so
+  check load paths on hardware too.
+- The cart's registers are in the ROM space: the SD card's at offsets 16 MiB
+  (write data), 17 MiB (read data) and 24 MiB (commands), the mode register
+  in the last half word (0x09FFFFFE). In the emulator every write made while
+  SDRAM is writable reaches SDRAM, these too: SD commands overwrite ROM data
+  at 24 MiB, mode changes the last half word (v0.2 failed every ROM over 24
+  MiB). SD accesses always run with SDRAM writable (DirectSave uses 0xD7 on
+  purpose; read-only SD access is untested on hardware): loads record what
+  they write to those two words (`reg_words` in `loader.c`), put it back
+  before checking the ROM and after their last SD access. The in-game menu
+  and DirectSave write the SD card during games over 16 MiB with the SDRAM
+  writable. Don't make SD accesses read-only (bit 2 off, ie. 0xD3 or 0x3,
+  as libgba's driver does): on the user's Supercard SD, DirectSave then read
+  Pokemon FireRed's save wrong ("save file corrupted", the file intact),
+  and it worked again with 0xD7. UART builds log "SD command word
+  kept/overwritten" after a load that wrote data at 24 MiB (a ROM over 24
+  MiB): on the user's Supercard SD it's "kept" (32 MiB Kingdom Hearts): the
+  real SDRAM doesn't get the SD registers' writes, only the emulator does.
 - ROMs modified by the old SCFW firmware can be misdetected by the patch
   engine; the patch database handles them.
 - Box art lives in `/.superfw/art/XX/<ROM file name>.img`, XX = FNV-1a of the
@@ -256,6 +356,19 @@ expose the UART as a pty and to keep SD image writes.
   not switch the cartridge mapping (`set_cpld_mode`): the next instruction
   is fetched from the newly mapped memory. The resets do the switch from
   IWRAM (`clear_and_reset`).
+- GCC (Arm GNU 14.3) with -fipa-ra miscompiled Thumb-1 code: it assumed r0-r3
+  survive calls to functions that return with `pop {rN}; bx rN` (interworking),
+  so a caller read a struct through r0 = the return address (a patch result,
+  and a DLDI header byte stored into firmware code). The build uses
+  -fno-ipa-ra (BASEFLAGS); `tools/debug/ipascan.py` checks a disassembly for
+  such call sites. Symptoms: results that change when a log line is added.
+- The build uses -flto: GCC sees across files, and with strict aliasing it
+  dropped a uint16_t store into a local struct that was only read back
+  through memcpy32_checked()'s uint32_t pointers (Recent showed full paths:
+  fname_offset was never stored; right on the host, which has no LTO). The
+  code reads structs and buffers through cast pointers in many places, so
+  BASEFLAGS has -fno-strict-aliasing. Symptom: a field right on the host
+  test, wrong on the GBA; check the disassembly for the missing store.
 - Open: Mario Kart Super Circuit with DirectSave shows a blank screen in game.
 
 ## Shell gotchas

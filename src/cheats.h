@@ -26,10 +26,15 @@ typedef struct {
   uint8_t data[];
 } t_cheathdr;
 
+// Limits of a cheat: its title (slen is 8 bits) and its codes (codelen is
+// 8 bits, 8 bytes a code plus the end one).
+#define MAX_CHEAT_TITLE    251
+#define MAX_CHEAT_CODES     30
+
 typedef struct {
   t_cheathdr h;
-  char title[256];
-} t_cheathdr_ext;
+  char title[MAX_CHEAT_TITLE + 1];
+} __attribute__((aligned(4))) t_cheathdr_ext;    // Copied as words
 
 typedef struct {
   uint8_t opcode;            // The codebreaker opcode (0 to 15)
