@@ -320,6 +320,13 @@ expose the UART as a pty and to keep SD image writes.
   writes").
 - Fast ROM loading through the 0x0A000000 mirror is unreliable on some
   carts: there is an automatic fallback to slow loading.
+- The cart's SDRAM loses a write now and then (seen on the user's Supercard
+  SD: "Chunk at ... needed 1 extra writes" in the load log): every SDRAM
+  write that matters goes through a checked, retrying copy
+  (copy_verified(), memcpy32_checked(), write16_checked()); a plain copy
+  (the font pack's memmove used to be one) fails loads at random. The
+  emulator never drops writes and boots the firmware as if flashed, so
+  check load paths on hardware too.
 - The cart's registers are in the ROM space: the SD card's at offsets 16 MiB
   (write data), 17 MiB (read data) and 24 MiB (commands), the mode register
   in the last half word (0x09FFFFFE). In the emulator every write made while

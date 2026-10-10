@@ -281,6 +281,24 @@ static int copy_chunk_verified(uint32_t offset, uint32_t *src, unsigned bytes, u
   return copy_verified(&GBA_ROM_ADDR[offset], src, bytes, ck);
 }
 
+// Moves bytes (whole words) within SDRAM, as memmove: through RAM, in chunks
+// that are each written checked (copy_verified(): the cart's SDRAM loses
+// writes now and then), in the order overlapping areas need. False if a chunk
+// never reads back as written.
+static bool move_verified(uint8_t *dst, const uint8_t *src, unsigned bytes) {
+  const bool down = dst > src;           // From the end, else from the start
+  for (unsigned done = 0; done < bytes; done += LOAD_BS) {
+    const unsigned n = MIN(LOAD_BS, bytes - done);
+    const unsigned off = down ? bytes - done - n : done;
+    uint32_t tmp[LOAD_BS/4], ck[2] = {0, 0};
+    set_supercard_mode(MAPPED_SDRAM, true, false);
+    memcpy32(tmp, &src[off], n);
+    if (copy_verified(&dst[off], tmp, n, ck) < 0)
+      return false;
+  }
+  return true;
+}
+
 // Checksums ROM data already loaded in SDRAM (used to verify the load).
 static void checksum_loaded_rom(uint32_t start, uint32_t end, uint32_t *st) {
   // Whole words: the end of the file is padded with zeros in SDRAM. The mode
@@ -347,9 +365,9 @@ static bool load_ingame_menu(
   hdr.game_code = id.code;                   // (Its savestates are for it)
   hdr.game_ver = id.version;
 
-  // Copy the font pack (and the cheats after it) first, using memmove to
-  // handle collisions properly (overlapping where they go, they can only be
-  // moved once). Their checksum before the move checks them after it.
+  // Copy the font pack (and the cheats after it) first, as memmove does
+  // (overlapping where they go, they can only be moved once). Their checksum
+  // before the move checks them after it.
   // TODO: Allow partial font copying, to reduce memory usage (ie. in 32MiB ROMs)
   uint8_t *ptr = (uint8_t*)base_addr;
   uint32_t ck_dst[2] = {0, 0};
@@ -357,7 +375,9 @@ static bool load_ingame_menu(
   if (move_fonts) {
     ck_fonts[0] = ck_fonts[1] = 0;
     checksum_words((uint8_t*)ROM_FONTBASE_U8, fcsize / 4, ck_fonts);
-    memmove32(&ptr[menu_size], (uint8_t*)ROM_FONTBASE_U8, fcsize);
+    if (!move_verified(&ptr[menu_size], (uint8_t*)ROM_FONTBASE_U8, fcsize))
+      return false;
+    set_supercard_mode(MAPPED_SDRAM, true, false);
     reg_words_record(base_addr - GBA_ROM_BASE + menu_size, (uint32_t*)&ptr[menu_size], fcsize);
   }
   else

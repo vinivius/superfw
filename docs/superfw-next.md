@@ -140,6 +140,9 @@ SuperFW and SuperFW Next can install each other.
   read-only (as libgba's SD driver does): their SD card commands and data
   could reach a running game over 16 MiB (or the in-game menu's own data
   there) and change it.
+- The in-game menu's font pack is moved checked (in chunks, each written
+  again if it doesn't read back): the cart's RAM loses a write now and then,
+  and a lost one failed the load ("ROM verification failed").
 - "Reset without saving" in the in-game menu stays in the menu and says so
   when it can't cancel the pending save (it would be written at boot).
 - A damaged or hand-edited recent.txt (no final newline, overlong lines,
